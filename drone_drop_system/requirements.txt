@@ -1,0 +1,27 @@
+# --- Core Python packages ---
+numpy
+scipy
+matplotlib
+tqdm
+pyyaml
+
+# --- Computer Vision ---
+opencv-python
+opencv-contrib-python
+
+# --- Machine Learning / Deep Learning ---
+torch
+torchvision
+torchaudio
+
+# --- ROS2 Python interface ---
+rclpy
+rosbags
+
+# --- DL 모델 학습/실험 도구 ---
+tensorboard
+pillow
+
+# --- Utility ---
+pytest
+pydantic
