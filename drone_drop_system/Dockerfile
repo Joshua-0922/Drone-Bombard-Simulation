@@ -1,73 +1,56 @@
-# -----------------------------------------------------------
-# Base image: NVIDIA CUDA + Ubuntu 22.04
-# -----------------------------------------------------------
-FROM nvidia/cuda:12.2.2-devel-ubuntu22.04
+FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04
 
-# Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
-# -----------------------------------------------------------
-# Install base tools
-# -----------------------------------------------------------
+# -------------------------------------------------------------
+# 1) 기본 패키지 설치 (ROS 관련 패키지는 설치하지 않음)
+# -------------------------------------------------------------
 RUN apt-get update && apt-get install -y \
-    curl \
-    wget \
-    git \
-    lsb-release \
-    build-essential \
-    cmake \
-    python3 \
-    python3-pip \
-    python3-colcon-common-extensions \
-    python3-vcstool \
-    locales \
-    && rm -rf /var/lib/apt/lists/*
+    wget curl git vim nano lsb-release \
+    build-essential cmake \
+    python3 python3-pip \
+    locales software-properties-common \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Locale 설정
+# -------------------------------------------------------------
+# 2) Locale 설정
+# -------------------------------------------------------------
 RUN locale-gen en_US en_US.UTF-8
-ENV LANG en_US.UTF-8
-ENV LC_ALL en_US.UTF-8
+ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
-# -----------------------------------------------------------
-# Install ROS2 Humble
-# -----------------------------------------------------------
-RUN apt-get update && apt-get install -y \
-    software-properties-common \
-    && add-apt-repository universe
+# -------------------------------------------------------------
+# 3) ROS2 리포지토리 추가
+# -------------------------------------------------------------
+RUN add-apt-repository universe && \
+    curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.asc | apt-key add - && \
+    sh -c 'echo "deb http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" > /etc/apt/sources.list.d/ros2.list'
 
-RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg && \
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
-    http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" \
-    > /etc/apt/sources.list.d/ros2.list
-
+# -------------------------------------------------------------
+# 4) ROS2 + colcon 관련 패키지 설치
+# -------------------------------------------------------------
 RUN apt-get update && apt-get install -y \
     ros-humble-desktop \
-    ros-humble-cv-bridge \
-    ros-humble-image-transport \
-    ros-humble-vision-msgs \
-    && rm -rf /var/lib/apt/lists/*
+    ros-dev-tools \
+    python3-colcon-common-extensions \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ROS2 환경변수
+# ROS2 소스
 SHELL ["/bin/bash", "-c"]
 RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
-ENV ROS_DISTRO=humble
 
-# -----------------------------------------------------------
-# Python Dependencies (requirements.txt)
-# -----------------------------------------------------------
+# -------------------------------------------------------------
+# 5) Python 패키지
+# -------------------------------------------------------------
+RUN pip3 install --upgrade pip && \
+    pip3 install numpy opencv-python scipy matplotlib
+
+# -------------------------------------------------------------
+# 6) PyTorch (CUDA 12.6)
+# -------------------------------------------------------------
+RUN pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+
+# -------------------------------------------------------------
+# 7) 작업 디렉토리
+# -------------------------------------------------------------
 WORKDIR /workspace
-
-COPY requirements.txt .
-RUN python3 -m pip install --upgrade pip
-RUN pip install -r requirements.txt
-
-# -----------------------------------------------------------
-# Project workspace
-# -----------------------------------------------------------
-RUN mkdir -p /workspace/ros2_ws/src
-WORKDIR /workspace/ros2_ws
-
-# Source 환경 자동 로드
-RUN echo "source /workspace/ros2_ws/install/setup.bash" >> ~/.bashrc
-
 CMD ["bash"]

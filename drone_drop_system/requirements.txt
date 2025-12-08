@@ -5,18 +5,17 @@ matplotlib
 tqdm
 pyyaml
 
-# --- Computer Vision ---
-opencv-python
-opencv-contrib-python
-
 # --- Machine Learning / Deep Learning ---
-torch
-torchvision
-torchaudio
+# ⚠ Do NOT install torch via pip inside Docker
+# torch, torchvision, torchaudio → 설치 제거
+
+# --- Computer Vision ---
+opencv-python # OK
+# opencv-contrib-python  # ❌설치 충돌 가능성 높음 → 주석처리
 
 # --- ROS2 Python interface ---
-rclpy
-rosbags
+# rclpy  # ❌ROS2 Humble Desktop에 포함됨 → pip 설치 금지
+rosbags  # OK
 
 # --- DL 모델 학습/실험 도구 ---
 tensorboard
