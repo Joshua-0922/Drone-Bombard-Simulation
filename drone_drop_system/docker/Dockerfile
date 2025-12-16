@@ -33,6 +33,8 @@ RUN pip3 install --upgrade pip && \
     pip3 install --no-cache-dir \
     numpy opencv-python scipy matplotlib
 
+RUN apt-get remove -y python3-sympy || true
+
 RUN pip3 install --no-cache-dir \
     --index-url https://download.pytorch.org/whl/cu126 \
     torch==2.9.1 torchvision==0.24.1
