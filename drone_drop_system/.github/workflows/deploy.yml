@@ -1,0 +1,50 @@
+name: Build & Deploy to GCP
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Authenticate to GCP
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    - name: Set up gcloud
+      uses: google-github-actions/setup-gcloud@v2
+      with:
+        project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+    - name: Configure Docker
+      run: |
+        gcloud auth configure-docker \
+          ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+
+    - name: Build Docker image
+      run: |
+        docker build -t \
+        ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GCP_REPOSITORY }}/drone-bombard:latest .
+
+    - name: Push Docker image
+      run: |
+        docker push \
+        ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GCP_REPOSITORY }}/drone-bombard:latest
+
+    - name: Deploy on GCP VM
+      run: |
+        gcloud compute ssh ${{ secrets.VM_NAME }} \
+          --zone=${{ secrets.VM_ZONE }} \
+          --command="
+            docker pull ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GCP_REPOSITORY }}/drone-bombard:latest &&
+            docker stop drone-bombard || true &&
+            docker rm drone-bombard || true &&
+            docker run -d --gpus all --name drone-bombard \
+              ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GCP_REPOSITORY }}/drone-bombard:latest
+          "
