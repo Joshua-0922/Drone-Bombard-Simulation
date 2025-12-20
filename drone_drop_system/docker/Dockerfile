@@ -40,4 +40,4 @@ RUN pip3 install --no-cache-dir \
     torch==2.9.1 torchvision==0.24.1
 
 WORKDIR /workspace
-CMD ["bash"]
+CMD ["bash", "-c", "tail -f /dev/null"]
