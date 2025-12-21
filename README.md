@@ -74,9 +74,9 @@ CI/CD : Github Actions & Google Cloud Platform
 docker run -it \
   --gpus all \
   --name drone-bombard-dev \
-  -v /home/dev/ws:/workspace \
-  -v /home/dev/.cache:/root/.cache \
-  us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest
+  -v ~/Drone-Bombard-Simulation/ros2_ws:/workspace/ros2_ws \
+  -v ~/.cache:/root/.cache \
+  us-central1-docker.pkg.dev/.../drone-bombard:latest
 ```
 ## VM에서 기존에 사용하던 docker reuse
 ```
