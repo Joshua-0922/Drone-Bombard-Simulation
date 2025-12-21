@@ -35,9 +35,5 @@ RUN pip3 install --upgrade pip && \
 
 RUN apt-get remove -y python3-sympy || true
 
-RUN pip3 install --no-cache-dir \
-    --index-url https://download.pytorch.org/whl/cu126 \
-    torch==2.9.0 torchvision==0.24.0
-
 WORKDIR /workspace
 CMD ["bash", "-c", "tail -f /dev/null"]
