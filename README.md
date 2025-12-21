@@ -78,6 +78,9 @@ docker run -it \
   -v /home/dev/.cache:/root/.cache \
   us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest
 ```
-
+## VM에서 기존에 사용하던 docker reuse
+```
+docker start -ai drone-bombard-dev
+```
 
 # 5. 실행 가이드
