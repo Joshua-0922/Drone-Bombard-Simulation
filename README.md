@@ -59,5 +59,13 @@ CI/CD : Github Actions & Google Cloud Platform
 ```
 
 # 4. 개발 규칙
+| 데이터 종류 | 저장 위치 |
+| :-: | :-: |
+| 코드 | Github |
+| Docker 이미지 | Artifact Registry |
+| 로그 | Docker volume or VM 디스크 |
+| 학습된 모델 | GCS |
+| Gazebo world 파일 | Github |
+| rosbag | Volume + GCS 백업 |
 
 # 5. 실행 가이드

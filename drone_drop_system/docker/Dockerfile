@@ -24,7 +24,21 @@ RUN apt-get update && apt-get install -y \
     ros-humble-desktop \
     ros-dev-tools \
     python3-colcon-common-extensions \
+    ros-humble-gazebo-ros \
+    gazebo \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Gazebo / OpenGL 필수
+RUN apt-get update && apt-get install -y \
+    mesa-utils \
+    libgl1 \
+    libgl1-mesa-glx \
+    libgl1-mesa-dri \
+    libx11-6 \
+    libxext6 \
+    libxrender1 \
+    libxtst6 \
+    && rm -rf /var/lib/apt/lists/*
 
 SHELL ["/bin/bash", "-c"]
 RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
@@ -33,7 +47,10 @@ RUN pip3 install --upgrade pip && \
     pip3 install --no-cache-dir \
     numpy opencv-python scipy matplotlib
 
-RUN apt-get remove -y python3-sympy || true
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 WORKDIR /workspace
-CMD ["bash", "-c", "tail -f /dev/null"]
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]
