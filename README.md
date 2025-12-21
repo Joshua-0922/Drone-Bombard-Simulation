@@ -56,7 +56,7 @@ CI/CD : Github Actions & Google Cloud Platform
 │       └── deploy.yml          # CI/CD 배포 파이프라인
 │
 └── README.md
-```
+``` 
 
 # 4. 개발 규칙
 | 데이터 종류 | 저장 위치 |
@@ -67,5 +67,17 @@ CI/CD : Github Actions & Google Cloud Platform
 | 학습된 모델 | GCS |
 | Gazebo world 파일 | Github |
 | rosbag | Volume + GCS 백업 |
+
+
+## VM에서 docker run
+```
+docker run -it \
+  --gpus all \
+  --name drone-bombard-dev \
+  -v /home/dev/ws:/workspace \
+  -v /home/dev/.cache:/root/.cache \
+  us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest
+```
+
 
 # 5. 실행 가이드
