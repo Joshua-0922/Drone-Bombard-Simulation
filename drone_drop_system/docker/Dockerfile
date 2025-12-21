@@ -47,7 +47,7 @@ RUN pip3 install --upgrade pip && \
     pip3 install --no-cache-dir \
     numpy opencv-python scipy matplotlib
 
-COPY entrypoint.sh /entrypoint.sh
+COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 WORKDIR /workspace
