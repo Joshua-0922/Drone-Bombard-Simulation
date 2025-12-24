@@ -45,6 +45,24 @@ source install/setup.bash
 *  생성 결과는 VM의 /opt/drone-bombard/ros2_ws/src 에 자동 반영됨.
 * 이후 VM에서 github repository로 push하기.
 
+### 6. 모든 package 개발은 branch로 나누어서 개발하기. 이후 합치면 된다.
+* 개발 종류마다 나누어서 branch 작성
+* 이름은 path-generation, CV, autonomy, px4 등으로, 만들기 전 회의 통해 결정
+
+#### 6.1 path-generation branch 만들기.
+```
+git checkout main
+git pull
+git checkout -b feature/path-generation
+```
+#### 6.2 main과 합치기
+```
+git checkout main
+git pull
+git merge feature/path-generation
+git push
+```
+
 ## 3. 기술 스택
 OS : Ubuntu 22.04 LTS
 ROS2 : Humble
