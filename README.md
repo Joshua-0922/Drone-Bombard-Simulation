@@ -4,24 +4,31 @@
 Vision Based Drone Bombard System은 카메라 기반 지상 타겟 인식 후 투하 지점을 계산하여 시뮬레이션 환경에서 투하 임무를 수행하는 자율비행 기능을 목표로 한다.
 
 ## 2. Operating Principles
-###1. Repository에는 “소스 코드만” 관리한다
+Warning: GCP VM은 사용자 계정별 홈 디렉토리가 분리되어 있다.
+
+모든 팀 공용 작업은 다음 경로에서 수행한다.
+/opt/drone-bombard
+
+개인 홈 디렉토리(/home/username)는 사용하지 않는다.
+
+### 1. Repository에는 “소스 코드만” 관리한다
 
 * ROS2 패키지는 반드시 ros2_ws/src/<package_name>에 생성
 * build/, install/, log/ 디렉토리는 Git 관리 대상이 아님
 
-###2. 개발은 항상 Docker 컨테이너 내부에서 수행한다
+### 2. 개발은 항상 Docker 컨테이너 내부에서 수행한다
 * VM에는 Docker만 설치
 * ROS2, Python 의존성, 빌드 도구는 dockerfile 수정으로 변경
 
-###3. ros2_ws는 Host ↔ Container 볼륨으로 공유한다
+### 3. ros2_ws는 Host ↔ Container 볼륨으로 공유한다
 * 컨테이너 삭제 후에도 코드 유지
 * 동일 워크스페이스를 여러 컨테이너에서 재사용 가능
 
-###4. Docker 이미지 빌드는 GitHub Actions가 담당한다
+### 4. Docker 이미지 빌드는 GitHub Actions가 담당한다
 * 로컬에서 docker build 금지
 * main 브랜치 push → 자동 빌드 → Artifact Registry 저장
 
-###5. ROS2 패키지는 컨테이너 내부에서 생성한다.
+### 5. ROS2 패키지는 컨테이너 내부에서 생성한다.
 * 패키지 생성 위치
 ```
 cd /workspace/ros2_ws/src
@@ -35,7 +42,7 @@ colcon build
 source install/setup.bash
 ```
 
-*  생성 결과는 VM의 ~/Drone-Bombard-Simulation/ros2_ws/src 에 자동 반영됨.
+*  생성 결과는 VM의 /opt/drone-bombard/ros2_ws/src 에 자동 반영됨.
 * 이후 VM에서 github repository로 push하기.
 
 ## 3. 기술 스택
@@ -101,7 +108,7 @@ GitHub Repository
 docker run -it \
   --gpus all \
   --name drone-bombard-dev \
-  -v ~/Drone-Bombard-Simulation/ros2_ws:/workspace/ros2_ws \
+  -v /opt/drone-bombard/Drone-Bombard-Simulation/ros2_ws:/workspace/ros2_ws \
   -v ~/.cache:/root/.cache \
   us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest
 ```
@@ -139,14 +146,14 @@ git push
 4. Compute Engine -> VM -> SSH 버튼 클릭
 
 ### 9.2 로컬 환경에서 접속
-1. 로컬 PC에서 최초 1회 설정
+#### 9.2.1 로컬 PC에서 최초 1회 설정
 ```
 gcloud auth login
 gcloud config set project charming-league-481306-d8
 ```
 * Google 계정 로그인
 
-2. VM 접속 명령
+#### 9.2.2 VM 접속 명령
 ```
 gcloud compute ssh l4-dev-spot \
   --zone us-central1-a
@@ -154,7 +161,7 @@ gcloud compute ssh l4-dev-spot \
 * l4-dev-spot : VM 이름
 * us-central1-a : VM이 생성된 zone
 
-3. VM 접속 확인
+#### 9.2.3 VM 접속 확인
 ```
 hostname
 nvidia-smi
