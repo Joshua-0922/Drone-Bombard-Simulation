@@ -107,17 +107,29 @@ GitHub Repository
 ```
 docker run -it \
   --gpus all \
-  --name drone-bombard-dev \
+  --name drone-bombard-dev-{username} \
   -v /opt/drone-bombard/Drone-Bombard-Simulation/ros2_ws:/workspace/ros2_ws \
   -v ~/.cache:/root/.cache \
   us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest
 ```
+* {username}은 각자 user name 입력하기. 같은 이미지를 쓰되 사용자까리 컨테이너 분리
 * ros2_ws는 VM과 컨테이너 공유 볼륨
 * 컨테이너 삭제 전까지 데이터 유지
 
-### 7.2. 기존 컨테이너 재접속
+### 7.2 기존 컨테이너 재접속
 ```
-docker start -ai drone-bombard-dev
+docker start -ai drone-bombard-dev-{username}
+```
+
+### 7.3 기존 컨테이너 삭제
+1. 기존 컨테이너 중지
+```
+docker stop drone-bombard-dev-{username}
+```
+
+2. 기존 컨테이너 삭제
+```
+docker rm drone-bombard-dev-{username}
 ```
 ## 8. Github repository로 코드 반영(VM 기준)
 ```
