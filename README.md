@@ -130,3 +130,33 @@ git push
   * Service Account User
 
 ## 9.2 VM 접속 방법
+
+### 9.1 GCP Console의 웹 SSH 방식으로 접근
+* 절차: 
+1. https://console.cloud.google.com 접속
+2. 개인 Google 계정 로그인
+3. 프로젝트 선택
+4. Compute Engine -> VM -> SSH 버튼 클릭
+
+### 9.2 로컬 환경에서 접속
+1. 로컬 PC에서 최초 1회 설정
+```
+gcloud auth login
+gcloud config set project charming-league-481306-d8
+```
+* Google 계정 로그인
+
+2. VM 접속 명령
+```
+gcloud compute ssh l4-dev-spot \
+  --zone us-central1-a
+```
+* l4-dev-spot : VM 이름
+* us-central1-a : VM이 생성된 zone
+
+3. VM 접속 확인
+```
+hostname
+nvidia-smi
+```
+* GPU : nvidia-l4가 보이면 정상
