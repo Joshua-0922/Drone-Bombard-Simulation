@@ -47,6 +47,25 @@ RUN pip3 install --upgrade pip && \
     pip3 install --no-cache-dir \
     numpy opencv-python scipy matplotlib
 
+# 5. uXRCE-DDS-Agent 빌드
+WORKDIR /opt
+
+RUN git clone https://github.com/eProsima/Micro-XRCE-DDS-Agent.git && \
+    cd Micro-XRCE-DDS-Agnet && \
+    mkdir build && cd build && \
+    cmake .. && \
+    make -j&(nproc) && \
+    sudo make install && \
+    sudo ldconfig /usr/local/lib/
+
+# 6. PX4-Autopilot 설치 (sitl)
+WORKDIR /opt
+
+RUN git clone --branch v.1.15.4 https://github.com/PX4/PX4-Autopilot.git --recursive \
+    bash ./PX4-Autopilot/Tools/setup/ubuntu.sh
+    cd PX4-Autopilot/
+    make px4_sitl gazebo-classic
+
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
