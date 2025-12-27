@@ -1,24 +1,24 @@
 FROM nvidia/cuda:12.6.2-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV LANG=en_US.UTF-8
-ENV LC_ALL=en_US.UTF-8
 
 # --------------------------------------------------
-# 1. 기본 시스템 패키지
+# 기본 툴
 # --------------------------------------------------
 RUN apt-get update && apt-get install -y \
     wget curl git vim nano \
     build-essential cmake \
-    python3 python3-pip \
+    python3 python3-pip python3-jinja2 python3-numpy \
+    python3-yaml python3-empy \
     locales lsb-release software-properties-common \
-    gpg ca-certificates \
-    sudo \
-    && locale-gen en_US.UTF-8 \
+    gpg \
     && rm -rf /var/lib/apt/lists/*
 
+RUN locale-gen en_US.UTF-8
+ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
+
 # --------------------------------------------------
-# 2. ROS2 Humble 설치
+# ROS2 Humble
 # --------------------------------------------------
 RUN add-apt-repository universe && \
     curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
@@ -34,46 +34,32 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # --------------------------------------------------
-# 3. Gazebo Classic 11 (PX4 v1.15.x 호환)
+# Gazebo Classic (PX4 v1.15.4 호환)
 # --------------------------------------------------
-RUN apt-get update && \
-    apt-get remove -y \
-        gz-harmonic \
-        gz-garden \
-        gz-fortress || true && \
-    apt-get install -y aptitude && \
-    aptitude install -y \
-        gazebo \
-        libgazebo11 \
-        libgazebo-dev && \
-    rm -rf /var/lib/apt/lists/*
-
-# OpenGL / X11 (Gazebo 필수)
 RUN apt-get update && apt-get install -y \
-    mesa-utils \
-    libgl1 \
-    libgl1-mesa-dri \
-    libx11-6 \
-    libxext6 \
-    libxrender1 \
-    libxtst6 \
+    gazebo \
+    libgazebo11 \
+    libgazebo-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # --------------------------------------------------
-# 4. Python 패키지
+# PX4 의존성 (ubuntu.sh 대체)
 # --------------------------------------------------
-RUN pip3 install --upgrade pip && \
-    pip3 install --no-cache-dir \
-        numpy \
-        scipy \
-        matplotlib \
-        opencv-python
+RUN apt-get update && apt-get install -y \
+    protobuf-compiler \
+    libeigen3-dev \
+    libxml2-dev \
+    libopencv-dev \
+    libcurl4-openssl-dev \
+    libtinyxml2-dev \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # --------------------------------------------------
-# 5. Micro XRCE-DDS Agent
+# uXRCE-DDS-Agent
 # --------------------------------------------------
 WORKDIR /opt
-
 RUN git clone https://github.com/eProsima/Micro-XRCE-DDS-Agent.git && \
     cd Micro-XRCE-DDS-Agent && \
     mkdir build && cd build && \
@@ -83,30 +69,16 @@ RUN git clone https://github.com/eProsima/Micro-XRCE-DDS-Agent.git && \
     ldconfig
 
 # --------------------------------------------------
-# 6. PX4-Autopilot v1.15.4 (gazebo-classic SITL)
+# PX4 Autopilot (clone only)
 # --------------------------------------------------
 WORKDIR /opt
-
-RUN git clone --recursive \
-    --branch v1.15.4 \
-    https://github.com/PX4/PX4-Autopilot.git
-
-# PX4 의존성 설치
-RUN bash /opt/PX4-Autopilot/Tools/setup/ubuntu.sh
+RUN git clone --recursive -b v1.15.4 https://github.com/PX4/PX4-Autopilot.git
 
 # --------------------------------------------------
-# 7. ROS2 환경 자동 로딩
+# ROS 환경
 # --------------------------------------------------
 SHELL ["/bin/bash", "-c"]
-RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc
-
-# --------------------------------------------------
-# 8. Entrypoint
-# --------------------------------------------------
-COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
 
 WORKDIR /workspace
-
-ENTRYPOINT ["/entrypoint.sh"]
 CMD ["bash"]
