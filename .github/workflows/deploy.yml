@@ -13,6 +13,16 @@ jobs:
       id-token: write
 
     steps:
+    
+    # 0. Clean Disk space
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/share/boost
+        docker system prune -af
+
     # 1. Repository checkout
     - name: Checkout repository
       uses: actions/checkout@v4
