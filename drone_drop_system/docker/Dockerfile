@@ -57,7 +57,18 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # --------------------------------------------------
-# uXRCE-DDS-Agent
+# PX4 빌드에 필요한 Python 패키지 (사전 설치)
+# --------------------------------------------------
+RUN pip3 install --no-cache-dir \
+    kconfiglib \
+    symforce \
+    pyros-genmsg \
+    jsonschema \
+    future \
+    pyserial
+
+# --------------------------------------------------
+# uXRCE-DDS-Agent (소스 빌드 유지)
 # --------------------------------------------------
 WORKDIR /opt
 RUN git clone https://github.com/eProsima/Micro-XRCE-DDS-Agent.git && \
@@ -69,13 +80,13 @@ RUN git clone https://github.com/eProsima/Micro-XRCE-DDS-Agent.git && \
     ldconfig
 
 # --------------------------------------------------
-# PX4 Autopilot (clone only)
+# PX4 Autopilot (캐시 최적화를 위해 맨 마지막)
 # --------------------------------------------------
 WORKDIR /opt
 RUN git clone --recursive -b v1.15.4 https://github.com/PX4/PX4-Autopilot.git
 
 # --------------------------------------------------
-# ROS 환경
+# ROS 환경 설정
 # --------------------------------------------------
 SHELL ["/bin/bash", "-c"]
 RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
