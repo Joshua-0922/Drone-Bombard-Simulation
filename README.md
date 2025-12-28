@@ -149,7 +149,8 @@ docker stop drone-bombard-dev-{username}
 ```
 docker rm drone-bombard-dev-{username}
 ```
-## 8. Github repository로 코드 반영(VM 기준)
+## 8. Github repository와 VM
+### 8.1 Github Repository로 코드 반영(VM기준)
 ```
 cd ~/Drone-Bombard-Simulation
 git status
@@ -158,6 +159,21 @@ git commit -m "Add ROS2 package"
 git pull --rebase
 git push
 ```
+### 8.2 Github Action에서 완성된 Image를 pull해서 VM에서 실행하는 방법
+1. Docker Image pull하기
+```
+cd /opt/drone_drop_system/Drone_Bombard_Simulation
+git pull --rebase
+gcloud auth configure-docker us-central1-docker.pkg.dev (최초 한번만)
+docker pull us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest
+```
+
+2. Image 기반으로 컨테이너 만들기
+```
+docker ps -a 
+docker rm -rf drone-bombard-dev-{$USERNAME} (이미 존재하는 컨테이너와 중복을 막기위해 삭제해야 할 때)
+```
+이후 docker 실행
 
 ## 9. 팀원 VM 접근 가이드
 ### 9.1 GCP 권한 부여
