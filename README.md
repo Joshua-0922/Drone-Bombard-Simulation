@@ -125,7 +125,7 @@ GitHub Repository
 ```
 docker run -it \
   --gpus all \
-  --name drone-bombard-dev-{username} \
+  --name drone-bombard-dev \
   -v /opt/drone-bombard/Drone-Bombard-Simulation/ros2_ws:/workspace/ros2_ws \
   -v ~/.cache:/root/.cache \
   us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest
