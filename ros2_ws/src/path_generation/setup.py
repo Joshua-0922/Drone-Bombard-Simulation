@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            circle_path = path_generation.circle_path:main
         ],
     },
 )

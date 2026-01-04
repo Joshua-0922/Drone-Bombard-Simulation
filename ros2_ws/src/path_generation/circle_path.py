@@ -8,7 +8,6 @@ from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand
 import math
 import numpy as np
 
-class CircleFlightNode(Node):
     def __init__(self):
         super().__init__('circle_flight_node')
 
