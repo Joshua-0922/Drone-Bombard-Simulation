@@ -66,6 +66,17 @@ RUN pip3 install --no-cache-dir \
     jsonschema \
     future \
     pyserial
+# --------------------------------------------------
+# [위치 이동] Claude Code 설치
+# (PX4보다 먼저 설치해야 빌드 캐시 효율이 좋습니다)
+# --------------------------------------------------
+# 1. Node.js 20.x (LTS) 설치 (curl은 이미 위에서 설치됨)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs
+
+# 2. Claude Code 전역 설치
+RUN npm install -g @anthropic-ai/claude-code
+
 
 # --------------------------------------------------
 # uXRCE-DDS-Agent (소스 빌드 유지)
