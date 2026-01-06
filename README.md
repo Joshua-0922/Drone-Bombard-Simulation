@@ -123,19 +123,27 @@ GitHub Repository
 ## 7. VM에서 Docker 실행 가이드
 ### 7.1. 최초 컨테이너 생성 
 ```
-docker run -it \
+docker run -it --rm \
   --gpus all \
+  --net=host \
+  --privileged \
   --name drone-bombard-dev \
+  --env="DISPLAY=:1.0" \
+  --env="QT_X11_NO_MITSHM=1" \
+  --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
   -v /opt/drone-bombard/Drone-Bombard-Simulation/ros2_ws:/workspace/ros2_ws \
   -v ~/.cache:/root/.cache \
-  us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest
+  us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest \
+  /bin/bash
 ```
 * {username}은 각자 user name 입력하기. 같은 이미지를 쓰되 사용자까리 컨테이너 분리
 * ros2_ws는 VM과 컨테이너 공유 볼륨
 * 컨테이너 삭제 전까지 데이터 유지
 
 ### 7.2 기존 컨테이너 재접속
+매번 접속하고 xhost +local:docker는 해줘야 한다.
 ```
+xhost +local:docker 
 docker start -ai drone-bombard-dev-{username}
 ```
 
@@ -225,9 +233,15 @@ PC, 태블릿, 휴대폰 어디서든 웹 브라우저만 있으면 접속 가�
 - **ID/PW:** (개별 전달받은 계정 사용) Discord / ide-server-cloud 참조
 
 ### 2. 접속 방법
-1. 위 URL로 접속하여 로그인
-2. **[모든연결]** 목록에 있는 **"dronebombard"** 아이콘을 클릭
-3. 잠시 기다리면 Ubuntu Desktop 화면 나타남
+1. Google Cloud Platform에서 VM 실행
+2. 웹 SSH에 들어가서 사용자 전환 및 VNC 실행
+```
+sudo su - ubuntu
+vncserver :1 -geometry 1920x1080 -localhost no
+```
+3. https://dronebombard.ddns.net/guacamole에 접속 후 로그인
+4. **[모든연결]** 목록에 있는 **"dronebombard"** 아이콘을 클릭
+5. 잠시 기다리면 Ubuntu Desktop 화면 나타남
 
 ### 3. ⚠️ 주의사항 (필독!)
 이 원격 데스크톱은 **"하나의 모니터를 다 같이 공유하는 방식"**
