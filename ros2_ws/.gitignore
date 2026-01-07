@@ -1,0 +1,41 @@
+# ======================
+# ROS2 / colcon
+# ======================
+build/
+install/
+log/
+
+# ======================
+# Python
+# ======================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ======================
+# VSCode / IDE
+# ======================
+.vscode/
+.idea/
+
+# ======================
+# CMake
+# ======================
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# ======================
+# Gazebo / Simulation
+# ======================
+*.log
+*.world~
+*.db
+
+# ======================
+# OS
+# ======================
+.DS_Store
+Thumbs.db

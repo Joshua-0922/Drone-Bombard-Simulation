@@ -1,0 +1,62 @@
+name: Build & Push Docker Image (Cached)
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    
+    # 0. Clean Disk space
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android
+        sudo rm -rf /opt/ghc
+        sudo rm -rf /usr/local/share/boost
+        docker system prune -af
+
+    # 1. Repository checkout
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    # 2. Authenticate to GCP (Service Account)
+    - name: Authenticate to GCP
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+    # 3. Set up gcloud CLI
+    - name: Set up gcloud
+      uses: google-github-actions/setup-gcloud@v2
+      with:
+        project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+    # 4. Configure Docker to use Artifact Registry
+    - name: Configure Docker
+      run: |
+        gcloud auth configure-docker \
+          ${{ secrets.GCP_REGION }}-docker.pkg.dev --quiet
+
+    # 5. Enable Docker Buildx (필수)
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    # 6. Build & Push with cache
+    - name: Build & Push Docker image (cached)
+      uses: docker/build-push-action@v6
+      with:
+        context: drone_drop_system
+        file: drone_drop_system/docker/Dockerfile
+        push: true
+        tags: |
+          ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GCP_REPOSITORY }}/drone-bombard:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
