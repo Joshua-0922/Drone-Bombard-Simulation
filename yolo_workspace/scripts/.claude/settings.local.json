@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cat:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(python3:*)",
+      "Bash(watch -n 5:*)",
+      "Bash(chmod:*)",
+      "Bash(systemctl:*)",
+      "Bash(dpkg:*)",
+      "Bash(apt update:*)",
+      "Bash(apt install:*)"
+    ]
+  }
+}
