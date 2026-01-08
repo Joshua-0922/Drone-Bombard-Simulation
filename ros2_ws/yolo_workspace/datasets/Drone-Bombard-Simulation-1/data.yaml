@@ -1,0 +1,12 @@
+names:
+- x_marker
+nc: 1
+roboflow:
+  license: CC BY 4.0
+  project: drone-bombard-simulation
+  url: https://universe.roboflow.com/test-lchnm/drone-bombard-simulation/dataset/1
+  version: 1
+  workspace: test-lchnm
+test: ../test/images
+train: ../train/images
+val: ../valid/images
