@@ -1,0 +1,20 @@
+drop_calculator_node:
+  ros__parameters:
+    # --- 물리 상수 ---
+    gravity: 9.81
+    
+    # --- 카메라 파라미터 (시뮬레이션/실제 카메라 스펙에 맞게 수정) ---
+    # f_y: 초점거리 (pixel 단위). 보통 (Height / 2) / tan(FOV/2)
+    # 640x480 해상도, FOV 90도 가정 시 f_y는 약 240
+    camera_fy: 240.0  
+    image_height: 480
+    
+    # --- 학습 대상 하이퍼파라미터 (Hyperparameters) ---
+    
+    # 투하 허용 오차 (미터)
+    # (예상 낙하 지점과 타겟 사이 거리가 이 값보다 작으면 투하)
+    drop_tolerance: 0.2
+    
+    # 시스템 지연 보정 (초)
+    # (명령을 보내고 실제 서보모터가 풀릴 때까지의 기계적 지연 시간)
+    mechanism_delay: 0.1
