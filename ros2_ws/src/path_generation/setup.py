@@ -1,4 +1,6 @@
 from setuptools import find_packages, setup
+import os
+from glob import glob
 
 package_name = 'path_generation'
 
@@ -10,6 +12,12 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+
+        # [추가] Launch 파일 설치 경로 지정
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+
+        # [추가] Config 파일 설치 경로 지정
+        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -24,7 +32,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'circle_path = path_generation.circle_path:main',
+            'generator = path_generation.path_generation_node:main',
         ],
     },
 )

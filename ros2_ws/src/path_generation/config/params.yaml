@@ -1,0 +1,21 @@
+path_generation_node:
+  ros__parameters:
+    # --- 목표 설정 ---
+    target_altitude: 10.0      # 목표 고도 (m)
+    image_width: 640
+    image_height: 480
+    
+    # --- 제어 이득 (PID Gains) - 학습 대상 ---
+    # Yaw 제어: 카메라 가로축(u) 중앙 정렬을 위함
+    kp_yaw: 0.002              
+    
+    # 전진 속도 제어: 타겟과의 거리에 비례하거나 고정 속도
+    # 지금은 "발견하면 접근한다"는 로직을 위해 사용
+    default_speed_x: 2.0       # 기본 전진 속도 (m/s)
+    
+    # 고도 제어: 목표 고도 유지
+    kp_altitude: 1.0           
+    
+    # --- 허용 오차 (Thresholds) ---
+    yaw_error_threshold: 0.1   # 라디안 (정렬됐다고 판단하는 기준)
+    alt_error_threshold: 0.2   # 미터
