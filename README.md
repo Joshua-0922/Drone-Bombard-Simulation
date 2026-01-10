@@ -123,7 +123,7 @@ GitHub Repository
 ## 7. VM에서 Docker 실행 가이드
 ### 7.1. 최초 컨테이너 생성 
 ```
-docker run -it --rm \
+docker run -itd \
   --gpus all \
   --net=host \
   --privileged \
@@ -133,6 +133,7 @@ docker run -it --rm \
   --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
   -v /opt/drone-bombard/Drone-Bombard-Simulation/ros2_ws:/workspace/ros2_ws \
   -v ~/.cache:/root/.cache \
+  -v "$(pwd)/claude_config:/root/.anthropic" \
   us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest \
   /bin/bash
 ```
