@@ -1,1 +1,55 @@
+# ======================
+# ROS2 / colcon
+# ======================
+build/
+install/
+log/
+
+# ======================
+# Python
+# ======================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# ======================
+# VSCode / IDE
+# ======================
+.vscode/
+.idea/
+
+# ======================
+# CMake
+# ======================
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# ======================
+# Gazebo / Simulation
+# ======================
+*.log
+*.world~
+*.db
+
+# ======================
+# OS
+# ======================
+.DS_Store
+Thumbs.db
+
+# ======================
+# YOLO / ML
+# ======================
+# YOLO datasets (can be re-downloaded)
+yolo_workspace/datasets/
+
+# Training checkpoints (keep only best.pt)
+yolo_workspace/runs/train/*/weights/epoch*.pt
+yolo_workspace/runs/train/*/weights/last.pt
+
+# Other training artifacts
+yolo_workspace/runs/train/drone_bombard_train/
 claude_config/
