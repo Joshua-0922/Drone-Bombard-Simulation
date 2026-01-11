@@ -33,6 +33,7 @@ setup(
     entry_points={
         'console_scripts': [
             'generator = path_generation.path_generation_node:main',
+            'circle_path = path_generation.circle_path:main',
         ],
     },
 )

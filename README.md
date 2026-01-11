@@ -88,27 +88,45 @@ GitHub Repository
 ```
 .
 ├── LICENSE
-├── README.md
-├── drone_drop_system        # 드론 투하 시뮬레이션 및 ML/CV 로직
-│   ├── docker               # Dockerfile, entrypoint, requirements
-│   ├── docs                 # 프로젝트 문서
-│   ├── models               # 학습된 모델 및 가중치
-│   ├── scripts              # 실험·유틸 스크립트
-│   ├── simulation           # 시뮬레이션 관련 코드
-│   └── src                  # 핵심 Python / C++ 소스
-└── ros2_ws                  # ROS2 전용 워크스페이스 (Git으로 관리)
-    └── src
-        └── path_generation  # ROS2 패키지 (실제 개발 대상)
+├── README.md                  # 개발 환경 가이드
+├── SYSTEM_ARCHITECTURE.md     # 시스템 아키텍처 및 기능 문서
+├── MODEL_INFO.md              # YOLO 모델 정보
+├── drone_drop_system/         # 드론 투하 시뮬레이션 및 ML/CV 로직
+│   └── docker/                # Dockerfile, entrypoint, requirements
+├── gazebo_models/             # Gazebo 시뮬레이션 모델
+│   ├── iris_bombard/          # 드론 모델
+│   ├── x_marker/              # X자 표식 모델
+│   └── worlds/                # 시뮬레이션 월드
+├── ros2_ws/                   # ROS2 전용 워크스페이스 (Git으로 관리)
+│   ├── src/                   # ROS2 패키지 소스
+│   │   ├── vision_detection/  # X자 표식 탐지 패키지
+│   │   ├── path_generation/   # 드론 경로 생성 패키지
+│   │   ├── drop_calculator/   # 투하 타이밍 계산 패키지
+│   │   ├── mechanism_controller/  # (개발 예정) 투하 메커니즘 제어
+│   │   └── px4_msgs/          # PX4 메시지 타입
+│   ├── yolo_workspace/        # YOLO 학습 관련
+│   │   ├── datasets/          # 학습 데이터셋
+│   │   ├── runs/              # 학습 결과
+│   │   └── scripts/           # 학습 스크립트
+│   ├── VISION_DETECTION_README.md  # vision_detection 패키지 가이드
+│   ├── setup_simulation.bash  # 시뮬레이션 환경 설정 스크립트
+│   └── test_vision_detection.sh    # Vision 테스트 스크립트
+└── drone_bombard_best.pt      # 학습된 YOLO 모델 (최적 가중치)
 ``` 
 
 디렉토리 역할 요약
-* drone_drop_system/
-  * Docker, 시뮬레이션, CV/ML 로직을 포함하는 메인 프로젝트 영역
-
-* ros2_ws/
+* `ros2_ws/`
   * ROS2 Humble 기준 워크스페이스
-  * src/ 아래에만 ROS2 패키지 생성
-  * build/, install/, log/는 로컬/컨테이너 빌드 산출물
+  * `src/` 아래에만 ROS2 패키지 생성
+  * `build/`, `install/`, `log/`는 로컬/컨테이너 빌드 산출물 (Git 관리 제외)
+
+* `gazebo_models/`
+  * Gazebo 시뮬레이션용 3D 모델 및 월드 파일
+
+* `yolo_workspace/`
+  * YOLO 모델 학습 및 평가 관련 파일
+
+**📖 시스템 아키텍처 및 기능에 대한 자세한 내용은 [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md)를 참고하세요.**
 
 ## 6.  Repository / VM / Container 역할
 | 구분 | 역할 |

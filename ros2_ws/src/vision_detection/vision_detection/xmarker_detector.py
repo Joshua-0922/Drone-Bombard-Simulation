@@ -130,6 +130,13 @@ class XMarkerDetectorNode(Node):
             qos_reliable
         )
 
+        # Publish pixel coordinates for path_generation and drop_calculator
+        self.pixel_coords_pub = self.create_publisher(
+            Point,
+            '/target/pixel_coords',
+            qos_reliable
+        )
+
         # Create timer for inference at specified rate
         timer_period = 1.0 / inference_rate
         self.timer = self.create_timer(timer_period, self.detect_callback)
@@ -376,6 +383,14 @@ class XMarkerDetectorNode(Node):
                 detection_msg.depth = depth_value
 
                 self.detection_pub.publish(detection_msg)
+
+            # Publish pixel coordinates for path_generation and drop_calculator
+            if detected:
+                pixel_coords_msg = Point()
+                pixel_coords_msg.x = float(bbox_center_x)  # u coordinate
+                pixel_coords_msg.y = float(bbox_center_y)  # v coordinate
+                pixel_coords_msg.z = 0.0
+                self.pixel_coords_pub.publish(pixel_coords_msg)
 
             # Publish annotated image
             annotated_msg = self.bridge.cv2_to_imgmsg(cv_image, 'bgr8')
