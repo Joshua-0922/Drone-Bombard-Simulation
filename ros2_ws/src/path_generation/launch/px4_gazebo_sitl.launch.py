@@ -17,9 +17,36 @@ def generate_launch_description():
     # Paths
     px4_dir = '/opt/PX4-Autopilot'
     px4_build_dir = os.path.join(px4_dir, 'build/px4_sitl_default')
-    gazebo_models = os.path.join(px4_dir, 'Tools/simulation/gazebo-classic/sitl_gazebo-classic/models')
-    gazebo_worlds = os.path.join(px4_dir, 'Tools/simulation/gazebo-classic/sitl_gazebo-classic/worlds')
+    px4_gazebo_models = os.path.join(px4_dir, 'Tools/simulation/gazebo-classic/sitl_gazebo-classic/models')
+    px4_gazebo_worlds = os.path.join(px4_dir, 'Tools/simulation/gazebo-classic/sitl_gazebo-classic/worlds')
     gazebo_plugins = os.path.join(px4_build_dir, 'build_gazebo-classic')
+    
+    # Custom gazebo_models from repository (if mounted)
+    # Try to find gazebo_models in common locations
+    repo_gazebo_models = None
+    repo_gazebo_models_parent = None
+    repo_gazebo_worlds = None
+    possible_paths = [
+        '/opt/drone-bombard/Drone-Bombard-Simulation/gazebo_models',
+        '/workspace/gazebo_models',
+        os.path.join(os.path.expanduser('~'), 'Drone-Bombard-Simulation/gazebo_models'),
+    ]
+    
+    for path in possible_paths:
+        if os.path.exists(path):
+            repo_gazebo_models = os.path.join(path, 'iris_bombard')
+            repo_gazebo_models_parent = path
+            repo_gazebo_worlds = os.path.join(path, 'worlds')
+            break
+    
+    # Combine model paths: custom models first, then PX4 default models
+    if repo_gazebo_models_parent:
+        gazebo_models = repo_gazebo_models_parent + ':' + px4_gazebo_models
+    else:
+        gazebo_models = px4_gazebo_models
+    
+    # Use custom world if available, otherwise use PX4 worlds
+    gazebo_worlds = repo_gazebo_worlds if repo_gazebo_worlds and os.path.exists(repo_gazebo_worlds) else px4_gazebo_worlds
 
     # Launch arguments
     world = LaunchConfiguration('world')
@@ -33,13 +60,13 @@ def generate_launch_description():
 
     declare_world = DeclareLaunchArgument(
         'world',
-        default_value='empty',
+        default_value='x_marker_test' if repo_gazebo_worlds and os.path.exists(os.path.join(repo_gazebo_worlds, 'x_marker_test.world')) else 'empty',
         description='Gazebo world name (without .world extension)'
     )
 
     declare_model = DeclareLaunchArgument(
         'model',
-        default_value='iris_downward_depth_camera',
+        default_value='iris_bombard' if repo_gazebo_models and os.path.exists(repo_gazebo_models) else 'iris_downward_depth_camera',
         description='PX4 vehicle model'
     )
 
@@ -118,7 +145,13 @@ def generate_launch_description():
     )
 
     # 4. Spawn Iris model using Gazebo ROS spawn_entity service (after delay)
-    model_sdf = PathJoinSubstitution([gazebo_models, model, [model, '.sdf']])
+    # Try custom model first, then fall back to PX4 models
+    if repo_gazebo_models and os.path.exists(os.path.join(repo_gazebo_models, model + '.sdf')):
+        model_sdf = os.path.join(repo_gazebo_models, model + '.sdf')
+    elif repo_gazebo_models and os.path.exists(os.path.join(repo_gazebo_models, 'iris_bombard.sdf')):
+        model_sdf = os.path.join(repo_gazebo_models, 'iris_bombard.sdf')
+    else:
+        model_sdf = PathJoinSubstitution([px4_gazebo_models, model, [model, '.sdf']])
 
     spawn_entity = Node(
         package='gazebo_ros',

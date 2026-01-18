@@ -150,6 +150,7 @@ docker run -itd \
   --env="QT_X11_NO_MITSHM=1" \
   --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
   -v /opt/drone-bombard/Drone-Bombard-Simulation/ros2_ws:/workspace/ros2_ws \
+  -v /opt/drone-bombard/Drone-Bombard-Simulation/gazebo_models:/workspace/gazebo_models \
   -v ~/.cache:/root/.cache \
   -v "$(pwd)/claude_config:/root/.anthropic" \
   us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest \
@@ -157,7 +158,13 @@ docker run -itd \
 ```
 * {username}은 각자 user name 입력하기. 같은 이미지를 쓰되 사용자까리 컨테이너 분리
 * ros2_ws는 VM과 컨테이너 공유 볼륨
+* **gazebo_models는 Gazebo 시뮬레이션 모델 및 월드 파일을 공유하는 볼륨 (추가됨)**
 * 컨테이너 삭제 전까지 데이터 유지
+
+#### 7.1.1. gazebo_models 볼륨 마운트 설명
+* `gazebo_models` 폴더에는 커스텀 드론 모델(`iris_bombard`)과 X 마커 모델, 테스트 월드 파일이 포함되어 있습니다.
+* 이 볼륨을 마운트하면 launch 파일이 자동으로 커스텀 모델을 인식하고 사용합니다.
+* 마운트하지 않아도 PX4 기본 모델로 동작하지만, 프로젝트의 커스텀 모델을 사용하려면 반드시 마운트해야 합니다.
 
 ### 7.2 기존 컨테이너 재접속
 매번 접속하고 xhost +local:docker는 해줘야 한다.
@@ -176,6 +183,33 @@ docker stop drone-bombard-dev-{username}
 ```
 docker rm drone-bombard-dev-{username}
 ```
+
+### 7.4 Gazebo 시뮬레이션 실행 방법
+컨테이너 내부에서 다음 명령어로 시뮬레이션을 실행할 수 있습니다:
+
+```bash
+# 컨테이너 접속
+docker exec -it drone-bombard-dev-{username} /bin/bash
+
+# 환경 설정
+cd /workspace/ros2_ws
+source setup_simulation.bash
+
+# 시뮬레이션 실행 (기본값: iris_bombard 모델, x_marker_test 월드)
+ros2 launch path_generation px4_gazebo_sitl.launch.py
+
+# 또는 옵션 지정하여 실행
+ros2 launch path_generation px4_gazebo_sitl.launch.py \
+    world:=x_marker_test \
+    model:=iris_bombard \
+    enable_vision:=true \
+    enable_path_generation:=true
+```
+
+**주요 변경사항:**
+* launch 파일이 자동으로 `gazebo_models` 폴더를 찾아 커스텀 모델을 사용합니다.
+* `gazebo_models` 볼륨이 마운트되어 있으면 `iris_bombard` 모델과 `x_marker_test` 월드가 기본값으로 설정됩니다.
+* 마운트되지 않아도 PX4 기본 모델로 정상 동작합니다 (하위 호환성 유지).
 ## 8. Github repository와 VM
 ### 8.1 Github Repository로 코드 반영(VM기준)
 ```
