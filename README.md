@@ -141,14 +141,21 @@ GitHub Repository
 ## 7. VM에서 Docker 실행 가이드
 ### 7.1. 최초 컨테이너 생성 
 ```
+# 1. (필수) 호스트에서 화면 권한 허용 (실행 전 1회)
+xhost +local:docker
+
+# 2. 컨테이너 실행
 docker run -itd \
   --gpus all \
   --net=host \
   --privileged \
+  --ipc=host \
   --name drone-bombard-dev \
-  --env="DISPLAY=:1.0" \
+  --env="DISPLAY=$DISPLAY" \
   --env="QT_X11_NO_MITSHM=1" \
+  --env="NVIDIA_DRIVER_CAPABILITIES=all" \
   --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
+  --volume="$HOME/.Xauthority:/root/.Xauthority:rw" \
   -v /opt/drone-bombard/Drone-Bombard-Simulation/ros2_ws:/workspace/ros2_ws \
   -v /opt/drone-bombard/Drone-Bombard-Simulation/gazebo_models:/workspace/gazebo_models \
   -v ~/.cache:/root/.cache \

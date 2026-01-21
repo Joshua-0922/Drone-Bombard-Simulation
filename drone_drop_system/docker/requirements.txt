@@ -24,3 +24,10 @@ pillow
 # --- Utility ---
 pytest
 pydantic
+
+kconfiglib
+symforce
+pyros-genmsg
+jsonschema
+future
+pyserial
