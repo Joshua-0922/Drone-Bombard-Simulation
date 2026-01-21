@@ -53,8 +53,9 @@ jobs:
     - name: Build & Push Docker image (cached)
       uses: docker/build-push-action@v6
       with:
-        context: drone_drop_system
+        context: drone_drop_system/docker
         file: drone_drop_system/docker/Dockerfile
+        
         push: true
         tags: |
           ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GCP_REPOSITORY }}/drone-bombard:latest
