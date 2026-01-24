@@ -1,5 +1,5 @@
 # --- Core Python packages ---
-numpy
+numpy<2.0
 scipy
 matplotlib
 tqdm
@@ -10,8 +10,8 @@ pyyaml
 # torch, torchvision, torchaudio → 설치 제거
 
 # --- Computer Vision ---
-opencv-python # OK
-# opencv-contrib-python  # ❌설치 충돌 가능성 높음 → 주석처리
+opencv-python
+ultralytics       # YOLOv8 (Torch ?? ??)
 
 # --- ROS2 Python interface ---
 # rclpy  # ❌ROS2 Humble Desktop에 포함됨 → pip 설치 금지
@@ -24,10 +24,11 @@ pillow
 # --- Utility ---
 pytest
 pydantic
+future
+pyserial
 
+# --- PX4 & Build Tools ---
 kconfiglib
 symforce
 pyros-genmsg
 jsonschema
-future
-pyserial

@@ -32,7 +32,6 @@ install(DIRECTORY vision_detection/
 
 # Install Python executables
 install(PROGRAMS
-  vision_detection/xmarker_detector.py
   vision_detection/monocamera_xmarker_detector.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME xmarker_detector

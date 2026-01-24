@@ -12,24 +12,11 @@
       <uri>model://ground_plane</uri>
     </include>
 
-    <!-- X-marker at origin (0, 0) -->
-    <include>
-      <uri>model://x_marker</uri>
-      <name>x_marker_1</name>
-      <pose>0 0 0 0 0 0</pose>
-    </include>
-
     <!-- Additional X-markers at different positions for testing -->
     <include>
       <uri>model://x_marker</uri>
       <name>x_marker_2</name>
       <pose>5 5 0 0 0 0</pose>
-    </include>
-
-    <include>
-      <uri>model://x_marker</uri>
-      <name>x_marker_3</name>
-      <pose>-5 5 0 0 0 0</pose>
     </include>
 
     <physics name='default_physics' default='0' type='ode'>
