@@ -348,10 +348,9 @@
     </joint>
 
     <link name='payload_link'>
-      <pose>0 0 -0.06 0 0 0</pose>
+      <pose>0 0 -0.15 0 0 0</pose>
       <inertial>
-        <mass>0.1</mass>
-        <inertia>
+        <mass>0.1</mass> <inertia>
           <ixx>0.0001</ixx><ixy>0</ixy><ixz>0</ixz>
           <iyy>0.0001</iyy><iyz>0</iyz>
           <izz>0.0001</izz>
@@ -359,7 +358,7 @@
       </inertial>
       <visual name='payload_visual'>
         <geometry>
-          <cylinder><radius>0.03</radius><length>0.01</length></cylinder>
+           <sphere><radius>0.03</radius></sphere>
         </geometry>
         <material>
           <script>
@@ -370,18 +369,40 @@
       </visual>
       <collision name='payload_collision'>
         <geometry>
-          <cylinder><radius>0.03</radius><length>0.05</length></cylinder>
+           <sphere><radius>0.03</radius></sphere>
         </geometry>
+        <surface>
+          <friction>
+            <ode>
+              <mu>100.0</mu>
+              <mu2>100.0</mu2>
+            </ode>
+          </friction>
+          <contact>
+            <ode>
+              <kp>10000000.0</kp>
+              <kd>1.0</kd>
+            </ode>
+          </contact>
+        </surface>
       </collision>
     </link>
 
-    <joint name='payload_joint' type='fixed'>
-      <parent>base_link</parent>
-      <child>payload_link</child>
-    </joint>
+    <plugin name="gazebo_ros_vacuum_gripper" filename="libgazebo_ros_vacuum_gripper.so">
+      <ros>
+        <namespace>/drone</namespace> 
+        <remapping>switch:=payload/drop_cmd_raw</remapping>
+      </ros>
 
-    <plugin name="payload_detach" filename="libgazebo_ros_detach.so">
-      <ros><namespace>/iris</namespace></ros> <target_link>payload_link</target_link>
-      <target_model>iris</target_model> </plugin>
-  </model>
+      <link_name>base_link</link_name>
+
+      <collision_name>payload_collision</collision_name>
+
+      <vacuum_powered_on_start>true</vacuum_powered_on_start>
+
+      <max_force>100.0</max_force>
+      <fixed>false</fixed>
+    </plugin>
+    
+    </model>
 </sdf>

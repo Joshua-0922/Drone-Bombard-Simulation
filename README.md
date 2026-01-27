@@ -1,7 +1,19 @@
 # Vision-Based Drone System
 
 ## 1. Project Overview
-Vision Based Drone Bombard System은 카메라 기반 지상 타겟 인식 후 투하 지점을 계산하여 시뮬레이션 환경에서 투하 임무를 수행하는 자율비행 기능을 목표로 한다.
+본 프로젝트는 사전에 적의 정확한 좌표를 알지 못하는 상황에서, 드론이 지정된 경로를 **순항(Cruise)**하던 중 목표물(X Marker)을 **식별(Detection)**하면 즉시 경로를 변경하여 **정밀 추적(Terminal Guidance)** 및 **공중 투하(Air Drop)**를 수행하는 자율 비행 시스템입니다.
+
+1.  **Phase 1: 순항 (Cruise Mode)**
+    * 드론은 10m 고도를 유지하며 사전 정의된 전술 경로(예: 북쪽 방향 직진)로 비행합니다.
+    * 이 단계에서는 광역 탐색을 수행하며, GPS 기반의 웨이포인트 비행을 합니다.
+2.  **Phase 2: 요격 전환 (Intercept Transition)**
+    * 하방 카메라가 목표물('X' 표식)을 감지하는 즉시 순항 모드를 중단합니다.
+    * 제어권을 Mission Manager에서 추적 알고리즘(Visual Servoing/RL)으로 넘깁니다.
+3.  **Phase 3: 정밀 유도 (Terminal Guidance)**
+    * GPS 좌표가 아닌 카메라 영상 내 타겟 위치(Pixel Error)를 기반으로 비행합니다.
+    * 드론의 속도 벡터를 타겟 방향으로 지속적으로 수정하며 접근합니다 (Bank-to-Turn).
+4.  **Phase 4: 동적 투하 (Dynamic Drop)**
+    * 타겟 상공 도달 및 투하 조건(탄도학적 계산) 만족 시 페이로드를 투하합니다.
 
 ## 2. Operating Principles
 Warning: GCP VM은 사용자 계정별 홈 디렉토리가 분리되어 있다.

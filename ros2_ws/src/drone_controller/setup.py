@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'controller = drone_controller.drone_controller.drone_controller_node:main',
         ],
     },
 )
