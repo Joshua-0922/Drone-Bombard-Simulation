@@ -39,7 +39,7 @@ class MissionManagerNode(Node):
         # --- [3] Subscribers ---
         # 1. 시각 정보 (X 마커 픽셀 좌표)
         self.vision_sub = self.create_subscription(
-            Point, '/vision/target_pixel', self.vision_callback, 10)
+            Point, '/target/pixel_coords', self.vision_callback, 10)
         
         # 2. 투하 완료 신호
         self.drop_sub = self.create_subscription(
