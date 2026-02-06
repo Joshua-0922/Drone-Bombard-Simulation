@@ -9,7 +9,7 @@ def generate_launch_description():
             package='vision_detection',
             # 중요: CMakeLists.txt 설정에 따라 .py가 붙을 수도, 안 붙을 수도 있습니다.
             # 만약 "executable not found" 에러가 나면 '.py'를 붙여보세요.
-            executable='monocamera_xmarker_detector.py', 
+            executable='xmarker_detector', 
             name='xmarker_detector',
             output='screen',
             parameters=[
