@@ -23,6 +23,7 @@ class MissionManagerNode(Node):
         # --- [1] 파라미터 ---
         self.target_altitude = 10.0   # 순항 고도 10m
         self.cruise_speed_x = 1.0     # 순항 속도 (m/s)
+        self.cruise_speed_y = 1.0     # 순항 속도 (m/s)
         self.search_direction = 'X'   # X축(북쪽)으로 직진
         
         # --- [2] Publishers ---
@@ -129,6 +130,7 @@ class MissionManagerNode(Node):
             # --- [행동] 앞으로 직진 (North) ---
             # 0.1초마다 조금씩 목표 지점을 갱신하여 앞으로 밀고 나감
             self.cruise_target_x += (self.cruise_speed_x * 0.1)
+            self.cruise_target_y += (self.cruise_speed_y * 0.1)
             
             # ROS 좌표계 (x=앞, y=왼쪽, z=위)
             self.send_position_cmd(self.cruise_target_x, 0.0, self.target_altitude)
