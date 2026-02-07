@@ -133,7 +133,7 @@ class MissionManagerNode(Node):
             self.cruise_target_y += (self.cruise_speed_y * 0.1)
             
             # ROS 좌표계 (x=앞, y=왼쪽, z=위)
-            self.send_position_cmd(self.cruise_target_x, 0.0, self.target_altitude)
+            self.send_position_cmd(self.cruise_target_x, self.cruise_target_y, self.target_altitude)
 
         elif self.state == STATE_TRACK:
             # --- [이벤트] 타겟을 놓쳤다면? ---
@@ -142,6 +142,7 @@ class MissionManagerNode(Node):
                 self.state = STATE_CRUISE
                 # 다시 현재 위치부터 순항 시작
                 self.cruise_target_x = self.current_pos[0] 
+                self.cruise_target_y = self.current_pos[1]
                 return
             
             # --- [이벤트] 투하 완료? ---
