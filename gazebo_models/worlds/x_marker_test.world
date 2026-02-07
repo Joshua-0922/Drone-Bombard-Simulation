@@ -16,7 +16,7 @@
     <include>
       <uri>model://x_marker</uri>
       <name>x_marker_2</name>
-      <pose>13 10 0 0 0 0</pose>
+      <pose>11 10 0 0 0 0</pose>
     </include>
 
     <physics name='default_physics' default='0' type='ode'>
