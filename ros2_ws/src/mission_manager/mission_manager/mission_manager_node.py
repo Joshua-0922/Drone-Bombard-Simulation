@@ -26,7 +26,7 @@ class MissionManagerNode(Node):
         
         # (1, 1) 방향으로 움직이게 설정
         self.cruise_speed_x = 1.0     # 북쪽(X) 속도 (m/s)
-        self.cruise_speed_y = 1.0     # 동쪽(Y) 속도 (m/s)
+        self.cruise_speed_y = -1.0     # 동쪽(Y) 속도 (m/s)
         
         # --- [2] Publishers ---
         self.pos_pub = self.create_publisher(Vector3, '/drone/cmd/position', 10)
