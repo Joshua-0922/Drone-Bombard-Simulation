@@ -328,3 +328,31 @@ vncserver :1 -geometry 1920x1080 -localhost no
 - **한영 전환:** (설정한 방식에 따라 기입, 예: Shift+Space 또는 한영키)
 - **클립보드 복사/붙여넣기:** - `Ctrl+Alt+Shift`를 누르면 Guacamole 메뉴가 열림
     - 여기서 클립보드 내용을 입력해야 VM 내부로 텍스트가 전달됨
+
+
+## 11. 노드 통합(Launch) 실행
+모든 터미널을 container를 열어서 실행한다
+```
+docker exec -it drone-bombard-dev bash
+```
+
+### Termianl 1
+```
+MicroXRCEAgent udp4 -p 8888
+```
+
+### Termianl 2
+VM 상에서 GUI가 느리기 때문에, gazebo를 실행하고 바로 최소 크기로 화면을 줄여야 한다
+```
+cd /opt/PX4-Autopilot
+make px4_sitl gazebo-classic
+```
+
+### Terminal 3
+mission_manager, drone_controller, vision_detection 패키지의 노드 실행 파일을 하나의 launch파일로 제작하였다
+Launch file은 최상위 노드인 mission_manager/launch에 존재한다.
+```
+cd /opt/ros2_ws/
+ros2 launch mission_manager drone_mission.launch.py
+```
+* 추후 rl_navigation도 같이 추가할 예정
