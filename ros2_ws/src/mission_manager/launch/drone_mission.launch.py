@@ -29,8 +29,24 @@ def generate_launch_description():
         # 3. Drone Controller Node (Python 패키지)
         Node(
             package='drone_controller', # 패키지 이름
-            executable='controller',    # ★ setup.py에서 'controller =' 라고 정의했으므로 이게 실행 이름임
+            executable='controller',    # setup.py에서 'controller =' 라고 정의했으므로 이게 실행 이름임
             name='drone_controller',
+            output='screen'
+        ),
+
+        # 4. RL Navigation Node (추가됨)
+        Node(
+            package='rl_navigation', 
+            executable='rl_navigation_node',  # setup.py의 'rl_navigation_node ='
+            name='rl_navigation',
+            output='screen'
+        ),
+
+        # 5. Drop Calculator Node - 심판 (추가됨)
+        Node(
+            package='drop_calculator', 
+            executable='calculator',          # setup.py의 'calculator ='
+            name='drop_calculator',
             output='screen'
         ),
     ])
