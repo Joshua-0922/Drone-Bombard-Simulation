@@ -401,7 +401,7 @@
       <vacuum_powered_on_start>true</vacuum_powered_on_start>
 
       <max_force>100.0</max_force>
-      <fixed>false</fixed>
+      <fixed>true</fixed>
     </plugin>
     
     </model>
