@@ -2,7 +2,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point, Twist
-from std_msgs.msg import String, Bool
+from std_msgs.msg import String
 from std_srvs.srv import SetBool   
 
 class RLNavigationNode(Node):
@@ -26,13 +26,11 @@ class RLNavigationNode(Node):
         # --- Service Client ---
         self.vacuum_client = self.create_client(SetBool, '/drone/payload/drop_cmd_raw')
         
-        # [주의] 가제보가 켜져있지 않으면 여기서 영원히 대기할 수 있습니다.
-        # 테스트 시 반드시 가제보를 먼저 켜주세요.
-        while not self.vacuum_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn('Waiting for vacuum service...')
+        # [수정] 여기서 wait_for_service로 무한 대기하지 않습니다! 
+        # 서비스가 없어도 일단 노드는 켜져야 드론이 날아갑니다.
         
         self.timer = self.create_timer(0.1, self.control_loop)
-        self.get_logger().info("Simple Agent Ready!")
+        self.get_logger().info("Simple Agent Ready! (Non-blocking mode)")
 
     def state_callback(self, msg):
         self.mission_state = msg.data
@@ -44,38 +42,37 @@ class RLNavigationNode(Node):
             self.target_visible = False
 
     def control_loop(self):
-        # 1. TRACKING 상태가 아니면 아무것도 안 함 (투하 여부는 여기서 체크하지 않음!)
+        # 1. TRACKING 상태가 아니면 대기
         if self.mission_state != "TRACKING":
             return
 
         # ---------------------------------------------------------
-        # 2. 기본 동작: 무조건 앞으로 전진 (투하 했든 안 했든 계속 전진)
+        # [중요] 서비스 연결 여부와 상관없이 무조건 전진 명령!
         # ---------------------------------------------------------
         forward_vel = Twist()
         forward_vel.linear.x = 2.0  
         self.vel_pub.publish(forward_vel)
 
         # ---------------------------------------------------------
-        # 3. 투하 로직 (타겟 보임 + 아직 투하 안 함)
+        # 2. 투하 로직 (서비스가 살아있을 때만 시도)
         # ---------------------------------------------------------
         if self.target_visible and not self.has_dropped:
-            self.get_logger().warn("RL Agent: Target Spotted! Dropping Payload NOW!")
             
-            # 서비스 요청 (Vacuum OFF)
-            request = SetBool.Request()
-            request.data = False 
-            
-            # 비동기 호출
-            self.vacuum_client.call_async(request)
-            
-            self.has_dropped = True
-        
-        # ---------------------------------------------------------
-        # 4. 투하 후 상태 로그
-        # ---------------------------------------------------------
+            # 서비스가 준비되었는지 0.1초만 살짝 체크
+            if self.vacuum_client.service_is_ready():
+                self.get_logger().warn("🎯 Target Found! Sending DROP command!")
+                
+                request = SetBool.Request()
+                request.data = False 
+                self.vacuum_client.call_async(request)
+                self.has_dropped = True
+            else:
+                # 서비스가 안 보여도 멈추지 말고 로그만 띄우고 지나감
+                self.get_logger().error("⚠️ Cannot drop! Service not ready. Flying pass...")
+                # (옵션) 여기서 has_dropped = True를 안 하면 계속 시도함
+
         if self.has_dropped:
-            # 투하 후에도 위에서 forward_vel을 계속 보내고 있으므로 잘 날아갑니다.
-            self.get_logger().info("Payload Dropped. Flying away...", throttle_duration_sec=1.0)
+            self.get_logger().info("Mission Complete. Flying away...", throttle_duration_sec=1.0)
 
 def main(args=None):
     rclpy.init(args=args)
