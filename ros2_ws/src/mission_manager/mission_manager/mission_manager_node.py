@@ -130,6 +130,9 @@ class MissionManagerNode(Node):
             if not self.target_visible:
                 self.get_logger().info("Target Lost... Resuming Search.")
                 self.state = STATE_CRUISE
+
+                time.sleep(0.5) # 잠시 대기 후 순항 재개 (필요시 조절)
+
                 self.cruise_target_x = self.current_pos[0]
                 self.cruise_target_y = self.current_pos[1]
                 return
