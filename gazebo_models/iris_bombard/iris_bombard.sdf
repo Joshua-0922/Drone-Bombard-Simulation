@@ -360,7 +360,7 @@
 
       <visual name='payload_visual'>
         <geometry>
-           <sphere><radius>0.03</radius></sphere>
+           <sphere><radius>0.02</radius></sphere>
         </geometry>
         <material>
           <script>
@@ -372,7 +372,7 @@
       
       <collision name='payload_collision'>
         <geometry>
-           <sphere><radius>0.03</radius></sphere>
+           <sphere><radius>0.02</radius></sphere>
         </geometry>
         <surface>
           <friction>
