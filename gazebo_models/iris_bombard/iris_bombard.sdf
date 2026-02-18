@@ -348,7 +348,7 @@
     </joint>
 
     <link name='payload_link'>
-      <pose>0 0 -0.085 0 0 0</pose>
+      <pose>0 0 -0.065 0 0 0</pose>
       <inertial>
         <mass>0.1</mass> 
         <inertia>
