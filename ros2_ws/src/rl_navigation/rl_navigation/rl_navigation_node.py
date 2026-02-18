@@ -26,9 +26,15 @@ class RLNavigationNode(Node):
         # --- Service Client ---
         self.vacuum_client = self.create_client(SetBool, '/drone/payload/drop_cmd_raw')
         
+        while not self.vacuum_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn('Waiting for vacuum service to start...')
         # [수정] 여기서 wait_for_service로 무한 대기하지 않습니다! 
         # 서비스가 없어도 일단 노드는 켜져야 드론이 날아갑니다.
-        
+        self.get_logger().info("🔌 Initializing Gripper: Holding Payload...")
+        hold_req = SetBool.Request()
+        hold_req.data = True  # True = 켜기 (잡기)
+        self.vacuum_client.call_async(hold_req)
+
         self.timer = self.create_timer(0.1, self.control_loop)
         self.get_logger().info("Simple Agent Ready! (Non-blocking mode)")
 
