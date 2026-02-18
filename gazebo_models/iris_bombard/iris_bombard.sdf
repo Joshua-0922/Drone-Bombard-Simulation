@@ -348,14 +348,16 @@
     </joint>
 
     <link name='payload_link'>
-      <pose>0 0 -0.15 0 0 0</pose>
+      <pose>0 0 -0.085 0 0 0</pose>
       <inertial>
-        <mass>0.1</mass> <inertia>
+        <mass>0.1</mass> 
+        <inertia>
           <ixx>0.0001</ixx><ixy>0</ixy><ixz>0</ixz>
           <iyy>0.0001</iyy><iyz>0</iyz>
           <izz>0.0001</izz>
         </inertia>
       </inertial>
+
       <visual name='payload_visual'>
         <geometry>
            <sphere><radius>0.03</radius></sphere>
@@ -367,6 +369,7 @@
           </script>
         </material>
       </visual>
+      
       <collision name='payload_collision'>
         <geometry>
            <sphere><radius>0.03</radius></sphere>
@@ -393,16 +396,22 @@
         <namespace>/drone</namespace> 
         <remapping>switch:=payload/drop_cmd_raw</remapping>
       </ros>
-
       <link_name>base_link</link_name>
-
-      <collision_name>payload_collision</collision_name>
-
-      <vacuum_powered_on_start>true</vacuum_powered_on_start>
-
+      
       <max_force>1000.0</max_force>
       <fixed>true</fixed>
+
+      <vacuum_powered_on_start>true</vacuum_powered_on_start>
     </plugin>
-    
+
+    <plugin name="payload_ground_truth" filename="libgazebo_ros_p3d.so">
+      <ros>
+        <namespace>/drone</namespace>
+        <remapping>odom:=payload/position</remapping>
+      </ros>
+      <body_name>payload_link</body_name>
+      <frame_name>world</frame_name>
+      <update_rate>10.0</update_rate> 
+    </plugin>
   </model>
 </sdf>
