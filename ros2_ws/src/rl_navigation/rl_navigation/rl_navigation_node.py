@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-
 from geometry_msgs.msg import Point, Twist
 from std_msgs.msg import String, Bool
+from std_srvs.srv import SetBool   
 
 class RLNavigationNode(Node):
     def __init__(self):
@@ -14,63 +14,67 @@ class RLNavigationNode(Node):
         self.has_dropped = False
 
         # --- Subscribers ---
-        # 1. 미션 상태 수신
         self.state_sub = self.create_subscription(
             String, '/mission/state', self.state_callback, 10)
         
-        # 2. X 마커 시각 정보 수신
         self.vision_sub = self.create_subscription(
             Point, '/target/pixel_coords', self.vision_callback, 10)
 
         # --- Publishers ---
-        # 1. 속도 제어
         self.vel_pub = self.create_publisher(Twist, '/drone/cmd/velocity', 10)
         
-        # 2. 진공 그립퍼 직접 제어 (투하)
-        self.vacuum_pub = self.create_publisher(Bool, '/drone/payload/drop_cmd_raw', 10)
-
-        # 10Hz 루프
+        # --- Service Client ---
+        self.vacuum_client = self.create_client(SetBool, '/drone/payload/drop_cmd_raw')
+        
+        # [주의] 가제보가 켜져있지 않으면 여기서 영원히 대기할 수 있습니다.
+        # 테스트 시 반드시 가제보를 먼저 켜주세요.
+        while not self.vacuum_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn('Waiting for vacuum service...')
+        
         self.timer = self.create_timer(0.1, self.control_loop)
-        self.get_logger().info("Simple Agent Ready! (Will drop immediately on sight)")
+        self.get_logger().info("Simple Agent Ready!")
 
     def state_callback(self, msg):
         self.mission_state = msg.data
 
     def vision_callback(self, msg):
-        if msg.z > 0: # confidence가 0보다 크면 감지된 것
+        if msg.z > 0: 
             self.target_visible = True
         else:
             self.target_visible = False
 
     def control_loop(self):
-        # Mission Manager가 제어권을 주지 않았거나 이미 투하했으면 대기
-        if self.mission_state != "TRACKING" or self.has_dropped:
+        # 1. TRACKING 상태가 아니면 아무것도 안 함 (투하 여부는 여기서 체크하지 않음!)
+        if self.mission_state != "TRACKING":
             return
+
         # ---------------------------------------------------------
-        # 1. TRACKING 상태 진입 시: 무조건 앞으로 전진 (예: 2.0 m/s)
+        # 2. 기본 동작: 무조건 앞으로 전진 (투하 했든 안 했든 계속 전진)
         # ---------------------------------------------------------
         forward_vel = Twist()
-        forward_vel.linear.x = 2.0  # 과장님 시스템에 맞는 전진 속도로 조절하세요
+        forward_vel.linear.x = 2.0  
         self.vel_pub.publish(forward_vel)
+
         # ---------------------------------------------------------
-        # 2. 전진 중 타겟이 보이면: 멈추지 않고 즉시 투하!
+        # 3. 투하 로직 (타겟 보임 + 아직 투하 안 함)
         # ---------------------------------------------------------
-        if self.target_visible:
-            self.get_logger().warn("RL Agent: Target Spotted! Dropping Payload NOW while moving!")
+        if self.target_visible and not self.has_dropped:
+            self.get_logger().warn("RL Agent: Target Spotted! Dropping Payload NOW!")
             
-
-            for _ in range(5):
-                msg = Bool()
-                msg.data = False
-                self.vacuum_pub.publish(msg)
-
-            # 투하 완료 처리 (이제 더 이상 투하 신호를 주지 않음)
+            # 서비스 요청 (Vacuum OFF)
+            request = SetBool.Request()
+            request.data = False 
+            
+            # 비동기 호출
+            self.vacuum_client.call_async(request)
+            
             self.has_dropped = True
-            
-            # 주의: 투하 후에도 forward_vel.linear.x = 2.0은 계속 유지되므로 드론은 지나쳐 날아갑니다.
         
+        # ---------------------------------------------------------
+        # 4. 투하 후 상태 로그
+        # ---------------------------------------------------------
         if self.has_dropped:
-            # 투하 후에도 계속 전진 (필요시 속도 조절 가능)
+            # 투하 후에도 위에서 forward_vel을 계속 보내고 있으므로 잘 날아갑니다.
             self.get_logger().info("Payload Dropped. Flying away...", throttle_duration_sec=1.0)
 
 def main(args=None):
