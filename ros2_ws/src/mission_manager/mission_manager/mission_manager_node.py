@@ -135,8 +135,9 @@ class MissionManagerNode(Node):
                 return
             
             # 추적 (Visual Servoing)
-            self.run_visual_servoing()
-
+            # self.run_visual_servoing()
+            pass
+        
         elif self.state == STATE_DROP:
             # 정지 (Hover)
             self.send_velocity_cmd(0.0, 0.0, 0.0, 0.0)

@@ -279,7 +279,7 @@ class XMarkerDetectorNode(Node):
                 pixel_coords_msg = Point()
                 pixel_coords_msg.x = float(bbox_center_x)
                 pixel_coords_msg.y = float(bbox_center_y)
-                pixel_coords_msg.z = 0.0
+                pixel_coords_msg.z = float(confidence)
                 self.pixel_coords_pub.publish(pixel_coords_msg)
 
             annotated_msg = self.bridge.cv2_to_imgmsg(cv_image, 'bgr8')

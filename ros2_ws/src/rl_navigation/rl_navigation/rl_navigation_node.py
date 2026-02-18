@@ -46,20 +46,29 @@ class RLNavigationNode(Node):
         # Mission Manager가 제어권을 주지 않았거나 이미 투하했으면 대기
         if self.mission_state != "TRACKING" or self.has_dropped:
             return
-
-        # TRACKING 상태이고 타겟이 보이면 즉시 투하!
+        # ---------------------------------------------------------
+        # 1. TRACKING 상태 진입 시: 무조건 앞으로 전진 (예: 2.0 m/s)
+        # ---------------------------------------------------------
+        forward_vel = Twist()
+        forward_vel.linear.x = 2.0  # 과장님 시스템에 맞는 전진 속도로 조절하세요
+        self.vel_pub.publish(forward_vel)
+        # ---------------------------------------------------------
+        # 2. 전진 중 타겟이 보이면: 멈추지 않고 즉시 투하!
+        # ---------------------------------------------------------
         if self.target_visible:
-            self.get_logger().warn("RL Agent: Target Spotted! Dropping Payload NOW!")
-            
-            # 드론 제자리 정지
-            self.vel_pub.publish(Twist()) 
+            self.get_logger().warn("RL Agent: Target Spotted! Dropping Payload NOW while moving!")
             
             # 진공 그립퍼 끄기 (False = Drop)
             msg = Bool()
             msg.data = False
+
+            # 플러그인이 신호를 놓치지 않게 확실하게 퍼블리시
             self.vacuum_pub.publish(msg)
             
+            # 투하 완료 처리 (이제 더 이상 투하 신호를 주지 않음)
             self.has_dropped = True
+            
+            # 주의: 투하 후에도 forward_vel.linear.x = 2.0은 계속 유지되므로 드론은 지나쳐 날아갑니다.
 
 def main(args=None):
     rclpy.init(args=args)
