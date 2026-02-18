@@ -348,7 +348,7 @@
     </joint>
 
     <link name='payload_link'>
-      <pose>0 0 -0.065 0 0 0</pose>
+      <pose>0 0 -0.06 0 0 0</pose>
       <inertial>
         <mass>0.1</mass> 
         <inertia>
@@ -360,7 +360,10 @@
 
       <visual name='payload_visual'>
         <geometry>
-           <sphere><radius>0.02</radius></sphere>
+           <cylinder>
+             <radius>0.03</radius>
+             <length>0.02</length>
+           </cylinder>
         </geometry>
         <material>
           <script>
@@ -372,7 +375,10 @@
       
       <collision name='payload_collision'>
         <geometry>
-           <sphere><radius>0.02</radius></sphere>
+           <cylinder>
+             <radius>0.03</radius>
+             <length>0.02</length>
+           </cylinder>
         </geometry>
         <surface>
           <friction>
