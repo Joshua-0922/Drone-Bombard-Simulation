@@ -58,17 +58,20 @@ class RLNavigationNode(Node):
         if self.target_visible:
             self.get_logger().warn("RL Agent: Target Spotted! Dropping Payload NOW while moving!")
             
-            # 진공 그립퍼 끄기 (False = Drop)
-            msg = Bool()
-            msg.data = False
 
-            # 플러그인이 신호를 놓치지 않게 확실하게 퍼블리시
-            self.vacuum_pub.publish(msg)
-            
+            for _ in range(5):
+                msg = Bool()
+                msg.data = False
+                self.vacuum_pub.publish(msg)
+
             # 투하 완료 처리 (이제 더 이상 투하 신호를 주지 않음)
             self.has_dropped = True
             
             # 주의: 투하 후에도 forward_vel.linear.x = 2.0은 계속 유지되므로 드론은 지나쳐 날아갑니다.
+        
+        if self.has_dropped:
+            # 투하 후에도 계속 전진 (필요시 속도 조절 가능)
+            self.get_logger().info("Payload Dropped. Flying away...", throttle_duration_sec=1.0)
 
 def main(args=None):
     rclpy.init(args=args)
