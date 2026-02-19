@@ -34,6 +34,17 @@
       <velocity_decay/>
     </link>
 
+    <link name="gripper_link">
+      <pose>0 0 -0.055 0 0 0</pose> <inertial>
+        <mass>0.001</mass> <inertia><ixx>0.000001</ixx><iyy>0.000001</iyy><izz>0.000001</izz></inertia>
+      </inertial>
+    </link>
+
+    <joint name="gripper_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>gripper_link</child>
+    </joint>
+
     <link name='/imu_link'>
       <pose>0 0 0.02 0 0 0</pose>
       <inertial>
@@ -349,7 +360,7 @@
 
     <link name='payload_link'>
       <pose>0 0 -0.057 0 0 0</pose> 
-      <self_collide>false</self_collide> 
+      <self_collide>true</self_collide> 
       <inertial>
         <mass>0.1</mass> 
         <inertia>
@@ -390,7 +401,7 @@
         <namespace>/drone</namespace> 
         <remapping>switch:=payload/drop_cmd_raw</remapping>
       </ros>
-      <link_name>base_link</link_name>
+      <link_name>gripper_link</link_name>
       
       <max_force>5.0</max_force>
       <fixed>true</fixed>
