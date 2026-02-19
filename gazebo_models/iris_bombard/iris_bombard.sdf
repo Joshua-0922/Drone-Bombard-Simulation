@@ -348,7 +348,7 @@
     </joint>
 
     <link name='payload_link'>
-      <pose>0 0 -0.064 0 0 0</pose> 
+      <pose>0 0 -0.060 0 0 0</pose> 
       <self_collide>true</self_collide> 
       <inertial>
         <mass>0.1</mass> 
@@ -370,10 +370,14 @@
       
       <collision name='payload_collision'>
         <geometry>
-           <cylinder><radius>0.029</radius><length>0.019</length></cylinder>
+           <cylinder><radius>0.03</radius><length>0.02</length></cylinder>
         </geometry>
         <surface>
-          <contact><ode><kp>10000000.0</kp><kd>1.0</kd></ode></contact>
+          <contact>
+            <ode>
+              <kp>100000.0</kp> <kd>100.0</kd>    <max_vel>0.0</max_vel> 
+              <min_depth>0.01</min_depth> </ode>
+          </contact>
         </surface>
       </collision>
     </link>
