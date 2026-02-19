@@ -1,7 +1,4 @@
 {
   "image": "mcr.microsoft.com/devcontainers/universal",
-  "remoteUser": "vscode",
-  "features": {
-    "ghcr.io/devcontainers/features/ros:1": "latest" 
-  }
+  "remoteUser": "vscode"
 }
