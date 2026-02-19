@@ -348,7 +348,8 @@
     </joint>
 
     <link name='payload_link'>
-      <pose>0 0 -0.06 0 0 0</pose>
+      <pose>0 0 -0.065 0 0 0</pose> 
+      <self_collide>true</self_collide> 
       <inertial>
         <mass>0.1</mass> 
         <inertia>
@@ -357,42 +358,22 @@
           <izz>0.0001</izz>
         </inertia>
       </inertial>
-
+      
       <visual name='payload_visual'>
         <geometry>
-           <cylinder>
-             <radius>0.03</radius>
-             <length>0.02</length>
-           </cylinder>
+           <cylinder><radius>0.03</radius><length>0.02</length></cylinder>
         </geometry>
         <material>
-          <script>
-            <name>Gazebo/Red</name>
-            <uri>file://media/materials/scripts/gazebo.material</uri>
-          </script>
+          <script><name>Gazebo/Red</name><uri>file://media/materials/scripts/gazebo.material</uri></script>
         </material>
       </visual>
       
       <collision name='payload_collision'>
         <geometry>
-           <cylinder>
-             <radius>0.03</radius>
-             <length>0.02</length>
-           </cylinder>
+           <cylinder><radius>0.029</radius><length>0.019</length></cylinder>
         </geometry>
         <surface>
-          <friction>
-            <ode>
-              <mu>100.0</mu>
-              <mu2>100.0</mu2>
-            </ode>
-          </friction>
-          <contact>
-            <ode>
-              <kp>10000000.0</kp>
-              <kd>1.0</kd>
-            </ode>
-          </contact>
+          <contact><ode><kp>10000000.0</kp><kd>1.0</kd></ode></contact>
         </surface>
       </collision>
     </link>
