@@ -34,29 +34,6 @@
       <velocity_decay/>
     </link>
 
-    <link name="gripper_link">
-      <pose>0 0 -0.055 0 0 0</pose>
-      
-      <self_collide>true</self_collide> 
-      
-      <inertial>
-        <mass>0.001</mass>
-        <inertia><ixx>0.000001</ixx><iyy>0.000001</iyy><izz>0.000001</izz></inertia>
-      </inertial>
-      
-      <collision name="gripper_pad_collision">
-        <geometry>
-          <cylinder><radius>0.05</radius><length>0.01</length></cylinder>
-        </geometry>
-      </collision>
-    </link>
-
-
-    <joint name="gripper_joint" type="fixed">
-      <parent>base_link</parent>
-      <child>gripper_link</child>
-    </joint>
-
     <link name='/imu_link'>
       <pose>0 0 0.02 0 0 0</pose>
       <inertial>
@@ -369,66 +346,5 @@
       <parent>base_link</parent>
       <child>down_camera_link</child>
     </joint>
-
-    <link name='payload_link'>
-      <pose>0 0 -0.057 0 0 0</pose> 
-      <self_collide>true</self_collide> 
-      <inertial>
-        <mass>0.1</mass> 
-        <inertia>
-          <ixx>0.0001</ixx><ixy>0</ixy><ixz>0</ixz>
-          <iyy>0.0001</iyy><iyz>0</iyz>
-          <izz>0.0001</izz>
-        </inertia>
-      </inertial>
-      
-      <visual name='payload_visual'>
-        <geometry>
-           <cylinder><radius>0.03</radius><length>0.005</length></cylinder>
-        </geometry>
-        <material>
-          <script><name>Gazebo/Red</name><uri>file://media/materials/scripts/gazebo.material</uri></script>
-        </material>
-      </visual>
-      
-      <collision name='payload_collision'>
-        <geometry>
-           <cylinder><radius>0.029</radius><length>0.005</length></cylinder>
-        </geometry>
-        <surface>
-          <contact>
-            <ode>
-              <kp>100000.0</kp>
-              <kd>100.0</kd>
-              <max_vel>0.0</max_vel>
-              <min_depth>0.002</min_depth>
-            </ode>
-          </contact>
-        </surface>
-      </collision>
-    </link>
-
-    <plugin name="gazebo_ros_vacuum_gripper" filename="libgazebo_ros_vacuum_gripper.so">
-      <ros>
-        <namespace>/drone</namespace> 
-        <remapping>switch:=payload/drop_cmd_raw</remapping>
-      </ros>
-      <link_name>gripper_link</link_name>
-      
-      <max_force>5.0</max_force>
-      <fixed>true</fixed>
-
-      <vacuum_powered_on_start>true</vacuum_powered_on_start>
-    </plugin>
-
-    <plugin name="payload_ground_truth" filename="libgazebo_ros_p3d.so">
-      <ros>
-        <namespace>/drone</namespace>
-        <remapping>odom:=payload/position</remapping>
-      </ros>
-      <body_name>payload_link</body_name>
-      <frame_name>world</frame_name>
-      <update_rate>10.0</update_rate> 
-    </plugin>
   </model>
 </sdf>
