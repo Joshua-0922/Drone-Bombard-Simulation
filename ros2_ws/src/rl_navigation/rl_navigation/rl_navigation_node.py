@@ -3,9 +3,9 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point, Twist
 from std_msgs.msg import String
+import os # 터미널 명령어를 파이썬에서 실행하기 위해 추가
 
-# [수정됨] Link Attacher 플러그인의 커스텀 서비스 메시지 임포트
-from linkattacher_msgs.srv import AttachLink, DetachLink
+# 🚨 주의: linkattacher_msgs 임포트 문구는 삭제했습니다!
 
 class RLNavigationNode(Node):
     def __init__(self):
@@ -20,24 +20,11 @@ class RLNavigationNode(Node):
         self.vision_sub = self.create_subscription(Point, '/target/pixel_coords', self.vision_callback, 10)
         self.vel_pub = self.create_publisher(Twist, '/drone/cmd/velocity', 10)
         
-        # --- Service Clients ---
-        # [수정됨] Vacuum 클라이언트 대신 Attach/Detach 클라이언트 생성
-        self.attach_client = self.create_client(AttachLink, '/ATTACH_LINK')
-        self.detach_client = self.create_client(DetachLink, '/DETACH_LINK')
+        self.get_logger().info("🔌 Initializing Link Attacher: Welding Payload to Drone via OS Command...")
         
-        # 서비스 대기
-        while not self.attach_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn('Waiting for Link Attacher service to start...')
-            
-        self.get_logger().info("🔌 Initializing Link Attacher: Welding Payload to Drone...")
-        
-        # [수정됨] 노드 시작과 동시에 드론과 원통을 물리적으로 강제 결합 (Attach)
-        attach_req = AttachLink.Request()
-        attach_req.model1_name = 'iris'
-        attach_req.link1_name = 'base_link'
-        attach_req.model2_name = 'payload_cylinder'  # world 파일에 소환한 페이로드 이름
-        attach_req.link2_name = 'payload_link'
-        self.attach_client.call_async(attach_req)
+        # [해결책] 노드 시작과 동시에 터미널 명령어로 Attach 강제 실행!
+        attach_cmd = "ros2 service call /ATTACH_LINK linkattacher_msgs/srv/AttachLink \"{model1_name: 'iris', link1_name: 'base_link', model2_name: 'payload_cylinder', link2_name: 'payload_link'}\" &"
+        os.system(attach_cmd)
 
         self.timer = self.create_timer(0.1, self.control_loop)
         self.get_logger().info("Simple Agent Ready! (Non-blocking mode)")
@@ -62,20 +49,13 @@ class RLNavigationNode(Node):
 
         # 투하 로직 (Detach)
         if self.target_visible and not self.has_dropped:
-            if self.detach_client.service_is_ready():
-                self.get_logger().warn("🎯 Target Found! Sending DETACH (DROP) command!")
-                
-                # [수정됨] 투하 시 조인트 해제 요청
-                detach_req = DetachLink.Request()
-                detach_req.model1_name = 'iris'
-                detach_req.link1_name = 'base_link'
-                detach_req.model2_name = 'payload_cylinder'
-                detach_req.link2_name = 'payload_link'
-                
-                self.detach_client.call_async(detach_req)
-                self.has_dropped = True
-            else:
-                self.get_logger().error("⚠️ Cannot drop! Detach service not ready.")
+            self.get_logger().warn("🎯 Target Found! Sending DETACH (DROP) command via OS Command!")
+            
+            # [해결책] 타겟 발견 시 터미널 명령어로 Detach 강제 실행!
+            detach_cmd = "ros2 service call /DETACH_LINK linkattacher_msgs/srv/DetachLink \"{model1_name: 'iris', link1_name: 'base_link', model2_name: 'payload_cylinder', link2_name: 'payload_link'}\" &"
+            os.system(detach_cmd)
+            
+            self.has_dropped = True
 
         if self.has_dropped:
             self.get_logger().info("Bomb Dropped! Flying away...", throttle_duration_sec=1.0)
