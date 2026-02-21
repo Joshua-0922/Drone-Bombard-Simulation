@@ -3,7 +3,9 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point, Twist
 from std_msgs.msg import String
-from std_srvs.srv import SetBool   
+
+# [수정됨] Link Attacher 플러그인의 커스텀 서비스 메시지 임포트
+from linkattacher_msgs.srv import AttachLink, DetachLink
 
 class RLNavigationNode(Node):
     def __init__(self):
@@ -13,27 +15,29 @@ class RLNavigationNode(Node):
         self.target_visible = False
         self.has_dropped = False
 
-        # --- Subscribers ---
-        self.state_sub = self.create_subscription(
-            String, '/mission/state', self.state_callback, 10)
-        
-        self.vision_sub = self.create_subscription(
-            Point, '/target/pixel_coords', self.vision_callback, 10)
-
-        # --- Publishers ---
+        # --- Subscribers & Publishers ---
+        self.state_sub = self.create_subscription(String, '/mission/state', self.state_callback, 10)
+        self.vision_sub = self.create_subscription(Point, '/target/pixel_coords', self.vision_callback, 10)
         self.vel_pub = self.create_publisher(Twist, '/drone/cmd/velocity', 10)
         
-        # --- Service Client ---
-        self.vacuum_client = self.create_client(SetBool, '/drone/payload/drop_cmd_raw')
+        # --- Service Clients ---
+        # [수정됨] Vacuum 클라이언트 대신 Attach/Detach 클라이언트 생성
+        self.attach_client = self.create_client(AttachLink, '/ATTACH_LINK')
+        self.detach_client = self.create_client(DetachLink, '/DETACH_LINK')
         
-        while not self.vacuum_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn('Waiting for vacuum service to start...')
-        # [수정] 여기서 wait_for_service로 무한 대기하지 않습니다! 
-        # 서비스가 없어도 일단 노드는 켜져야 드론이 날아갑니다.
-        self.get_logger().info("🔌 Initializing Gripper: Holding Payload...")
-        hold_req = SetBool.Request()
-        hold_req.data = True  # True = 켜기 (잡기)
-        self.vacuum_client.call_async(hold_req)
+        # 서비스 대기
+        while not self.attach_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn('Waiting for Link Attacher service to start...')
+            
+        self.get_logger().info("🔌 Initializing Link Attacher: Welding Payload to Drone...")
+        
+        # [수정됨] 노드 시작과 동시에 드론과 원통을 물리적으로 강제 결합 (Attach)
+        attach_req = AttachLink.Request()
+        attach_req.model1_name = 'iris'
+        attach_req.link1_name = 'base_link'
+        attach_req.model2_name = 'payload_cylinder'  # world 파일에 소환한 페이로드 이름
+        attach_req.link2_name = 'payload_link'
+        self.attach_client.call_async(attach_req)
 
         self.timer = self.create_timer(0.1, self.control_loop)
         self.get_logger().info("Simple Agent Ready! (Non-blocking mode)")
@@ -48,37 +52,33 @@ class RLNavigationNode(Node):
             self.target_visible = False
 
     def control_loop(self):
-        # 1. TRACKING 상태가 아니면 대기
         if self.mission_state != "TRACKING":
             return
 
-        # ---------------------------------------------------------
-        # [중요] 서비스 연결 여부와 상관없이 무조건 전진 명령!
-        # ---------------------------------------------------------
+        # 무조건 전진
         forward_vel = Twist()
         forward_vel.linear.x = 2.0  
         self.vel_pub.publish(forward_vel)
 
-        # ---------------------------------------------------------
-        # 2. 투하 로직 (서비스가 살아있을 때만 시도)
-        # ---------------------------------------------------------
+        # 투하 로직 (Detach)
         if self.target_visible and not self.has_dropped:
-            
-            # 서비스가 준비되었는지 0.1초만 살짝 체크
-            if self.vacuum_client.service_is_ready():
-                self.get_logger().warn("🎯 Target Found! Sending DROP command!")
+            if self.detach_client.service_is_ready():
+                self.get_logger().warn("🎯 Target Found! Sending DETACH (DROP) command!")
                 
-                request = SetBool.Request()
-                request.data = False 
-                self.vacuum_client.call_async(request)
+                # [수정됨] 투하 시 조인트 해제 요청
+                detach_req = DetachLink.Request()
+                detach_req.model1_name = 'iris'
+                detach_req.link1_name = 'base_link'
+                detach_req.model2_name = 'payload_cylinder'
+                detach_req.link2_name = 'payload_link'
+                
+                self.detach_client.call_async(detach_req)
                 self.has_dropped = True
             else:
-                # 서비스가 안 보여도 멈추지 말고 로그만 띄우고 지나감
-                self.get_logger().error("⚠️ Cannot drop! Service not ready. Flying pass...")
-                # (옵션) 여기서 has_dropped = True를 안 하면 계속 시도함
+                self.get_logger().error("⚠️ Cannot drop! Detach service not ready.")
 
         if self.has_dropped:
-            self.get_logger().info("Mission Complete. Flying away...", throttle_duration_sec=1.0)
+            self.get_logger().info("Bomb Dropped! Flying away...", throttle_duration_sec=1.0)
 
 def main(args=None):
     rclpy.init(args=args)
