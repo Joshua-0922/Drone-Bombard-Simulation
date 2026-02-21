@@ -23,7 +23,7 @@ class RLNavigationNode(Node):
         self.get_logger().info("🔌 Initializing Link Attacher: Welding Payload to Drone via OS Command...")
         
         # [해결책] 노드 시작과 동시에 터미널 명령어로 Attach 강제 실행!
-        attach_cmd = "ros2 service call /ATTACH_LINK linkattacher_msgs/srv/AttachLink \"{model1_name: 'iris', link1_name: 'base_link', model2_name: 'payload_cylinder', link2_name: 'payload_link'}\" &"
+        attach_cmd = "ros2 service call /attach gazebo_ros_link_attacher/srv/Attach \"{model_name_1: 'iris', link_name_1: 'base_link', model_name_2: 'payload_cylinder', link_name_2: 'payload_link'}\" &"
         os.system(attach_cmd)
 
         self.timer = self.create_timer(0.1, self.control_loop)
@@ -52,7 +52,7 @@ class RLNavigationNode(Node):
             self.get_logger().warn("🎯 Target Found! Sending DETACH (DROP) command via OS Command!")
             
             # [해결책] 타겟 발견 시 터미널 명령어로 Detach 강제 실행!
-            detach_cmd = "ros2 service call /DETACH_LINK linkattacher_msgs/srv/DetachLink \"{model1_name: 'iris', link1_name: 'base_link', model2_name: 'payload_cylinder', link2_name: 'payload_link'}\" &"
+            detach_cmd = "ros2 service call /detach gazebo_ros_link_attacher/srv/Detach \"{model_name_1: 'iris', link_name_1: 'base_link', model_name_2: 'payload_cylinder', link_name_2: 'payload_link'}\" &"
             os.system(detach_cmd)
             
             self.has_dropped = True
