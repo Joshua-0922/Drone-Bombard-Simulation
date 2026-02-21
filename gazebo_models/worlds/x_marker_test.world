@@ -48,5 +48,11 @@
       <magnetic_field>6.0e-6 2.3e-5 -4.2e-5</magnetic_field>
     </physics>
 
+    <plugin name="gazebo_ros_link_attacher" filename="libgazebo_ros_link_attacher.so">
+      <ros>
+        <namespace>/link_attacher</namespace>
+      </ros>
+    </plugin>
+    
   </world>
 </sdf>
