@@ -2,8 +2,10 @@ name: Build & Push Docker Image (Cached)
 
 on:
   push:
-    branches: [ "main" ]
-
+    branches: 
+      - "main"
+      - "feature/migration-harmonic" 
+      
 jobs:
   build:
     runs-on: ubuntu-latest
