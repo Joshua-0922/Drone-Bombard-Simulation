@@ -94,6 +94,13 @@ RUN git clone --recursive -b v1.15.4 https://github.com/PX4/PX4-Autopilot.git
 # --------------------------------------------------
 WORKDIR /root/ros2_ws/src
 RUN git clone -b humble https://github.com/gazebosim/ros_gz.git
+
+RUN apt-get update && apt-get install -y \
+    ros-humble-actuator-msgs \
+    ros-humble-vision-msgs \
+    ros-humble-gps-msgs \
+    && rm -rf /var/lib/apt/lists/*
+    
 WORKDIR /root/ros2_ws
 # [핵심] build와 log 폴더를 캐시로 지정하여 이전 컴파일 기록을 보존! (install은 제외)
 RUN --mount=type=cache,target=/root/ros2_ws/build \
