@@ -7,15 +7,14 @@ pyyaml
 
 # --- Machine Learning / Deep Learning ---
 # ⚠ Do NOT install torch via pip inside Docker
-# torch, torchvision, torchaudio → 설치 제거
+# torch, torchvision, torchaudio → Dockerfile에서 명시적 설치!
 
 # --- Computer Vision ---
 opencv-python
-ultralytics       # YOLOv8 (Torch ?? ??)
+ultralytics       # YOLOv8
 
 # --- ROS2 Python interface ---
-# rclpy  # ❌ROS2 Humble Desktop에 포함됨 → pip 설치 금지
-rosbags  # OK
+rosbags
 
 # --- DL 모델 학습/실험 도구 ---
 tensorboard
@@ -32,3 +31,12 @@ kconfiglib
 symforce
 pyros-genmsg
 jsonschema
+
+# --- 🧠 강화학습 (Reinforcement Learning) ---
+gymnasium[classic-control]==1.2.3
+stable-baselines3[extra]>=2.2.1   # [추가됨] PPO, SAC 등 RL 알고리즘 라이브러리
+
+# --- 시각화 ---
+pygame==2.6.1
+matplotlib>=3.8.0
+tensorboard>=2.15.0

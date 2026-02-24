@@ -1,12 +1,11 @@
-# [변경됨] NVIDIA CUDA 대신 일반 Ubuntu 22.04 사용 (CPU 환경 최적화)
+# 1. NVIDIA CUDA 12.6.2 베이스 (GPU 가속용)
 FROM nvidia/cuda:12.6.2-cudnn-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
-
 # --------------------------------------------------
-# 1. 기본 툴 설치
+# 2. 기본 툴 설치
 # --------------------------------------------------
 RUN apt-get update && apt-get install -y \
     wget curl git vim nano \
@@ -14,12 +13,12 @@ RUN apt-get update && apt-get install -y \
     python3 python3-pip python3-jinja2 python3-numpy \
     python3-yaml python3-empy \
     locales lsb-release software-properties-common \
-    gpg \
+    gpg tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && locale-gen en_US.UTF-8
 
 # --------------------------------------------------
-# 2. ROS2 Humble 설치
+# 3. ROS 2 Humble 설치
 # --------------------------------------------------
 RUN add-apt-repository universe && \
     curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
@@ -34,96 +33,95 @@ RUN apt-get update && apt-get install -y \
     python3-colcon-common-extensions \
     && rm -rf /var/lib/apt/lists/*
 
-# [중요] 시스템에 깔린 기본 px4_msgs는 충돌 원인이므로 삭제
+# [중요] 시스템에 깔린 기본 px4_msgs는 충돌 원인이므로 삭제 
 RUN apt-get remove -y ros-humble-px4-msgs || true
 
 # --------------------------------------------------
-# 3. Gazebo Classic & ROS 2 연동 플러그인 (핵심 추가 사항)
+# 4. 🚀 Gazebo Harmonic 설치 (클래식 대체)
 # --------------------------------------------------
-# [추가됨] 이전에 수동 설치했던 gazebo_ros_pkgs 등을 미리 설치
+RUN wget https://packages.osrfoundation.org/gazebo.gpg -O /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] \
+    http://packages.osrfoundation.org/gazebo/ubuntu-stable $(lsb_release -cs) main" \
+    > /etc/apt/sources.list.d/gazebo-stable.list
+
 RUN apt-get update && apt-get install -y \
-    gazebo \
-    libgazebo11 \
-    libgazebo-dev \
-    ros-humble-gazebo-ros-pkgs \
-    ros-humble-cv-bridge \
-    ros-humble-image-transport \
+    gz-harmonic \
     && rm -rf /var/lib/apt/lists/*
 
 # --------------------------------------------------
-# 4. PX4 의존성
+# 5. PX4 의존성
 # --------------------------------------------------
 RUN apt-get update && apt-get install -y \
-    protobuf-compiler \
-    libeigen3-dev \
-    libxml2-dev \
-    libopencv-dev \
-    libcurl4-openssl-dev \
-    libtinyxml2-dev \
-    libgstreamer1.0-dev \
-    libgstreamer-plugins-base1.0-dev \
+    protobuf-compiler libeigen3-dev libxml2-dev libopencv-dev \
+    libcurl4-openssl-dev libtinyxml2-dev \
+    libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # --------------------------------------------------
-# 5. Python 패키지
+# 6. Python 패키지 & 🧠 PyTorch(cu126) 설치
 # --------------------------------------------------
 COPY requirements.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements.txt || true
 
+# [핵심] 마스터님의 환경에 맞춘 최적의 PyTorch 12.6 설치!
+RUN pip3 install torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cu126
+
 # --------------------------------------------------
-# 6. Claude Code (선택 사항)
+# 7. Claude Code (선택 사항) 복구 
 # --------------------------------------------------
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs && \
     npm install -g @anthropic-ai/claude-code
 
 # --------------------------------------------------
-# 7. uXRCE-DDS-Agent 설치
+# 8. uXRCE-DDS-Agent 설치 (ROS 2 - PX4 통신)
 # --------------------------------------------------
 WORKDIR /opt
 RUN git clone https://github.com/eProsima/Micro-XRCE-DDS-Agent.git && \
-    cd Micro-XRCE-DDS-Agent && \
-    mkdir build && cd build && \
-    cmake .. && \
-    make -j$(nproc) && \
-    make install && \
-    ldconfig
+    cd Micro-XRCE-DDS-Agent && mkdir build && cd build && \
+    cmake .. && make -j$(nproc) && make install && ldconfig
 
 # --------------------------------------------------
-# 8. PX4 Autopilot 소스 (펌웨어) - 1.15.4 version
+# 9. PX4 Autopilot 소스 (v1.15.4)
 # --------------------------------------------------
 WORKDIR /opt
 RUN git clone --recursive -b v1.15.4 https://github.com/PX4/PX4-Autopilot.git
 
 # --------------------------------------------------
-# 9. px4_msgs 설치 및 빌드
+# 10. ⚡ ROS 2 <-> Gazebo Harmonic 브릿지 소스 빌드 ⚡
+# (호환성 표의 '번개 마크' 문제를 해결하는 마법의 코드)
 # --------------------------------------------------
 WORKDIR /root/ros2_ws/src
-RUN git clone https://github.com/PX4/px4_msgs.git
+RUN git clone -b humble https://github.com/gazebosim/ros_gz.git
+WORKDIR /root/ros2_ws
+RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
+    export GZ_VERSION=harmonic && \
+    colcon build --packages-select ros_gz_bridge ros_gz_interfaces ros_gz_sim --symlink-install"
 
-# [핵심 1] GitHub 원본 msg 파일을 지우고, 설치된 PX4 버전의 msg 파일로 교체
+# --------------------------------------------------
+# 11. px4_msgs 설치 및 빌드
+# --------------------------------------------------
+WORKDIR /root/ros2_ws/src
+RUN git clone https://github.com/PX4/px4_msgs.git [cite: 7]
 RUN rm -rf px4_msgs/msg/*.msg && \
     cp /opt/PX4-Autopilot/msg/*.msg px4_msgs/msg/
-
-# [핵심 2] 우리가 만든 강력한 CMakeLists.txt 복사 (GLOB 적용 버전)
 COPY config/custom_CMakeLists.txt px4_msgs/CMakeLists.txt
 
-# [핵심 3] 미리 빌드해둠 (이미지 안에 박제)
 WORKDIR /root/ros2_ws
 RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
     colcon build --packages-select px4_msgs --symlink-install"
 
 # --------------------------------------------------
-# 10. 환경 설정
+# 12. 환경 설정 및 Entrypoint
 # --------------------------------------------------
 SHELL ["/bin/bash", "-c"]
 
 RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc && \
     echo "source /root/ros2_ws/install/setup.bash" >> ~/.bashrc && \
-    echo "export GAZEBO_MODEL_PATH=\$GAZEBO_MODEL_PATH:/opt/PX4-Autopilot/Tools/simulation/gazebo-classic/sitl_gazebo-classic/models" >> ~/.bashrc && \
-    echo "export ROS_DOMAIN_ID=0" >> ~/.bashrc
+    echo "export GZ_SIM_RESOURCE_PATH=/opt/PX4-Autopilot/Tools/simulation/gz/models" >> ~/.bashrc && \
+    echo "export ROS_DOMAIN_ID=0" >> ~/.bashrc [cite: 8]
 
-# Entrypoint 스크립트 복사 및 권한 설정
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
