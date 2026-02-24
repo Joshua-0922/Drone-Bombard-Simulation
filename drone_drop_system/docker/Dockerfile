@@ -33,11 +33,11 @@ RUN apt-get update && apt-get install -y \
     python3-colcon-common-extensions \
     && rm -rf /var/lib/apt/lists/*
 
-# [중요] 시스템에 깔린 기본 px4_msgs는 충돌 원인이므로 삭제 
+# [중요] 시스템에 깔린 기본 px4_msgs는 충돌 원인이므로 삭제
 RUN apt-get remove -y ros-humble-px4-msgs || true
 
 # --------------------------------------------------
-# 4. 🚀 Gazebo Harmonic 설치 (클래식 대체)
+# 4. 🚀 Gazebo Harmonic 설치
 # --------------------------------------------------
 RUN wget https://packages.osrfoundation.org/gazebo.gpg -O /usr/share/keyrings/pkgs-osrf-archive-keyring.gpg && \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/pkgs-osrf-archive-keyring.gpg] \
@@ -49,12 +49,13 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # --------------------------------------------------
-# 5. PX4 의존성
+# 5. PX4 의존성 (🌟 gflags 에러 해결)
 # --------------------------------------------------
 RUN apt-get update && apt-get install -y \
     protobuf-compiler libeigen3-dev libxml2-dev libopencv-dev \
     libcurl4-openssl-dev libtinyxml2-dev \
     libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+    libgflags-dev libgoogle-glog-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # --------------------------------------------------
@@ -63,19 +64,19 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir -r /tmp/requirements.txt || true
 
-# [핵심] 마스터님의 환경에 맞춘 최적의 PyTorch 12.6 설치!
+# [핵심] PyTorch 12.6 설치
 RUN pip3 install torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cu126
 
 # --------------------------------------------------
-# 7. Claude Code (선택 사항) 복구 
+# 7. Claude Code (선택 사항)
 # --------------------------------------------------
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y nodejs && \
     npm install -g @anthropic-ai/claude-code
 
 # --------------------------------------------------
-# 8. uXRCE-DDS-Agent 설치 (ROS 2 - PX4 통신)
+# 8. uXRCE-DDS-Agent 설치
 # --------------------------------------------------
 WORKDIR /opt
 RUN git clone https://github.com/eProsima/Micro-XRCE-DDS-Agent.git && \
@@ -89,27 +90,32 @@ WORKDIR /opt
 RUN git clone --recursive -b v1.15.4 https://github.com/PX4/PX4-Autopilot.git
 
 # --------------------------------------------------
-# 10. ⚡ ROS 2 <-> Gazebo Harmonic 브릿지 소스 빌드 ⚡
-# (호환성 표의 '번개 마크' 문제를 해결하는 마법의 코드)
+# 10. ⚡ ROS 2 <-> Gazebo Harmonic 브릿지 (🌟 캐시 마운트 적용)
 # --------------------------------------------------
 WORKDIR /root/ros2_ws/src
 RUN git clone -b humble https://github.com/gazebosim/ros_gz.git
 WORKDIR /root/ros2_ws
-RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
+# [핵심] build와 log 폴더를 캐시로 지정하여 이전 컴파일 기록을 보존! (install은 제외)
+RUN --mount=type=cache,target=/root/ros2_ws/build \
+    --mount=type=cache,target=/root/ros2_ws/log \
+    /bin/bash -c "source /opt/ros/humble/setup.bash && \
     export GZ_VERSION=harmonic && \
     colcon build --packages-select ros_gz_bridge ros_gz_interfaces ros_gz_sim --symlink-install"
 
 # --------------------------------------------------
-# 11. px4_msgs 설치 및 빌드
+# 11. px4_msgs 설치 및 빌드 (🌟 캐시 마운트 적용)
 # --------------------------------------------------
 WORKDIR /root/ros2_ws/src
-RUN git clone https://github.com/PX4/px4_msgs.git [cite: 7]
+RUN git clone https://github.com/PX4/px4_msgs.git
 RUN rm -rf px4_msgs/msg/*.msg && \
     cp /opt/PX4-Autopilot/msg/*.msg px4_msgs/msg/
 COPY config/custom_CMakeLists.txt px4_msgs/CMakeLists.txt
 
 WORKDIR /root/ros2_ws
-RUN /bin/bash -c "source /opt/ros/humble/setup.bash && \
+# [핵심] 여기서도 이전 빌드 기록을 활용하여 엄청나게 빠른 증분 빌드 수행
+RUN --mount=type=cache,target=/root/ros2_ws/build \
+    --mount=type=cache,target=/root/ros2_ws/log \
+    /bin/bash -c "source /opt/ros/humble/setup.bash && \
     colcon build --packages-select px4_msgs --symlink-install"
 
 # --------------------------------------------------
@@ -120,7 +126,7 @@ SHELL ["/bin/bash", "-c"]
 RUN echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc && \
     echo "source /root/ros2_ws/install/setup.bash" >> ~/.bashrc && \
     echo "export GZ_SIM_RESOURCE_PATH=/opt/PX4-Autopilot/Tools/simulation/gz/models" >> ~/.bashrc && \
-    echo "export ROS_DOMAIN_ID=0" >> ~/.bashrc [cite: 8]
+    echo "export ROS_DOMAIN_ID=0" >> ~/.bashrc
 
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

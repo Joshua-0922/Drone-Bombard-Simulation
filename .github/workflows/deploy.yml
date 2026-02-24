@@ -61,5 +61,6 @@ jobs:
         push: true
         tags: |
           ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GCP_REPOSITORY }}/drone-bombard:latest
+          ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/drone-repo/drone-sim:${{ github.sha }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
