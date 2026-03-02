@@ -124,7 +124,6 @@ RUN --mount=type=cache,target=/root/ros2_ws/build \
     --mount=type=cache,target=/root/ros2_ws/log \
     /bin/bash -c "source /opt/ros/humble/setup.bash && \
     colcon build --packages-select px4_msgs"
-
 # --------------------------------------------------
 # 12. 환경 설정 및 Entrypoint
 # --------------------------------------------------
