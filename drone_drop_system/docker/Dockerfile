@@ -69,14 +69,7 @@ RUN pip3 install torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/cu126
 
 # --------------------------------------------------
-# 7. Claude Code (선택 사항)
-# --------------------------------------------------
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
-    npm install -g @anthropic-ai/claude-code
-
-# --------------------------------------------------
-# 8. uXRCE-DDS-Agent 설치
+# 7. uXRCE-DDS-Agent 설치
 # --------------------------------------------------
 WORKDIR /opt
 RUN git clone https://github.com/eProsima/Micro-XRCE-DDS-Agent.git && \
@@ -84,13 +77,13 @@ RUN git clone https://github.com/eProsima/Micro-XRCE-DDS-Agent.git && \
     cmake .. && make -j$(nproc) && make install && ldconfig
 
 # --------------------------------------------------
-# 9. PX4 Autopilot 소스 (v1.15.4)
+# 8. PX4 Autopilot 소스 (v1.15.4)
 # --------------------------------------------------
 WORKDIR /opt
 RUN git clone --recursive -b v1.15.4 https://github.com/PX4/PX4-Autopilot.git
 
 # --------------------------------------------------
-# 10. ⚡ ROS 2 <-> Gazebo Harmonic 브릿지 (🌟 캐시 마운트 적용)
+# 9. ⚡ ROS 2 <-> Gazebo Harmonic 브릿지 (🌟 캐시 마운트 적용)
 # --------------------------------------------------
 WORKDIR /root/ros2_ws/src
 RUN git clone -b humble https://github.com/gazebosim/ros_gz.git
@@ -110,7 +103,7 @@ RUN --mount=type=cache,target=/root/ros2_ws/build \
     colcon build --packages-select ros_gz_bridge ros_gz_interfaces ros_gz_sim"
 
 # --------------------------------------------------
-# 11. px4_msgs 설치 및 빌드 (🌟 캐시 마운트 적용)
+# 10. px4_msgs 설치 및 빌드 (🌟 캐시 마운트 적용)
 # --------------------------------------------------
 WORKDIR /root/ros2_ws/src
 RUN git clone https://github.com/PX4/px4_msgs.git
@@ -125,7 +118,7 @@ RUN --mount=type=cache,target=/root/ros2_ws/build \
     /bin/bash -c "source /opt/ros/humble/setup.bash && \
     colcon build --packages-select px4_msgs"
 # --------------------------------------------------
-# 12. 환경 설정 및 Entrypoint
+# 11. 환경 설정 및 Entrypoint
 # --------------------------------------------------
 SHELL ["/bin/bash", "-c"]
 
