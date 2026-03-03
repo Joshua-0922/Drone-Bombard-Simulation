@@ -60,13 +60,9 @@
       <render_engine>ogre2</render_engine>
     </plugin>
 
-    <!-- Link Attacher (Harmonic port of libgazebo_ros_link_attacher_plugin.so)
-         Provides /attach and /detach gz services for payload joint management.
-         Built from ros2_ws/src/gazebo_ros_link_attacher/ (Harmonic port).
-         Classic plugin removed: libgazebo_ros_link_attacher_plugin.so
-                                  libgazebo_ros_link_attacher.so          -->
-    <plugin name="gz::sim::systems::AttachableJoint"
-            filename="gz-sim-detachable-joint-system"/>
+    <!-- Note: gz::sim::systems::DetachableJoint is a model-level plugin.
+         It is defined inside x500_bombard/model.sdf on the drone model,
+         not here at the world level. -->
 
     <!-- ============================================================
          GUI configuration (updated from Classic orbit camera)
