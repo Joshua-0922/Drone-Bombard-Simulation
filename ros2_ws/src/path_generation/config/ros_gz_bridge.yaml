@@ -69,7 +69,7 @@
 # IMU (bridged for diagnostics; PX4 reads IMU directly via gz-transport)
 # ------------------------------------------------------------------
 - ros_topic_name: "/imu/data"
-  gz_topic_name: "/world/x_marker_harmonic/model/x500_bombard/link/base_link/sensor/imu_sensor/imu"
+  gz_topic_name: "/world/x_marker_world/model/x500_bombard/link/base_link/sensor/imu_sensor/imu"
   ros_type_name: "sensor_msgs/msg/Imu"
   gz_type_name: "gz.msgs.IMU"
   direction: GZ_TO_ROS

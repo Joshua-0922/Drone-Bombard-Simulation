@@ -26,7 +26,7 @@ Run (3 terminals inside drone-bombard-harmonic container):
   Terminal 3: ros2 launch mission_manager drone_mission.launch.py
 
 Launch arguments:
-  world         World name without .sdf extension (default: x_marker_harmonic)
+  world         World name without .sdf extension (default: x_marker_world)
   model         Drone model name (default: x500_bombard)
   headless      Run Gazebo without GUI (default: false)
   enable_vision Launch xmarker_detector node (default: true)
@@ -88,7 +88,7 @@ def generate_launch_description():
     # Launch arguments
     # ---------------------------------------------------------------------------
     world_arg = DeclareLaunchArgument(
-        "world", default_value="x_marker_harmonic",
+        "world", default_value="x_marker_world",
         description="Gazebo world name (no .sdf extension)")
 
     model_arg = DeclareLaunchArgument(
@@ -130,7 +130,7 @@ def generate_launch_description():
     gz_sim_with_gui = ExecuteProcess(
         cmd=["bash", "-c",
              f"gz sim -r {worlds_dir}/$(ros2 launch path_generation "
-             f"_get_world.py world:=${{WORLD}} 2>/dev/null || echo x_marker_harmonic).sdf"],
+             f"_get_world.py world:=${{WORLD}} 2>/dev/null || echo x_marker_world).sdf"],
         additional_env={**gz_env},
         name="gz_sim",
         output="screen",
@@ -140,7 +140,7 @@ def generate_launch_description():
     gz_sim_with_gui_simple = ExecuteProcess(
         cmd=["bash", "-c",
              f"GZ_SIM_RESOURCE_PATH={gz_resource_path} "
-             f"gz sim -r {worlds_dir}/x_marker_harmonic.sdf"],
+             f"gz sim -r {worlds_dir}/x_marker_world.sdf"],
         name="gz_sim",
         output="screen",
         condition=UnlessCondition(headless),
@@ -148,7 +148,7 @@ def generate_launch_description():
     gz_sim_headless = ExecuteProcess(
         cmd=["bash", "-c",
              f"GZ_SIM_RESOURCE_PATH={gz_resource_path} "
-             f"gz sim -r -s {worlds_dir}/x_marker_harmonic.sdf"],
+             f"gz sim -r -s {worlds_dir}/x_marker_world.sdf"],
         name="gz_sim_headless",
         output="screen",
         condition=IfCondition(headless),
@@ -233,7 +233,7 @@ def generate_launch_description():
         xmarker_detector,
         LogInfo(msg=[
             "\n=== Gazebo Harmonic SITL Launch ===\n",
-            f"  World:        {worlds_dir}/x_marker_harmonic.sdf\n",
+            f"  World:        {worlds_dir}/x_marker_world.sdf\n",
             f"  Drone model:  x500_bombard\n",
             f"  Models path:  {gz_resource_path}\n",
             "  Bridge cfg:   config/ros_gz_bridge.yaml\n",
