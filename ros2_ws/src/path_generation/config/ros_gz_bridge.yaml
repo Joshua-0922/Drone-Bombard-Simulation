@@ -51,6 +51,21 @@
   direction: GZ_TO_ROS
 
 # ------------------------------------------------------------------
+# Payload drop command
+# DetachableJoint plugin in x500_bombard/model.sdf listens on gz topic
+# /x500_bombard/drop (gz.msgs.Empty). Publish std_msgs/Empty from ROS2
+# to /payload/drop_cmd to trigger drop.
+# Note: rl_navigation currently publishes std_msgs/Bool to
+# /drone/payload/drop_cmd_raw. An adapter (or code update) is needed
+# to convert Bool→Empty and forward to /payload/drop_cmd.
+# ------------------------------------------------------------------
+- ros_topic_name: "/payload/drop_cmd"
+  gz_topic_name: "/x500_bombard/drop"
+  ros_type_name: "std_msgs/msg/Empty"
+  gz_type_name: "gz.msgs.Empty"
+  direction: ROS_TO_GZ
+
+# ------------------------------------------------------------------
 # IMU (bridged for diagnostics; PX4 reads IMU directly via gz-transport)
 # ------------------------------------------------------------------
 - ros_topic_name: "/imu/data"

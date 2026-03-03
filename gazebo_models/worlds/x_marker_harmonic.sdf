@@ -238,15 +238,25 @@
     </include>
 
     <!-- ============================================================
-         Payload cylinder (separate model, detached via link_attacher)
-         Classic: libgazebo_ros_p3d.so for position reporting
-         Harmonic: OdometryPublisher in payload.sdf + ros_gz_bridge
-                   bridges /model/payload_cylinder/odometry -> ROS2
+         Payload cylinder
+         Spawned as a separate model; attached to x500_bombard's
+         payload_mount link via DetachableJoint plugin in model.sdf.
+
+         Spawn z = 0.14 m:
+           drone base_link world-z ≈ 0.24 (x500_base model pose)
+           payload_mount offset from base_link = -0.10
+           → belly world-z = 0.24 - 0.10 = 0.14
+
+         Position reporting:
+           Classic: libgazebo_ros_p3d.so
+           Harmonic: gz::sim::systems::OdometryPublisher in payload.sdf
+                     + ros_gz_bridge: /model/payload_cylinder/odometry
+                       -> ROS2 /drone/payload/position (nav_msgs/Odometry)
     ============================================================ -->
     <include>
       <uri>model://payload_cylinder</uri>
       <name>payload_cylinder</name>
-      <pose>0 0 0.0425 0 0 0</pose>
+      <pose>0 0 0.14 0 0 0</pose>
     </include>
 
   </world>
