@@ -1,0 +1,60 @@
+# ros_gz_bridge configuration for Gazebo Harmonic <-> ROS 2 Humble
+# =================================================================
+# Package required: ros-humble-ros-gzharmonic-bridge
+#   Install: sudo apt install ros-humble-ros-gzharmonic
+#
+# Usage (in launch file or manually):
+#   ros2 run ros_gz_bridge parameter_bridge \
+#     --ros-args -p config_file:=/path/to/ros_gz_bridge.yaml
+#
+# Direction values:
+#   GZ_TO_ROS   : Gazebo publishes -> ROS2 subscribes
+#   ROS_TO_GZ   : ROS2 publishes  -> Gazebo subscribes
+#   BIDIRECTIONAL: both directions
+
+# ------------------------------------------------------------------
+# Clock synchronization (critical for simulation time in ROS2 nodes)
+# ------------------------------------------------------------------
+- ros_topic_name: "/clock"
+  gz_topic_name: "/clock"
+  ros_type_name: "rosgraph_msgs/msg/Clock"
+  gz_type_name: "gz.msgs.Clock"
+  direction: GZ_TO_ROS
+
+# ------------------------------------------------------------------
+# Downward camera: x500_bombard/down_camera_link sensor
+# gz-transport topic set in model.sdf <sensor><topic>
+# Bridged to /camera/rgb/* to match vision_detection node subscriptions
+# ------------------------------------------------------------------
+- ros_topic_name: "/camera/rgb/image_raw"
+  gz_topic_name: "/x500_bombard/down_camera/image_raw"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/camera/rgb/camera_info"
+  gz_topic_name: "/x500_bombard/down_camera/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
+# ------------------------------------------------------------------
+# Payload position
+# Published by gz::sim::systems::OdometryPublisher in payload.sdf
+# gz-transport topic: /model/payload_cylinder/odometry
+# ROS2 topic: /drone/payload/position  (nav_msgs/Odometry)
+# ------------------------------------------------------------------
+- ros_topic_name: "/drone/payload/position"
+  gz_topic_name: "/model/payload_cylinder/odometry"
+  ros_type_name: "nav_msgs/msg/Odometry"
+  gz_type_name: "gz.msgs.Odometry"
+  direction: GZ_TO_ROS
+
+# ------------------------------------------------------------------
+# IMU (bridged for diagnostics; PX4 reads IMU directly via gz-transport)
+# ------------------------------------------------------------------
+- ros_topic_name: "/imu/data"
+  gz_topic_name: "/world/x_marker_harmonic/model/x500_bombard/link/base_link/sensor/imu_sensor/imu"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "gz.msgs.IMU"
+  direction: GZ_TO_ROS

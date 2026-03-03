@@ -1,5 +1,15 @@
 <?xml version="1.0"?>
-<sdf version="1.5">
+<!--
+  x_marker/model.sdf - Gazebo Harmonic compatible
+  =================================================
+  Updated from SDF 1.5 to SDF 1.9.
+  Material: OGRE1 <script> format replaced with Harmonic PBR <material>.
+  The X texture (XMarker/Texture) is represented as a high-contrast
+  yellow box visible from above. To restore the original X texture,
+  provide OGRE2-compatible .material files in materials/scripts/.
+  No plugins in this model (static visual marker only).
+-->
+<sdf version="1.9">
   <model name="x_marker">
     <static>true</static>
     <link name="link">
@@ -19,12 +29,13 @@
             <size>1.0 1.0 0.001</size>
           </box>
         </geometry>
+        <!-- Harmonic PBR material (replaces OGRE1 <script> block).
+             Bright yellow to be visually distinct from ground.
+             TODO: replace with OGRE2 .material + texture for X pattern. -->
         <material>
-          <script>
-            <uri>model://x_marker/materials/scripts</uri>
-            <uri>model://x_marker/materials/textures</uri>
-            <name>XMarker/Texture</name>
-          </script>
+          <ambient>1.0 0.9 0.0 1</ambient>
+          <diffuse>1.0 0.9 0.0 1</diffuse>
+          <specular>0.3 0.3 0.3 1</specular>
         </material>
       </visual>
     </link>
