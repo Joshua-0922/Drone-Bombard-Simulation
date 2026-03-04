@@ -17,7 +17,7 @@ docker pull us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/d
 # Start container (first time)
 xhost +local:docker
 docker run -itd --gpus all --net=host --privileged --ipc=host \
-  --name drone-bombard-dev \
+  --name drone-bombard-harmonic \
   --env="DISPLAY=$DISPLAY" --env="QT_X11_NO_MITSHM=1" --env="NVIDIA_DRIVER_CAPABILITIES=all" \
   --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
   -v /opt/drone-bombard/Drone-Bombard-Simulation/ros2_ws:/workspace/ros2_ws \
@@ -26,7 +26,7 @@ docker run -itd --gpus all --net=host --privileged --ipc=host \
   us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest /bin/bash
 
 # Reconnect to existing container
-xhost +local:docker && docker start -ai drone-bombard-dev
+xhost +local:docker && docker start -ai drone-bombard-harmonic
 ```
 
 ## Build Commands (inside container)
@@ -46,7 +46,7 @@ source install/setup.bash
 
 ### Gazebo Classic (stable, `main` branch)
 
-Three terminals inside the container (`docker exec -it drone-bombard-dev bash`):
+Three terminals inside the container (`docker exec -it drone-bombard-harmonic bash`):
 
 **Terminal 1** – uXRCE-DDS bridge (PX4 ↔ ROS2):
 ```bash
