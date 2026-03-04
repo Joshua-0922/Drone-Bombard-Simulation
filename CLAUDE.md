@@ -127,7 +127,6 @@ State transitions: `/target/pixel_coords` triggers CRUISE→TRACKING; `/payload/
 | `rl_navigation` | Python | Tracking controller; sends velocity commands; triggers payload detach via Gazebo service |
 | `drop_calculator` | Python | Post-drop referee; watches Gazebo link states and publishes impact error to `/rl/drop_error` |
 | `path_generation` | Python | Legacy/alternate path controller (yaw+altitude PID); also contains `gz_harmonic_sitl.launch.py` for the Harmonic migration |
-| `gazebo_ros_link_attacher` | C++ (CMake) | Gazebo plugin; exposes `/attach` and `/detach` services for payload joint |
 | `px4_msgs` | CMake | PX4 message type definitions (synced with PX4 v1.15.4) |
 
 ### Key Topics
@@ -154,7 +153,9 @@ State transitions: `/target/pixel_coords` triggers CRUISE→TRACKING; `/payload/
 
 ### Payload Drop Mechanism
 
-`rl_navigation` on startup calls `ros2 service call /attach` (via `os.system`) to weld the payload. When the target is detected in TRACKING state, it calls `/detach` (via `os.system`) to release the payload physically, then publishes `False` on `/drone/payload/drop_cmd_raw` to signal the referee.
+**Gazebo Harmonic:** The payload uses a `DetachableJoint` plugin defined in `x500_bombard/model.sdf`. The joint auto-attaches at simulation startup — no `/attach` service call is needed. `rl_navigation` triggers the drop by publishing to the detach topic (via `gz topic`), then publishes `False` on `/drone/payload/drop_cmd_raw` to signal the referee.
+
+**Gazebo Classic (legacy):** `rl_navigation` on startup calls `ros2 service call /attach` (via `os.system`) to weld the payload. When the target is detected in TRACKING state, it calls `/detach` (via `os.system`) to release the payload physically, then publishes `False` on `/drone/payload/drop_cmd_raw` to signal the referee.
 
 `drop_calculator` (`calculator` entry point = `drop_calculator_node.py`) is a **post-drop referee**: it listens for the `False` drop signal, then tracks `/gazebo/link_states` until payload z ≤ 0.04 m (ground impact), and publishes the miss distance (meters) to `/rl/drop_error`. It reads ground-truth positions directly from Gazebo model states.
 
