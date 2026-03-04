@@ -27,7 +27,7 @@ if [ -d "/workspace/ros2_ws" ]; then
   # 빌드된 게 없으면 빌드 시도 (선택 사항)
   if [ ! -d "install" ] && [ -d "src" ]; then
     echo "[ENTRYPOINT] Building user workspace..."
-    colcon build --symlink-install
+    colcon build --packages-ignore gazebo_ros_link_attacher
   fi
   
   if [ -f "install/setup.bash" ]; then
