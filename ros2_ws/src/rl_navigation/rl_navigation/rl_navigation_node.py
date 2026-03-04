@@ -2,8 +2,7 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Point, Twist
-from std_msgs.msg import String, Bool
-import os
+from std_msgs.msg import String, Bool, Empty
 
 class RLNavigationNode(Node):
     def __init__(self):
@@ -22,21 +21,7 @@ class RLNavigationNode(Node):
         # Drop Calculator 노드가 이 토픽이 False가 되는 순간을 감지하여 점수를 계산합니다.
         self.drop_pub = self.create_publisher(Bool, '/drone/payload/drop_cmd_raw', 10)
         
-        self.get_logger().info("🔌 Initializing Link Attacher: Welding Payload...")
-        
-        # [초기 설정] 시작하자마자 부착 (Type은 확인하신 대로 Attach 사용)
-        # 만약 README처럼 경로가 필요하다면 /detach 대신 /link_attacher_node/detach로 수정하세요.
-        attach_cmd = (
-            "ros2 service call /attach gazebo_ros_link_attacher/srv/Attach "
-            "\"{model_name_1: 'iris', link_name_1: 'base_link', "
-            "model_name_2: 'payload_cylinder', link_name_2: 'payload_link'}\" &"
-        )
-        os.system(attach_cmd)
-        
-        # 초기 상태는 '잡고 있음'(True) 전송
-        init_msg = Bool()
-        init_msg.data = True
-        self.drop_pub.publish(init_msg)
+        self.detach_pub = self.create_publisher(Empty, '/payload/drop_cmd', 10)
 
         self.timer = self.create_timer(0.1, self.control_loop)
         self.get_logger().info("RL Navigation Node Ready!")
@@ -62,18 +47,12 @@ class RLNavigationNode(Node):
         if self.target_visible and not self.has_dropped:
             self.get_logger().warn("🎯 TARGET DETECTED! Dropping Payload...")
 
-            # [A] 서비스 호출로 물리적 분리 (README 형식을 ROS2 환경에 맞춰 반영)
-            # 타입 이름이 srv/Attach인 것에 주의하세요!
-            detach_cmd = (
-                "ros2 service call /detach gazebo_ros_link_attacher/srv/Attach "
-                "\"{model_name_1: 'iris', link_name_1: 'base_link', "
-                "model_name_2: 'payload_cylinder', link_name_2: 'payload_link'}\" &"
-            )
-            os.system(detach_cmd)
+            # Triggers DetachableJoint via ros_gz_bridge → gz /x500_bombard/drop
+            self.detach_pub.publish(Empty())
 
-            # [B] 토픽 발행으로 계산기(DropCalculator)에게 알림
+            # Signals drop_calculator and mission_manager via Bool(False)
             drop_msg = Bool()
-            drop_msg.data = False # False가 되는 순간이 투하 시점
+            drop_msg.data = False
             self.drop_pub.publish(drop_msg)
 
             self.has_dropped = True

@@ -44,9 +44,10 @@ def generate_launch_description():
 
         # 5. Drop Calculator Node - 심판 (추가됨)
         Node(
-            package='drop_calculator', 
+            package='drop_calculator',
             executable='calculator',          # setup.py의 'calculator ='
             name='drop_calculator',
-            output='screen'
+            output='screen',
+            parameters=[{'x_marker_x': 11.0}, {'x_marker_y': 10.0}]
         ),
     ])

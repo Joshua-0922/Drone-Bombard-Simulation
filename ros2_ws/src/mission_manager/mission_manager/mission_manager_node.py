@@ -38,7 +38,7 @@ class MissionManagerNode(Node):
             Point, '/target/pixel_coords', self.vision_callback, 10)
         
         self.drop_sub = self.create_subscription(
-            Bool, '/payload/drop_cmd', self.drop_callback, 10)
+            Bool, '/drone/payload/drop_cmd_raw', self.drop_callback, 10)
 
         qos_profile = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, depth=1)
         self.local_pos_sub = self.create_subscription(
@@ -79,7 +79,7 @@ class MissionManagerNode(Node):
             self.last_detection_time = time.time()
 
     def drop_callback(self, msg):
-        if msg.data:
+        if not msg.data:
             self.get_logger().warn(">>> DROP CONFIRMED! <<<")
             self.state = STATE_DROP
 

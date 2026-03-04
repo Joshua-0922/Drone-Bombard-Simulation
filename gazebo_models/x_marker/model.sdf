@@ -33,9 +33,13 @@
              Bright yellow to be visually distinct from ground.
              TODO: replace with OGRE2 .material + texture for X pattern. -->
         <material>
-          <ambient>1.0 0.9 0.0 1</ambient>
-          <diffuse>1.0 0.9 0.0 1</diffuse>
+          <diffuse>1.0 1.0 1.0 1</diffuse>
           <specular>0.3 0.3 0.3 1</specular>
+          <pbr>
+            <metal>
+              <albedo_map>x_marker/materials/textures/x_marker.png</albedo_map>
+            </metal>
+          </pbr>
         </material>
       </visual>
     </link>

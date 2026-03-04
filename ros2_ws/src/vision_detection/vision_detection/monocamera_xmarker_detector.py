@@ -72,14 +72,14 @@ class XMarkerDetectorNode(Node):
         # 3. Subscriber 설정
         self.rgb_sub = self.create_subscription(
             Image,
-            '/down_camera_sensor/image_raw',  # 실제 토픽 이름 확인 필요!
+            '/camera/rgb/image_raw',
             self.rgb_callback,
             qos_profile
         )
 
         self.camera_info_sub = self.create_subscription(
             CameraInfo,
-            '/down_camera_sensor/camera_info',
+            '/camera/rgb/camera_info',
             self.camera_info_callback,
             qos_profile
         )
