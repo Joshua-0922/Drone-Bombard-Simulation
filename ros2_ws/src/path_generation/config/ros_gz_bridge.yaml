@@ -55,9 +55,9 @@
 # DetachableJoint plugin in x500_bombard/model.sdf listens on gz topic
 # /x500_bombard/drop (gz.msgs.Empty). Publish std_msgs/Empty from ROS2
 # to /payload/drop_cmd to trigger drop.
-# Note: rl_navigation currently publishes std_msgs/Bool to
-# /drone/payload/drop_cmd_raw. An adapter (or code update) is needed
-# to convert Bool→Empty and forward to /payload/drop_cmd.
+# rl_navigation publishes std_msgs/Empty directly to /payload/drop_cmd
+# (and separately std_msgs/Bool to /drone/payload/drop_cmd_raw for drop_calculator).
+# No adapter needed — rl_navigation_node.py handles both topics.
 # ------------------------------------------------------------------
 - ros_topic_name: "/payload/drop_cmd"
   gz_topic_name: "/x500_bombard/drop"
