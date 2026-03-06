@@ -44,47 +44,22 @@ source install/setup.bash
 
 ## Running the Full Simulation
 
-### Gazebo Classic (stable, `main` branch)
-
-Three terminals inside the container (`docker exec -it drone-bombard-harmonic bash`):
-
-**Terminal 1** – uXRCE-DDS bridge (PX4 ↔ ROS2):
-```bash
-MicroXRCEAgent udp4 -p 8888
-```
-
-**Terminal 2** – PX4 SITL + Gazebo (minimize GUI immediately, it's slow):
-```bash
-cd /opt/PX4-Autopilot
-make px4_sitl gazebo-classic
-```
-
-**Terminal 3** – All ROS2 nodes:
-```bash
-cd /workspace/ros2_ws
-source install/setup.bash
-ros2 launch mission_manager drone_mission.launch.py
-```
-
-### Gazebo Harmonic (`feature/migration-harmonic` branch)
-
-One-time build prerequisite:
+**One-time PX4 build prerequisite:**
 ```bash
 cd /opt/PX4-Autopilot && DONT_RUN=1 make px4_sitl gz_x500
 ```
 
-Two terminals inside the container:
-
-**Terminal 1** – Gazebo + PX4 SITL + DDS bridge + vision (all-in-one launch):
+**Single launch command (inside container):**
 ```bash
-ros2 launch path_generation gz_harmonic_sitl.launch.py
-# Optional flags: headless:=true  enable_vision:=false
-```
-
-**Terminal 2** – Mission nodes:
-```bash
+cd /workspace/ros2_ws && source install/setup.bash
 ros2 launch mission_manager drone_mission.launch.py
+
+# Optional flags:
+ros2 launch mission_manager drone_mission.launch.py headless:=true
+ros2 launch mission_manager drone_mission.launch.py enable_vision:=false
 ```
+
+This single launch starts everything in order: MicroXRCEAgent + Gazebo Harmonic (t=0s) → PX4 SITL (t=5s) → ros_gz_bridge (t=8s) → YOLO vision node (t=12s) → mission nodes (t=0s, block on topics).
 
 ## Testing
 
@@ -105,7 +80,7 @@ colcon test-result --verbose
 
 ## System Architecture
 
-The system is an autonomous drone that **cruises**, **detects** an X-marker target via downward camera, **tracks** it, then **drops** a payload using ballistics timing.
+The system is an autonomous drone that **cruises**, **detects** an X-marker target via downward camera, **tracks** it, then **drops** a payload.
 
 ### Mission State Machine (`mission_manager`)
 
@@ -121,12 +96,11 @@ State transitions: `/target/pixel_coords` triggers CRUISE→TRACKING; `/payload/
 
 | Package | Type | Role |
 |---------|------|------|
-| `mission_manager` | Python | FSM commander; publishes `/drone/cmd/position` or `/drone/cmd/velocity` |
+| `mission_manager` | Python | FSM commander; publishes `/drone/cmd/position` or `/drone/cmd/velocity`; also owns `drone_mission.launch.py` and `ros_gz_bridge.yaml` |
 | `drone_controller` | Python | PX4 bridge; converts ENU→NED commands to `/fmu/in/trajectory_setpoint`; arms and enters offboard mode 5 s after start |
 | `vision_detection` | C++ (CMake) | YOLOv8 inference at 10 Hz; publishes `/target/pixel_coords` and `/vision/detections` |
-| `rl_navigation` | Python | Tracking controller; sends velocity commands; triggers payload detach via Gazebo service |
-| `drop_calculator` | Python | Post-drop referee; watches Gazebo link states and publishes impact error to `/rl/drop_error` |
-| `path_generation` | Python | Legacy/alternate path controller (yaw+altitude PID); also contains `gz_harmonic_sitl.launch.py` for the Harmonic migration |
+| `rl_navigation` | Python | Tracking controller; sends velocity commands; triggers payload drop via `/payload/drop_cmd` |
+| `drop_calculator` | Python | Post-drop referee; tracks payload position until ground impact; publishes miss distance to `/rl/drop_error` |
 | `px4_msgs` | CMake | PX4 message type definitions (synced with PX4 v1.15.4) |
 
 ### Key Topics
@@ -138,9 +112,10 @@ State transitions: `/target/pixel_coords` triggers CRUISE→TRACKING; `/payload/
 | `/drone/cmd/position` | `geometry_msgs/Vector3` | mission_manager → drone_controller (ENU) |
 | `/drone/cmd/velocity` | `geometry_msgs/Twist` | rl_navigation → drone_controller (ENU) |
 | `/fmu/in/trajectory_setpoint` | `px4_msgs/TrajectorySetpoint` | drone_controller → PX4 (NED) |
+| `/payload/drop_cmd` | `std_msgs/Empty` | rl_navigation → ros_gz_bridge → DetachableJoint (triggers physical drop) |
 | `/drone/payload/drop_cmd_raw` | `std_msgs/Bool` | rl_navigation → drop_calculator (`False` = drop event) |
-| `/rl/drop_error` | `std_msgs/Float32` | drop_calculator → (logging/RL reward); meters from target |
-| `/payload/drop_cmd` | `std_msgs/Bool` | (legacy ballistics node, `node.py`) → mission_manager |
+| `/drone/payload/position` | `nav_msgs/Odometry` | ros_gz_bridge → drop_calculator (payload ground-truth position) |
+| `/rl/drop_error` | `std_msgs/Float32` | drop_calculator → logging/RL reward; meters from target |
 | `/vision/detections` | `vision_detection/DetectionResult` | vision_detection → monitoring |
 | `/vision/annotated_image` | `sensor_msgs/Image` | vision_detection → visualization |
 
@@ -153,13 +128,24 @@ State transitions: `/target/pixel_coords` triggers CRUISE→TRACKING; `/payload/
 
 ### Payload Drop Mechanism
 
-**Gazebo Harmonic:** The payload uses a `DetachableJoint` plugin defined in `x500_bombard/model.sdf`. The joint auto-attaches at simulation startup — no `/attach` service call is needed. `rl_navigation` triggers the drop by publishing to the detach topic (via `gz topic`), then publishes `False` on `/drone/payload/drop_cmd_raw` to signal the referee.
+The payload uses a `DetachableJoint` plugin defined in `gazebo_models/x500_bombard/model.sdf`. The joint auto-attaches at simulation startup — no service call needed.
 
-**Gazebo Classic (legacy):** `rl_navigation` on startup calls `ros2 service call /attach` (via `os.system`) to weld the payload. When the target is detected in TRACKING state, it calls `/detach` (via `os.system`) to release the payload physically, then publishes `False` on `/drone/payload/drop_cmd_raw` to signal the referee.
+Drop sequence:
+1. `rl_navigation` publishes `std_msgs/Empty` to `/payload/drop_cmd`
+2. `ros_gz_bridge` forwards it to gz-transport topic `/x500_bombard/drop` → `DetachableJoint` releases the payload physically
+3. `rl_navigation` also publishes `Bool(False)` to `/drone/payload/drop_cmd_raw` to signal `drop_calculator`
+4. `drop_calculator` tracks `/drone/payload/position` (bridged from `OdometryPublisher` in `payload_cylinder/model.sdf`) until payload z ≤ 0.04 m, then publishes miss distance to `/rl/drop_error`
 
-`drop_calculator` (`calculator` entry point = `drop_calculator_node.py`) is a **post-drop referee**: it listens for the `False` drop signal, then tracks `/gazebo/link_states` until payload z ≤ 0.04 m (ground impact), and publishes the miss distance (meters) to `/rl/drop_error`. It reads ground-truth positions directly from Gazebo model states.
+> Note: `drop_calculator/node.py` is an older ballistics predictor that is **not** the registered entry point and not launched by default. The active entry point is `drop_calculator_node.py` (`calculator` executable).
 
-> Note: `drop_calculator/node.py` is an older ballistics predictor (pre-drop timing logic) that publishes to `/payload/drop_cmd`. It is **not** the registered entry point and not launched by default.
+### Gazebo Bridge Configuration
+
+`mission_manager/config/ros_gz_bridge.yaml` defines all gz-transport ↔ ROS2 bridges:
+- `/clock` (GZ→ROS): simulation time sync
+- `/x500_bombard/down_camera/image_raw` → `/camera/rgb/image_raw` (GZ→ROS): camera feed for YOLO
+- `/model/payload_cylinder/odometry` → `/drone/payload/position` (GZ→ROS): payload position
+- `/payload/drop_cmd` → `/x500_bombard/drop` (ROS→GZ): drop trigger
+- `/imu/data` (GZ→ROS): diagnostics only
 
 ### YOLO Model
 
@@ -172,7 +158,7 @@ State transitions: `/target/pixel_coords` triggers CRUISE→TRACKING; `/payload/
 Built from `drone_drop_system/docker/Dockerfile`:
 - Ubuntu 22.04 + CUDA 12.6.2
 - ROS2 Humble (desktop)
-- Gazebo Classic + `ros-humble-gazebo-ros-pkgs`
+- Gazebo Harmonic (`gz-harmonic`) + `ros-humble-ros-gzharmonic` bridge
 - PX4 Autopilot v1.15.4 at `/opt/PX4-Autopilot`
 - uXRCE-DDS-Agent at `/opt/Micro-XRCE-DDS-Agent`
 - px4_msgs pre-built at `/root/ros2_ws` (separate from workspace volume)
