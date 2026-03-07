@@ -105,9 +105,18 @@ def generate_launch_description():
     # ---------------------------------------------------------------------------
     # [2] Gazebo Harmonic
     # ---------------------------------------------------------------------------
+    # XDG_RUNTIME_DIR is required by the Qt layer that Gazebo GUI uses for
+    # socket files.  Docker containers do not set it by default, which causes
+    # the GUI process to crash silently.  We create the directory and export
+    # the variable inside the bash command so it is always present.
+    _gz_env_prefix = (
+        "mkdir -p /tmp/runtime-root && "
+        "export XDG_RUNTIME_DIR=/tmp/runtime-root && "
+        f"GZ_SIM_RESOURCE_PATH={gz_resource_path} "
+    )
     gz_sim_gui = ExecuteProcess(
         cmd=["bash", "-c",
-             f"GZ_SIM_RESOURCE_PATH={gz_resource_path} "
+             _gz_env_prefix +
              f"gz sim -r {worlds_dir}/x_marker_world.sdf"],
         name="gz_sim",
         output="screen",
@@ -115,7 +124,7 @@ def generate_launch_description():
     )
     gz_sim_headless = ExecuteProcess(
         cmd=["bash", "-c",
-             f"GZ_SIM_RESOURCE_PATH={gz_resource_path} "
+             _gz_env_prefix +
              f"gz sim -r -s {worlds_dir}/x_marker_world.sdf"],
         name="gz_sim_headless",
         output="screen",
