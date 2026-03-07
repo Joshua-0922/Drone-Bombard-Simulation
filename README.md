@@ -319,10 +319,16 @@ ros2 launch mission_manager drone_mission.launch.py
 |------|---------|
 | t=0s | MicroXRCE-DDS Agent (PX4 ↔ ROS2 DDS 통신) |
 | t=0s | Gazebo Harmonic (`x_marker_world.sdf`, `x500_bombard` 드론) |
-| t=5s | PX4 SITL (`gz_x500` 타겟, Gazebo에 드론 스폰) |
-| t=8s | ros_gz_bridge (Gazebo ↔ ROS2 토픽 브릿지) |
-| t=12s | vision_detection (YOLOv8 X마커 탐지, 10 Hz) |
+| t=12s | PX4 SITL (Gazebo ogre2 센서가 완전히 로드된 후 스폰) |
+| t=16s | ros_gz_bridge (Gazebo ↔ ROS2 토픽 브릿지) |
+| t=22s | vision_detection (YOLOv8 X마커 탐지, 10 Hz) |
 | t=0s | mission_manager / drone_controller / rl_navigation / drop_calculator |
+
+> **재실행 전 주의:** 이전 launch에서 남은 프로세스가 있으면 충돌이 발생합니다.
+> 재실행 전에 반드시 기존 프로세스를 종료하세요:
+> ```bash
+> pkill -f "gz sim" ; pkill -f "px4" ; pkill -f "MicroXRCEAgent" ; pkill -f "ros2"
+> ```
 
 옵션 인수:
 
@@ -400,6 +406,66 @@ docker exec -it drone-bombard-harmonic bash
 
 cd /workspace/ros2_ws
 python3 system_tester.py
+```
+
+### 11.6 실시간 모니터링
+
+시뮬레이션 실행 중 별도 터미널에서 각 채널을 확인합니다.
+
+**카메라 영상 확인 (RViz2):**
+```bash
+docker exec -it drone-bombard-harmonic bash -c "
+  source /workspace/ros2_ws/install/setup.bash
+  rviz2 -d /workspace/ros2_ws/src/vision_detection/config/camera_view.rviz 2>/dev/null ||
+  rviz2
+"
+# RViz2에서 Add → By topic → /vision/annotated_image (Image 타입) 추가
+# 또는 원본 카메라: /camera/rgb/image_raw
+```
+
+**카메라 토픽 발행 여부 확인 (텍스트):**
+```bash
+docker exec -it drone-bombard-harmonic bash -c "
+  source /workspace/ros2_ws/install/setup.bash
+  ros2 topic hz /camera/rgb/image_raw
+"
+```
+
+**페이로드 위치 실시간 확인:**
+```bash
+docker exec -it drone-bombard-harmonic bash -c "
+  source /workspace/ros2_ws/install/setup.bash
+  ros2 topic echo /drone/payload/position
+"
+```
+
+**미션 상태 + 투하 오차 실시간 확인:**
+```bash
+docker exec -it drone-bombard-harmonic bash -c "
+  source /workspace/ros2_ws/install/setup.bash
+  ros2 topic echo /mission/state &
+  ros2 topic echo /rl/drop_error
+"
+```
+
+### 11.7 전체 미션 시퀀스
+
+시뮬레이션이 정상 작동할 때의 전체 흐름:
+
+```
+[t=0s]   Gazebo 기동 → x_marker_world 로드, x500_bombard 스폰 (페이로드 부착)
+[t=12s]  PX4 SITL 연결 → uXRCE-DDS 통신 시작
+[t=16s]  ros_gz_bridge 기동 → 카메라·페이로드 토픽 브릿지
+[t=22s]  YOLOv8 노드 기동 → /target/pixel_coords 발행 시작
+
+--- mission_manager FSM ---
+[TAKEOFF]   drone_controller가 PX4에 Arm + Offboard 진입, ENU (0,0,10) 상승
+[CRUISE]    고도 10m 도달 → 북동쪽으로 1 m/s 순항 (position setpoint 점진 증가)
+[TRACKING]  카메라가 X마커 감지(z>0) → rl_navigation이 속도 제어 인수
+            rl_navigation: 전진 2 m/s 유지 + 횡방향 정렬
+[DROP]      rl_navigation이 /payload/drop_cmd (Empty) 발행
+            → DetachableJoint 해제 → 페이로드 자유낙하
+            → drop_calculator가 착탄점 계산 → /rl/drop_error (m) 발행
 ```
 
 ## Phase 5: Reinforcement Learning — Fighter Jet Fly-by Drop
