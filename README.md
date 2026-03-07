@@ -277,9 +277,16 @@ vncserver :1 -geometry 1920x1080 -localhost no
     - 여기서 클립보드 내용을 입력해야 VM 내부로 텍스트가 전달됨
 
 
-## 11. 노드 통합(Launch) 실행
+## 11. 노드 통합(Launch) 실행 — Gazebo Harmonic
 
-Gazebo Harmonic으로 마이그레이션 후, **단일 launch 명령어**로 전체 시뮬레이션 스택을 시작합니다.
+### 시뮬레이션 구성
+
+| 항목 | 값 |
+|------|---|
+| 시뮬레이터 | Gazebo Harmonic (`gz sim`) |
+| 드론 모델 | `x500_bombard` (페이로드 탑재, `gazebo_models/x500_bombard/`) |
+| 월드 파일 | `gazebo_models/worlds/x_marker_world.sdf` |
+| 타겟 위치 | X마커 (11, 10) m — 월드 원점에서 북동쪽 |
 
 ### 11.1 최초 1회: PX4 빌드
 
@@ -290,7 +297,7 @@ cd /opt/PX4-Autopilot
 DONT_RUN=1 make px4_sitl gz_x500
 ```
 
-### 11.2 빌드
+### 11.2 ROS2 빌드
 
 ```bash
 cd /workspace/ros2_ws
@@ -298,7 +305,7 @@ colcon build
 source install/setup.bash
 ```
 
-### 11.3 전체 시뮬레이션 실행 (단일 명령)
+### 11.3 전체 시뮬레이션 실행 (단일 명령 — 권장)
 
 ```bash
 cd /workspace/ros2_ws
@@ -310,21 +317,76 @@ ros2 launch mission_manager drone_mission.launch.py
 
 | 시간 | 컴포넌트 |
 |------|---------|
-| t=0s | MicroXRCE-DDS Agent (PX4 ↔ ROS2 통신) |
-| t=0s | Gazebo Harmonic (x_marker_world 시뮬레이션) |
-| t=5s | PX4 SITL (gz_x500 모델, 비행 제어 스택) |
+| t=0s | MicroXRCE-DDS Agent (PX4 ↔ ROS2 DDS 통신) |
+| t=0s | Gazebo Harmonic (`x_marker_world.sdf`, `x500_bombard` 드론) |
+| t=5s | PX4 SITL (`gz_x500` 타겟, Gazebo에 드론 스폰) |
 | t=8s | ros_gz_bridge (Gazebo ↔ ROS2 토픽 브릿지) |
-| t=12s | vision_detection (YOLOv8 X마커 탐지) |
-| t=0s | mission_manager, drone_controller, rl_navigation, drop_calculator (토픽 대기 후 기동) |
+| t=12s | vision_detection (YOLOv8 X마커 탐지, 10 Hz) |
+| t=0s | mission_manager / drone_controller / rl_navigation / drop_calculator |
 
-### 11.4 선택적 옵션
+옵션 인수:
 
 ```bash
-# GUI 없이 headless 모드로 실행 (서버 환경)
+# GUI 없이 headless 모드 (서버 환경)
 ros2 launch mission_manager drone_mission.launch.py headless:=true
 
-# 비전 노드 비활성화 (카메라 없이 테스트)
+# 비전 노드 비활성화 (카메라 없이 FSM 테스트)
 ros2 launch mission_manager drone_mission.launch.py enable_vision:=false
+
+# RL 학습 모드 (rl_navigation_node 제외, RL 환경이 직접 속도 제어)
+ros2 launch mission_manager drone_mission.launch.py rl_mode:=true
+```
+
+### 11.4 수동 실행 (개별 컴포넌트 — 디버깅용)
+
+단일 launch 대신 각 컴포넌트를 별도 터미널에서 수동으로 실행할 수 있습니다.
+
+**공통 환경 변수:**
+```bash
+GZ_PATH=/workspace/gazebo_models:/opt/PX4-Autopilot/Tools/simulation/gz/models:/opt/PX4-Autopilot/Tools/simulation/gz/worlds
+```
+
+**Terminal 1 — MicroXRCE-DDS Agent:**
+```bash
+MicroXRCEAgent udp4 -p 8888
+```
+
+**Terminal 2 — Gazebo Harmonic:**
+```bash
+# GUI 있음
+GZ_SIM_RESOURCE_PATH=$GZ_PATH \
+  gz sim -r /workspace/gazebo_models/worlds/x_marker_world.sdf
+
+# GUI 없음 (headless, 서버 환경)
+GZ_SIM_RESOURCE_PATH=$GZ_PATH \
+  gz sim -r -s /workspace/gazebo_models/worlds/x_marker_world.sdf
+```
+
+**Terminal 3 — PX4 SITL (Gazebo 기동 후 실행):**
+```bash
+cd /opt/PX4-Autopilot
+PX4_GZ_STANDALONE=1 \
+PX4_GZ_MODEL=x500_bombard \
+GZ_SIM_RESOURCE_PATH=$GZ_PATH \
+  make px4_sitl gz_x500
+```
+
+> PX4는 실행 시 Gazebo에 자동으로 접속해 `x500_bombard` 드론을 스폰합니다.
+
+**Terminal 4 — ros_gz_bridge (PX4 기동 후 실행):**
+```bash
+cd /workspace/ros2_ws && source install/setup.bash
+ros2 run ros_gz_bridge parameter_bridge \
+  --ros-args -p "config_file:=/workspace/ros2_ws/src/mission_manager/config/ros_gz_bridge.yaml"
+```
+
+**Terminal 5 — ROS2 미션 노드:**
+```bash
+cd /workspace/ros2_ws && source install/setup.bash
+ros2 run mission_manager mission_manager_node &
+ros2 run drone_controller controller &
+ros2 run rl_navigation rl_navigation_node &
+ros2 run drop_calculator calculator
 ```
 
 ### 11.5 테스트 (비전 탐지 시뮬레이션)
@@ -332,7 +394,6 @@ ros2 launch mission_manager drone_mission.launch.py enable_vision:=false
 별도 터미널에서 가짜 탐지 신호를 발행하여 미션 FSM 동작을 테스트할 수 있습니다:
 
 ```bash
-# 컨테이너 추가 접속
 docker exec -it drone-bombard-harmonic bash
 
 cd /workspace/ros2_ws
