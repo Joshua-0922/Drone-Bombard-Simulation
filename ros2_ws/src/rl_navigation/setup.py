@@ -25,6 +25,8 @@ setup(
     entry_points={
         'console_scripts': [
             'rl_navigation_node = rl_navigation.rl_navigation_node:main',
+            'train_sac        = rl_navigation.train_sac:main',
+            'evaluate         = rl_navigation.evaluate:main',
         ],
     },
 )

@@ -1,0 +1,439 @@
+"""Gymnasium environment for drone fly-by drop RL training."""
+
+import math
+import queue
+import subprocess
+import threading
+import time
+
+import gymnasium as gym
+import numpy as np
+import rclpy
+from geometry_msgs.msg import Point, Twist
+from nav_msgs.msg import Odometry
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
+from std_msgs.msg import Bool, Empty, String
+
+try:
+    from px4_msgs.msg import VehicleLocalPosition, VehicleAngularVelocity
+    _PX4_AVAILABLE = True
+except ImportError:
+    _PX4_AVAILABLE = False
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+TARGET_ENU_X = 11.0   # East
+TARGET_ENU_Y = 10.0   # North
+
+POS_SCALE = 50.0
+VEL_SCALE = 15.0
+ANG_VEL_SCALE = math.pi
+
+ACTION_VX_SCALE = 15.0
+ACTION_VY_SCALE = 5.0
+ACTION_VZ_SCALE = 3.0
+ACTION_YAW_SCALE = 1.0
+
+MAX_STEPS = 500
+MIN_ALTITUDE = 2.0
+MIN_ALTITUDE_START_STEP = 20
+
+TIME_PENALTY = -0.005
+HOVER_PENALTY_SCALE = 0.5
+SPEED_REWARD_SCALE = 5.0
+STABILITY_PENALTY_SCALE = 1.0
+ACCURACY_REWARD_SCALE = 2.0
+
+OBS_WAIT_TIMEOUT = 0.15   # seconds
+RESET_SETTLE_TIME = 2.0   # seconds after gz world reset
+CRUISE_POLL_TIMEOUT = 60.0  # seconds to wait for CRUISE state
+
+
+class _RLBridgeNode(Node):
+    """Background ROS2 node owning all pub/sub for the RL environment."""
+
+    def __init__(self, state_lock, obs_ready_event,
+                 drop_error_event, drop_error_queue):
+        super().__init__('drone_drop_rl_bridge')
+
+        self._lock = state_lock
+        self._obs_ready = obs_ready_event
+        self._drop_error_event = drop_error_event
+        self._drop_error_queue = drop_error_queue
+
+        # --- Shared state (protected by _lock) ---
+        self.pos_enu = np.zeros(3, dtype=np.float32)
+        self.vel_enu = np.zeros(3, dtype=np.float32)
+        self.ang_vel = np.zeros(3, dtype=np.float32)
+        self.pixel_coords = np.zeros(3, dtype=np.float32)   # u, v, conf
+        self.mission_state = 'IDLE'
+        self.payload_attached = True
+
+        # --- QoS for PX4 topics ---
+        px4_qos = QoSProfile(
+            reliability=QoSReliabilityPolicy.BEST_EFFORT,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+
+        # --- Subscribers ---
+        if _PX4_AVAILABLE:
+            self.create_subscription(
+                VehicleLocalPosition,
+                '/fmu/out/vehicle_local_position',
+                self._on_local_pos,
+                px4_qos,
+            )
+            self.create_subscription(
+                VehicleAngularVelocity,
+                '/fmu/out/vehicle_angular_velocity',
+                self._on_ang_vel,
+                px4_qos,
+            )
+        else:
+            self.get_logger().warning(
+                'px4_msgs not available; position/velocity obs will be zeros.')
+
+        self.create_subscription(
+            Point, '/target/pixel_coords', self._on_pixel_coords, 10)
+        self.create_subscription(
+            String, '/mission/state', self._on_mission_state, 10)
+        self.create_subscription(
+            Odometry, '/drone/payload/position', self._on_payload_pos, 10)
+        self.create_subscription(
+            Bool, '/drone/payload/drop_cmd_raw', self._on_drop_cmd_raw, 10)
+
+        # Drop error (published by drop_calculator after impact)
+        from std_msgs.msg import Float32
+        self.create_subscription(
+            Float32, '/rl/drop_error', self._on_drop_error, 10)
+
+        # --- Publishers ---
+        self.vel_pub = self.create_publisher(Twist, '/drone/cmd/velocity', 10)
+        self.detach_pub = self.create_publisher(
+            Empty, '/payload/drop_cmd', 10)
+        self.drop_raw_pub = self.create_publisher(
+            Bool, '/drone/payload/drop_cmd_raw', 10)
+
+    # ------------------------------------------------------------------
+    # Subscriber callbacks
+    # ------------------------------------------------------------------
+
+    def _on_local_pos(self, msg):
+        """Convert NED to ENU and update shared state."""
+        with self._lock:
+            # NED->ENU: East=Y_ned, North=X_ned, Up=-Z_ned
+            self.pos_enu[0] = msg.y
+            self.pos_enu[1] = msg.x
+            self.pos_enu[2] = -msg.z
+            self.vel_enu[0] = msg.vy
+            self.vel_enu[1] = msg.vx
+            self.vel_enu[2] = -msg.vz
+        self._obs_ready.set()
+
+    def _on_ang_vel(self, msg):
+        with self._lock:
+            self.ang_vel[0] = msg.xyz[0]
+            self.ang_vel[1] = msg.xyz[1]
+            self.ang_vel[2] = msg.xyz[2]
+
+    def _on_pixel_coords(self, msg):
+        with self._lock:
+            self.pixel_coords[0] = msg.x   # u
+            self.pixel_coords[1] = msg.y   # v
+            self.pixel_coords[2] = msg.z   # confidence
+
+    def _on_mission_state(self, msg):
+        with self._lock:
+            self.mission_state = msg.data
+
+    def _on_payload_pos(self, msg):
+        """Track payload position (used for future extensions)."""
+        pass
+
+    def _on_drop_cmd_raw(self, msg):
+        if not msg.data:   # False = drop event
+            with self._lock:
+                self.payload_attached = False
+
+    def _on_drop_error(self, msg):
+        """Called by drop_calculator after payload impacts ground."""
+        error = float(msg.data)
+        try:
+            self._drop_error_queue.put_nowait(error)
+        except queue.Full:
+            pass
+        self._drop_error_event.set()
+
+    # ------------------------------------------------------------------
+    # Action helpers
+    # ------------------------------------------------------------------
+
+    def publish_velocity(self, vx, vy, vz, yaw_rate):
+        """Publish ENU velocity command."""
+        twist = Twist()
+        twist.linear.x = float(vx)
+        twist.linear.y = float(vy)
+        twist.linear.z = float(vz)
+        twist.angular.z = float(yaw_rate)
+        self.vel_pub.publish(twist)
+
+    def publish_drop(self):
+        """Fire payload drop commands."""
+        self.detach_pub.publish(Empty())
+        drop_msg = Bool()
+        drop_msg.data = False   # False = drop event (inverted semantics)
+        self.drop_raw_pub.publish(drop_msg)
+
+
+# ---------------------------------------------------------------------------
+# Main Environment
+# ---------------------------------------------------------------------------
+
+class DroneDropEnv(gym.Env):
+    """Gymnasium env: SAC trains a fighter-jet fly-by drop policy.
+
+    Observation: Box(15,) float32
+    Action:      Box(5,)  float32 in [-1, 1]
+    """
+
+    metadata = {'render_modes': []}
+
+    def __init__(self):
+        super().__init__()
+
+        self.observation_space = gym.spaces.Box(
+            low=-1.0, high=1.0, shape=(15,), dtype=np.float32)
+        self.action_space = gym.spaces.Box(
+            low=-1.0, high=1.0, shape=(5,), dtype=np.float32)
+
+        # Threading primitives
+        self._state_lock = threading.Lock()
+        self._obs_ready = threading.Event()
+        self._drop_error_event = threading.Event()
+        self._drop_error_queue = queue.Queue(maxsize=1)
+
+        # Episode state
+        self._step_count = 0
+        self._has_dropped = False
+        self._drop_reward_pending = 0.0
+        self._episode_reward = 0.0
+
+        # Start ROS2
+        if not rclpy.ok():
+            rclpy.init()
+        self._node = _RLBridgeNode(
+            self._state_lock,
+            self._obs_ready,
+            self._drop_error_event,
+            self._drop_error_queue,
+        )
+        self._spin_thread = threading.Thread(
+            target=rclpy.spin, args=(self._node,), daemon=True)
+        self._spin_thread.start()
+
+    # ------------------------------------------------------------------
+    # Gymnasium API
+    # ------------------------------------------------------------------
+
+    def reset(self, *, seed=None, options=None):
+        """Reset simulation and return initial observation."""
+        super().reset(seed=seed)
+
+        # 1. Clear episode state
+        self._step_count = 0
+        self._has_dropped = False
+        self._drop_reward_pending = 0.0
+        self._episode_reward = 0.0
+        self._obs_ready.clear()
+        self._drop_error_event.clear()
+        # Drain queue
+        while not self._drop_error_queue.empty():
+            try:
+                self._drop_error_queue.get_nowait()
+            except queue.Empty:
+                break
+        with self._state_lock:
+            self._node.payload_attached = True
+
+        # 2. Reset Gazebo world (resets all poses + re-initialises DetachableJoint)
+        self._gz_world_reset()
+
+        # 3. Settle
+        time.sleep(RESET_SETTLE_TIME)
+
+        # 4. Hold drone with zero velocity
+        self._node.publish_velocity(0.0, 0.0, 0.0, 0.0)
+
+        # 5. Wait for CRUISE state
+        self._wait_for_cruise()
+
+        # 6. Return initial observation
+        obs = self._get_obs()
+        return obs, {}
+
+    def step(self, action):
+        """Apply action, advance one control step, return (obs, reward, term, trunc, info)."""
+        self._step_count += 1
+
+        # --- Decode action ---
+        vx = float(action[0]) * ACTION_VX_SCALE
+        vy = float(action[1]) * ACTION_VY_SCALE
+        vz = float(action[2]) * ACTION_VZ_SCALE
+        yaw_rate = float(action[3]) * ACTION_YAW_SCALE
+        drop_trigger = float(action[4])
+
+        # --- Execute velocity command ---
+        self._node.publish_velocity(vx, vy, vz, yaw_rate)
+
+        # --- Drop logic (once per episode) ---
+        drop_fired_this_step = False
+        if drop_trigger > 0.0 and not self._has_dropped:
+            self._node.publish_drop()
+            self._has_dropped = True
+            drop_fired_this_step = True
+
+        # --- Wait for next observation ---
+        self._obs_ready.clear()
+        self._obs_ready.wait(timeout=OBS_WAIT_TIMEOUT)
+        obs = self._get_obs()
+
+        # --- Reward ---
+        reward = self._compute_reward(obs, drop_fired_this_step)
+
+        # --- Termination conditions ---
+        terminated = False
+        truncated = False
+        info = {}
+
+        # Wait for drop_error if we have dropped
+        if self._has_dropped:
+            got_error = self._drop_error_event.wait(timeout=OBS_WAIT_TIMEOUT)
+            if got_error:
+                try:
+                    drop_error = self._drop_error_queue.get_nowait()
+                    accuracy_reward = -drop_error * ACCURACY_REWARD_SCALE
+                    reward += accuracy_reward
+                    info['drop_error_m'] = drop_error
+                    info['accuracy_reward'] = accuracy_reward
+                except queue.Empty:
+                    pass
+                terminated = True
+
+        # Crash detection
+        altitude = float(obs[2]) * POS_SCALE
+        if self._step_count > MIN_ALTITUDE_START_STEP and altitude < MIN_ALTITUDE:
+            terminated = True
+            info['crash'] = True
+
+        # Step limit
+        if self._step_count >= MAX_STEPS:
+            truncated = True
+
+        self._episode_reward += reward
+        if terminated or truncated:
+            info['episode_reward'] = self._episode_reward
+
+        return obs, reward, terminated, truncated, info
+
+    def close(self):
+        """Shutdown ROS2 node and executor."""
+        if rclpy.ok():
+            self._node.destroy_node()
+            rclpy.shutdown()
+
+    # ------------------------------------------------------------------
+    # Observation builder
+    # ------------------------------------------------------------------
+
+    def _get_obs(self):
+        with self._state_lock:
+            pos = self._node.pos_enu.copy()
+            vel = self._node.vel_enu.copy()
+            ang = self._node.ang_vel.copy()
+            pix = self._node.pixel_coords.copy()
+            attached = float(self._node.payload_attached)
+
+        pos_n = pos / POS_SCALE
+        vel_n = vel / VEL_SCALE
+        ang_n = ang / ANG_VEL_SCALE
+
+        # Pixel coordinates normalised to [-1, 1]
+        u_norm = (pix[0] / 640.0) * 2.0 - 1.0 if pix[2] > 0 else 0.0
+        v_norm = (pix[1] / 480.0) * 2.0 - 1.0 if pix[2] > 0 else 0.0
+        conf = float(np.clip(pix[2], 0.0, 1.0))
+
+        rel_dx = (pos[0] - TARGET_ENU_X) / POS_SCALE
+        rel_dy = (pos[1] - TARGET_ENU_Y) / POS_SCALE
+
+        obs = np.array([
+            *np.clip(pos_n, -1.0, 1.0),    # 0-2
+            *np.clip(vel_n, -1.0, 1.0),    # 3-5
+            *np.clip(ang_n, -1.0, 1.0),    # 6-8
+            u_norm, v_norm, conf,           # 9-11
+            attached,                       # 12
+            np.clip(rel_dx, -1.0, 1.0),    # 13
+            np.clip(rel_dy, -1.0, 1.0),    # 14
+        ], dtype=np.float32)
+        return obs
+
+    # ------------------------------------------------------------------
+    # Reward computation
+    # ------------------------------------------------------------------
+
+    def _compute_reward(self, obs, drop_fired_this_step):
+        vel = obs[3:6] * VEL_SCALE
+        ang = obs[6:9] * ANG_VEL_SCALE
+
+        horiz_speed = math.sqrt(float(vel[0])**2 + float(vel[1])**2)
+
+        time_penalty = TIME_PENALTY
+        hover_penalty = (math.tanh(horiz_speed / 5.0) - 1.0) * HOVER_PENALTY_SCALE
+
+        reward = time_penalty + hover_penalty
+
+        if drop_fired_this_step:
+            speed_reward = math.tanh(horiz_speed / 3.0) * SPEED_REWARD_SCALE
+            stability_penalty = (
+                -float(np.linalg.norm(ang)) * STABILITY_PENALTY_SCALE)
+            reward += speed_reward + stability_penalty
+
+        return reward
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _gz_world_reset(self):
+        """Call gz service to reset the simulation world."""
+        try:
+            subprocess.run(
+                [
+                    'gz', 'service',
+                    '-s', '/world/x_marker_world/control',
+                    '--reqtype', 'gz.msgs.WorldControl',
+                    '--reptype', 'gz.msgs.Boolean',
+                    '--timeout', '3000',
+                    '--req', 'reset: {all: true}',
+                ],
+                timeout=5.0,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            if rclpy.ok():
+                self._node.get_logger().warning('gz world reset timed out')
+
+    def _wait_for_cruise(self):
+        """Poll mission_state until CRUISE or timeout."""
+        deadline = time.time() + CRUISE_POLL_TIMEOUT
+        while time.time() < deadline:
+            with self._state_lock:
+                state = self._node.mission_state
+            if state == 'CRUISE':
+                return
+            time.sleep(0.5)
+        if rclpy.ok():
+            self._node.get_logger().warning(
+                f'Timed out waiting for CRUISE state (got: {state})')

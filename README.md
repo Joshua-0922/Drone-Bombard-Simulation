@@ -356,3 +356,91 @@ cd /opt/ros2_ws/
 ros2 launch mission_manager drone_mission.launch.py
 ```
 * 추후 rl_navigation도 같이 추가할 예정
+## Phase 5: Reinforcement Learning — Fighter Jet Fly-by Drop
+
+### Overview
+
+Phase 5 replaces the hard-coded `rl_navigation_node` with a trained **Soft Actor-Critic (SAC)**
+policy that learns to execute a high-speed fly-by drop. Instead of hovering over the target, the
+drone maintains maximum velocity through the target zone and releases the payload at the optimal
+moment so that projectile physics carry it to the X-marker.
+
+### Architecture
+
+| Component | File | Role |
+|-----------|------|------|
+| Gymnasium env | `rl_navigation/drone_drop_env.py` | 15-dim obs / 5-dim action space; Gazebo reset via `gz service` |
+| SAC trainer | `rl_navigation/train_sac.py` | Stable-Baselines3 SAC; TensorBoard logging; checkpoint resume |
+| Evaluator | `rl_navigation/evaluate.py` | Runs N episodes; saves report, plots, JSON summary |
+
+### Why SAC over PPO
+
+- **Off-policy** → more sample-efficient (crucial since each Gazebo reset takes ~30 s)
+- **Entropy regularization** → naturally explores diverse drop trajectories
+- **Continuous actions** → maps directly to velocity commands
+
+### Observation Space (15-dim)
+
+| Indices | Feature | Normalization |
+|---------|---------|---------------|
+| 0–2 | ENU position | ÷ 50 m |
+| 3–5 | ENU velocity | ÷ 15 m/s |
+| 6–8 | Angular velocity (body FRD) | ÷ π rad/s |
+| 9–10 | Pixel u, v (normalized) | (px/640)×2−1 |
+| 11 | Detection confidence | [0, 1] |
+| 12 | Payload attached flag | 0 or 1 |
+| 13–14 | Relative distance to target | ÷ 50 m |
+
+### Action Space (5-dim, all in [-1, 1])
+
+| Index | Meaning | Physical scale |
+|-------|---------|----------------|
+| 0 | vx (East) | × 15 m/s |
+| 1 | vy (North) | × 5 m/s |
+| 2 | vz (Up) | × 3 m/s |
+| 3 | yaw_rate | × 1 rad/s |
+| 4 | drop_trigger | > 0 fires drop |
+
+### Reward Design
+
+```
+per step:   time_penalty = -0.005
+            hover_penalty = (tanh(speed/5) - 1) × 0.5   # penalise hovering
+
+at drop:    speed_reward = tanh(speed/3) × 5.0           # reward high speed
+            stability_penalty = -‖ang_vel‖
+
+at impact:  accuracy_reward = -drop_error_m × 2.0        # from /rl/drop_error
+```
+
+### Training
+
+```bash
+# 1. Launch simulation in RL mode (skips rl_navigation_node)
+ros2 launch mission_manager drone_mission.launch.py rl_mode:=true
+
+# 2. In a second terminal, start SAC training
+ros2 run rl_navigation train_sac
+
+# Optional flags:
+ros2 run rl_navigation train_sac --timesteps 1000000 --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip
+
+# Monitor training
+tensorboard --logdir /workspace/ros2_ws/rl_logs/sac_drop
+```
+
+Checkpoints are saved to `/workspace/ros2_ws/rl_checkpoints/` every 5,000 steps.
+
+### Evaluation
+
+```bash
+ros2 run rl_navigation evaluate --model /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip --episodes 20
+```
+
+Outputs written to `/workspace/ros2_ws/rl_eval_results/`:
+- `evaluation_report.md` — metrics table (mean/std/min miss distance, mean drop speed)
+- `evaluation_summary.json` — machine-readable summary
+- `drop_error_dist.png` — miss distance histogram
+- `episode_rewards.png` — per-episode reward curve
+- `trajectory_top.png` — 2D overhead trajectory of final episode
+- `speed_vs_accuracy.png` — drop speed vs miss distance scatter

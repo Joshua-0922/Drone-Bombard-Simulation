@@ -26,6 +26,7 @@ Run:
 Launch arguments:
   headless      Run Gazebo without GUI (default: false)
   enable_vision Launch xmarker_detector YOLO node (default: true)
+  rl_mode       Skip rl_navigation_node so RL env drives velocity directly (default: false)
 """
 
 import os
@@ -39,7 +40,7 @@ from launch.actions import (
     TimerAction,
 )
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
@@ -84,8 +85,13 @@ def generate_launch_description():
         "enable_vision", default_value="true",
         description="Launch xmarker_detector YOLO detection node")
 
+    rl_mode_arg = DeclareLaunchArgument(
+        "rl_mode", default_value="false",
+        description="Skip rl_navigation_node; RL env drives velocity directly")
+
     headless = LaunchConfiguration("headless")
     enable_vision = LaunchConfiguration("enable_vision")
+    rl_mode = LaunchConfiguration("rl_mode")
 
     # ---------------------------------------------------------------------------
     # [1] uXRCE-DDS Agent
@@ -187,6 +193,8 @@ def generate_launch_description():
         executable="rl_navigation_node",
         name="rl_navigation",
         output="screen",
+        condition=IfCondition(
+            PythonExpression(["'", rl_mode, "' == 'false'"])),
     )
     drop_calculator = Node(
         package="drop_calculator",
@@ -199,6 +207,7 @@ def generate_launch_description():
     return LaunchDescription([
         headless_arg,
         vision_arg,
+        rl_mode_arg,
         micro_xrce_agent,
         gz_sim_gui,
         gz_sim_headless,
