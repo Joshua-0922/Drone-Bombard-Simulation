@@ -65,6 +65,7 @@ This single launch starts everything in order: MicroXRCEAgent + Gazebo Harmonic 
 
 ```bash
 # Publish test pixel coordinates to simulate vision detection
+# system_tester.py lives at the workspace root (ros2_ws/system_tester.py)
 cd /workspace/ros2_ws
 python3 system_tester.py
 
@@ -87,21 +88,22 @@ The system is an autonomous drone that **cruises**, **detects** an X-marker targ
 FSM states managed by `mission_manager_node`, running at 10 Hz:
 - `TAKEOFF` → climbs to 10 m altitude (position-controlled to ENU (0,0,10))
 - `CRUISE` → flies north-east at 1 m/s by incrementing a position setpoint until target detected
-- `TRACKING` → delegates velocity control to `rl_navigation`; reverts to CRUISE if target lost
+- `TRACKING` → delegates velocity control to `rl_navigation`; `rl_navigation_node` continuously publishes 2.0 m/s forward velocity while centering on target laterally; reverts to CRUISE if target lost
 - `DROP` → hovers (zero velocity) after drop confirmed via `/payload/drop_cmd`
+- `STATE_RETURN` → placeholder state; **not implemented**
 
 State transitions: `/target/pixel_coords` triggers CRUISE→TRACKING; `/payload/drop_cmd` triggers any→DROP.
 
 ### Package Overview
 
-| Package | Type | Role |
-|---------|------|------|
-| `mission_manager` | Python | FSM commander; publishes `/drone/cmd/position` or `/drone/cmd/velocity`; also owns `drone_mission.launch.py` and `ros_gz_bridge.yaml` |
-| `drone_controller` | Python | PX4 bridge; converts ENU→NED commands to `/fmu/in/trajectory_setpoint`; arms and enters offboard mode 5 s after start |
-| `vision_detection` | C++ (CMake) | YOLOv8 inference at 10 Hz; publishes `/target/pixel_coords` and `/vision/detections` |
-| `rl_navigation` | Python | Tracking controller; sends velocity commands; triggers payload drop via `/payload/drop_cmd` |
-| `drop_calculator` | Python | Post-drop referee; tracks payload position until ground impact; publishes miss distance to `/rl/drop_error` |
-| `px4_msgs` | CMake | PX4 message type definitions (synced with PX4 v1.15.4) |
+| Package | Type | Executable | Loop Rate | Role |
+|---------|------|-----------|-----------|------|
+| `mission_manager` | Python | `mission_manager_node` | 10 Hz | FSM commander; publishes `/drone/cmd/position` or `/drone/cmd/velocity`; also owns `drone_mission.launch.py` and `ros_gz_bridge.yaml` |
+| `drone_controller` | Python | `controller` | 20 Hz | PX4 bridge; converts ENU→NED commands to `/fmu/in/trajectory_setpoint`; arms and enters offboard mode 5 s after start |
+| `vision_detection` | ament_cmake (Python node) | `xmarker_detector` | 10 Hz | YOLOv8 inference; publishes `/target/pixel_coords` and `/vision/detections`. Package uses CMake for custom msg generation; detection node itself (`monocamera_xmarker_detector.py`) is Python. |
+| `rl_navigation` | Python | `rl_navigation_node` | 10 Hz | Tracking controller; sends velocity commands; triggers payload drop via `/payload/drop_cmd`. `drone_env.py` and `train_ppo.py` are empty placeholders for future RL training. |
+| `drop_calculator` | Python | `calculator` | 20 Hz | Post-drop referee; tracks payload position until ground impact; publishes miss distance to `/rl/drop_error` |
+| `px4_msgs` | CMake | — | — | PX4 message type definitions (synced with PX4 v1.15.4) |
 
 ### Key Topics
 
@@ -133,7 +135,7 @@ The payload uses a `DetachableJoint` plugin defined in `gazebo_models/x500_bomba
 Drop sequence:
 1. `rl_navigation` publishes `std_msgs/Empty` to `/payload/drop_cmd`
 2. `ros_gz_bridge` forwards it to gz-transport topic `/x500_bombard/drop` → `DetachableJoint` releases the payload physically
-3. `rl_navigation` also publishes `Bool(False)` to `/drone/payload/drop_cmd_raw` to signal `drop_calculator`
+3. `rl_navigation` also publishes `Bool(False)` to `/drone/payload/drop_cmd_raw` to signal `drop_calculator` (note: `False` = drop event, `True` = normal — semantics are inverted)
 4. `drop_calculator` tracks `/drone/payload/position` (bridged from `OdometryPublisher` in `payload_cylinder/model.sdf`) until payload z ≤ 0.04 m, then publishes miss distance to `/rl/drop_error`
 
 > Note: `drop_calculator/node.py` is an older ballistics predictor that is **not** the registered entry point and not launched by default. The active entry point is `drop_calculator_node.py` (`calculator` executable).
