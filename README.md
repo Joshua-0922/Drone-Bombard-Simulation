@@ -4,16 +4,16 @@
 본 프로젝트는 사전에 적의 정확한 좌표를 알지 못하는 상황에서, 드론이 지정된 경로를 **순항(Cruise)**하던 중 목표물(X Marker)을 **식별(Detection)**하면 즉시 경로를 변경하여 **정밀 추적(Terminal Guidance)** 및 **공중 투하(Air Drop)**를 수행하는 자율 비행 시스템입니다.
 
 1.  **Phase 1: 순항 (Cruise Mode)**
-    * 드론은 10m 고도를 유지하며 사전 정의된 전술 경로(예: 북쪽 방향 직진)로 비행합니다.
-    * 이 단계에서는 광역 탐색을 수행하며, GPS 기반의 웨이포인트 비행을 합니다.
+    * 드론은 10m 고도를 유지하며 북동 방향으로 1 m/s 속도로 비행합니다.
+    * GPS 기반 위치 제어로 웨이포인트를 점진적으로 증가시켜 비행합니다.
 2.  **Phase 2: 요격 전환 (Intercept Transition)**
     * 하방 카메라가 목표물('X' 표식)을 감지하는 즉시 순항 모드를 중단합니다.
-    * 제어권을 Mission Manager에서 추적 알고리즘(Visual Servoing/RL)으로 넘깁니다.
+    * 제어권을 Mission Manager에서 추적 알고리즘(RL Navigation)으로 넘깁니다.
 3.  **Phase 3: 정밀 유도 (Terminal Guidance)**
     * GPS 좌표가 아닌 카메라 영상 내 타겟 위치(Pixel Error)를 기반으로 비행합니다.
-    * 드론의 속도 벡터를 타겟 방향으로 지속적으로 수정하며 접근합니다 (Bank-to-Turn).
+    * 드론의 속도 벡터를 타겟 방향으로 지속적으로 수정하며 접근합니다.
 4.  **Phase 4: 동적 투하 (Dynamic Drop)**
-    * 타겟 상공 도달 및 투하 조건(탄도학적 계산) 만족 시 페이로드를 투하합니다.
+    * 타겟 상공 도달 및 투하 조건 만족 시 페이로드를 투하합니다.
 
 ## 2. Operating Principles
 Warning: GCP VM은 사용자 계정별 홈 디렉토리가 분리되어 있다.
@@ -23,7 +23,7 @@ Warning: GCP VM은 사용자 계정별 홈 디렉토리가 분리되어 있다.
 
 개인 홈 디렉토리(/home/username)는 사용하지 않는다.
 
-### 1. Repository에는 “소스 코드만” 관리한다
+### 1. Repository에는 "소스 코드만" 관리한다
 
 * ROS2 패키지는 반드시 ros2_ws/src/<package_name>에 생성
 * build/, install/, log/ 디렉토리는 Git 관리 대상이 아님
@@ -38,13 +38,13 @@ Warning: GCP VM은 사용자 계정별 홈 디렉토리가 분리되어 있다.
 
 ### 4. Docker 이미지 빌드는 GitHub Actions가 담당한다
 * 로컬에서 docker build 금지
-* main 브랜치 push → 자동 빌드 → Artifact Registry 저장
+* main 또는 feature/migration-harmonic 브랜치 push → 자동 빌드 → Artifact Registry 저장
 
 ### 5. ROS2 패키지는 컨테이너 내부에서 생성한다.
 * 패키지 생성 위치
 ```
 cd /workspace/ros2_ws/src
-ros2 pkg create <package_name> --build-type ament_pthon
+ros2 pkg create <package_name> --build-type ament_python
 ```
 
 * 빌드
@@ -59,26 +59,12 @@ source install/setup.bash
 
 ### 6. 모든 package 개발은 branch로 나누어서 개발하기. 이후 합치면 된다.
 * 개발 종류마다 나누어서 branch 작성
-* 이름은 path-generation, CV, autonomy, px4 등으로, 만들기 전 회의 통해 결정
-
-#### 6.1 path-generation branch 만들기.
-```
-git checkout main
-git pull
-git checkout -b feature/path-generation
-```
-#### 6.2 main과 합치기
-```
-git checkout main
-git pull
-git merge feature/path-generation
-git push
-```
+* 이름은 feature/migration-harmonic 등으로, 만들기 전 회의 통해 결정
 
 ## 3. 기술 스택
 OS : Ubuntu 22.04 LTS
 ROS2 : Humble
-Simulation : Gazebo
+Simulation : Gazebo Harmonic
 ML Framework : Pytorch
 GPU : NVIDIA L4 & CUDA 12.6.2
 CI/CD : Github Actions & Google Cloud Platform
@@ -101,30 +87,29 @@ GitHub Repository
 .
 ├── LICENSE
 ├── README.md                  # 개발 환경 가이드
-├── SYSTEM_ARCHITECTURE.md     # 시스템 아키텍처 및 기능 문서
-├── MODEL_INFO.md              # YOLO 모델 정보
-├── drone_drop_system/         # 드론 투하 시뮬레이션 및 ML/CV 로직
+├── CLAUDE.md                  # Claude Code 가이드 (시스템 아키텍처 상세)
+├── drone_drop_system/         # Docker 빌드 관련
 │   └── docker/                # Dockerfile, entrypoint, requirements
-├── gazebo_models/             # Gazebo 시뮬레이션 모델
-│   ├── iris_bombard/          # 드론 모델
+├── gazebo_models/             # Gazebo Harmonic 시뮬레이션 모델
+│   ├── x500_bombard/          # 드론 모델 (페이로드 탑재)
+│   ├── payload_cylinder/      # 투하 페이로드 모델
 │   ├── x_marker/              # X자 표식 모델
-│   └── worlds/                # 시뮬레이션 월드
+│   └── worlds/                # 시뮬레이션 월드 (x_marker_world.sdf)
 ├── ros2_ws/                   # ROS2 전용 워크스페이스 (Git으로 관리)
 │   ├── src/                   # ROS2 패키지 소스
-│   │   ├── vision_detection/  # X자 표식 탐지 패키지
-│   │   ├── path_generation/   # 드론 경로 생성 패키지
-│   │   ├── drop_calculator/   # 투하 타이밍 계산 패키지
-│   │   ├── mechanism_controller/  # (개발 예정) 투하 메커니즘 제어
+│   │   ├── mission_manager/   # FSM 커맨더 + 통합 launch 파일
+│   │   ├── drone_controller/  # PX4 브릿지 (ENU→NED 변환)
+│   │   ├── vision_detection/  # YOLOv8 X마커 탐지 패키지
+│   │   ├── rl_navigation/     # 추적 컨트롤러 + SAC RL 학습
+│   │   ├── drop_calculator/   # 투하 후 착탄 오차 계산
 │   │   └── px4_msgs/          # PX4 메시지 타입
 │   ├── yolo_workspace/        # YOLO 학습 관련
 │   │   ├── datasets/          # 학습 데이터셋
 │   │   ├── runs/              # 학습 결과
 │   │   └── scripts/           # 학습 스크립트
-│   ├── VISION_DETECTION_README.md  # vision_detection 패키지 가이드
-│   ├── setup_simulation.bash  # 시뮬레이션 환경 설정 스크립트
-│   └── test_vision_detection.sh    # Vision 테스트 스크립트
+│   └── system_tester.py       # 시뮬레이션 테스트 스크립트
 └── drone_bombard_best.pt      # 학습된 YOLO 모델 (최적 가중치)
-``` 
+```
 
 디렉토리 역할 요약
 * `ros2_ws/`
@@ -133,12 +118,12 @@ GitHub Repository
   * `build/`, `install/`, `log/`는 로컬/컨테이너 빌드 산출물 (Git 관리 제외)
 
 * `gazebo_models/`
-  * Gazebo 시뮬레이션용 3D 모델 및 월드 파일
+  * Gazebo Harmonic 시뮬레이션용 3D 모델 및 월드 파일
 
 * `yolo_workspace/`
   * YOLO 모델 학습 및 평가 관련 파일
 
-**📖 시스템 아키텍처 및 기능에 대한 자세한 내용은 [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md)를 참고하세요.**
+**시스템 아키텍처 및 기능에 대한 자세한 내용은 [CLAUDE.md](./CLAUDE.md)를 참고하세요.**
 
 ## 6.  Repository / VM / Container 역할
 | 구분 | 역할 |
@@ -151,88 +136,50 @@ GitHub Repository
 
 
 ## 7. VM에서 Docker 실행 가이드
-### 7.1. 최초 컨테이너 생성 
-```
+### 7.1. 최초 컨테이너 생성
+```bash
 # 1. (필수) 호스트에서 화면 권한 허용 (실행 전 1회)
 xhost +local:docker
 
-# 2. 컨테이너 실행
+# 2. 최신 이미지 pull
+docker pull us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest
+
+# 3. 컨테이너 실행
 docker run -itd \
   --gpus all \
   --net=host \
   --privileged \
   --ipc=host \
-  --name drone-bombard-dev \
+  --name drone-bombard-harmonic \
   --env="DISPLAY=$DISPLAY" \
   --env="QT_X11_NO_MITSHM=1" \
   --env="NVIDIA_DRIVER_CAPABILITIES=all" \
   --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
-  --volume="$HOME/.Xauthority:/root/.Xauthority:rw" \
   -v /opt/drone-bombard/Drone-Bombard-Simulation/ros2_ws:/workspace/ros2_ws \
   -v /opt/drone-bombard/Drone-Bombard-Simulation/gazebo_models:/workspace/gazebo_models \
   -v ~/.cache:/root/.cache \
-  -v "$(pwd)/claude_config:/root/.anthropic" \
   us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest \
   /bin/bash
 ```
-* {username}은 각자 user name 입력하기. 같은 이미지를 쓰되 사용자까리 컨테이너 분리
-* ros2_ws는 VM과 컨테이너 공유 볼륨
-* **gazebo_models는 Gazebo 시뮬레이션 모델 및 월드 파일을 공유하는 볼륨 (추가됨)**
-* 컨테이너 삭제 전까지 데이터 유지
-
-#### 7.1.1. gazebo_models 볼륨 마운트 설명
-* `gazebo_models` 폴더에는 커스텀 드론 모델(`iris_bombard`)과 X 마커 모델, 테스트 월드 파일이 포함되어 있습니다.
-* 이 볼륨을 마운트하면 launch 파일이 자동으로 커스텀 모델을 인식하고 사용합니다.
-* 마운트하지 않아도 PX4 기본 모델로 동작하지만, 프로젝트의 커스텀 모델을 사용하려면 반드시 마운트해야 합니다.
+* 컨테이너 이름: `drone-bombard-harmonic` (팀 공용 단일 컨테이너)
+* `ros2_ws`, `gazebo_models` 모두 VM과 컨테이너 공유 볼륨
 
 ### 7.2 기존 컨테이너 재접속
-매번 접속하고 xhost +local:docker는 해줘야 한다.
-```
-xhost +local:docker 
-docker start -ai drone-bombard-dev-{username}
+```bash
+xhost +local:docker
+docker start -ai drone-bombard-harmonic
 ```
 
 ### 7.3 기존 컨테이너 삭제
-1. 기존 컨테이너 중지
-```
-docker stop drone-bombard-dev-{username}
-```
-
-2. 기존 컨테이너 삭제
-```
-docker rm drone-bombard-dev-{username}
-```
-
-### 7.4 Gazebo 시뮬레이션 실행 방법
-컨테이너 내부에서 다음 명령어로 시뮬레이션을 실행할 수 있습니다:
-
 ```bash
-# 컨테이너 접속
-docker exec -it drone-bombard-dev-{username} /bin/bash
-
-# 환경 설정
-cd /workspace/ros2_ws
-source setup_simulation.bash
-
-# 시뮬레이션 실행 (기본값: iris_bombard 모델, x_marker_test 월드)
-ros2 launch path_generation px4_gazebo_sitl.launch.py
-
-# 또는 옵션 지정하여 실행
-ros2 launch path_generation px4_gazebo_sitl.launch.py \
-    world:=x_marker_test \
-    model:=iris_bombard \
-    enable_vision:=true \
-    enable_path_generation:=true
+docker stop drone-bombard-harmonic
+docker rm drone-bombard-harmonic
 ```
 
-**주요 변경사항:**
-* launch 파일이 자동으로 `gazebo_models` 폴더를 찾아 커스텀 모델을 사용합니다.
-* `gazebo_models` 볼륨이 마운트되어 있으면 `iris_bombard` 모델과 `x_marker_test` 월드가 기본값으로 설정됩니다.
-* 마운트되지 않아도 PX4 기본 모델로 정상 동작합니다 (하위 호환성 유지).
 ## 8. Github repository와 VM
 ### 8.1 Github Repository로 코드 반영(VM기준)
-```
-cd ~/Drone-Bombard-Simulation
+```bash
+cd /opt/drone-bombard/Drone-Bombard-Simulation
 git status
 git add ros2_ws
 git commit -m "Add ROS2 package"
@@ -241,19 +188,19 @@ git push
 ```
 ### 8.2 Github Action에서 완성된 Image를 pull해서 VM에서 실행하는 방법
 1. Docker Image pull하기
-```
-cd /opt/drone_drop_system/Drone_Bombard_Simulation
+```bash
+cd /opt/drone-bombard/Drone-Bombard-Simulation
 git pull --rebase
-gcloud auth configure-docker us-central1-docker.pkg.dev (최초 한번만)
+gcloud auth configure-docker us-central1-docker.pkg.dev  # 최초 한번만
 docker pull us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest
 ```
 
-2. Image 기반으로 컨테이너 만들기
+2. 기존 컨테이너 삭제 후 재생성
+```bash
+docker stop drone-bombard-harmonic
+docker rm drone-bombard-harmonic
+# 이후 7.1 컨테이너 생성 명령 실행
 ```
-docker ps -a 
-docker rm -rf drone-bombard-dev-{$USERNAME} (이미 존재하는 컨테이너와 중복을 막기위해 삭제해야 할 때)
-```
-이후 docker 실행
 
 ## 9. 팀원 VM 접근 가이드
 ### 9.1 GCP 권한 부여
@@ -265,7 +212,7 @@ docker rm -rf drone-bombard-dev-{$USERNAME} (이미 존재하는 컨테이너와
 ## 9.2 VM 접속 방법
 
 ### 9.1 GCP Console의 웹 SSH 방식으로 접근
-* 절차: 
+* 절차:
 1. https://console.cloud.google.com 접속
 2. 개인 Google 계정 로그인
 3. 프로젝트 선택
@@ -326,36 +273,72 @@ vncserver :1 -geometry 1920x1080 -localhost no
 - **화면이 안 나올 때:** 브라우저 새로고침(F5)을 하기
 - **로그인이 안 될 때:** 접속 URL이 `https://`로 시작하는지 확인하기
 - **한영 전환:** (설정한 방식에 따라 기입, 예: Shift+Space 또는 한영키)
-- **클립보드 복사/붙여넣기:** - `Ctrl+Alt+Shift`를 누르면 Guacamole 메뉴가 열림
+- **클립보드 복사/붙여넣기:** `Ctrl+Alt+Shift`를 누르면 Guacamole 메뉴가 열림
     - 여기서 클립보드 내용을 입력해야 VM 내부로 텍스트가 전달됨
 
 
 ## 11. 노드 통합(Launch) 실행
-모든 터미널을 container를 열어서 실행한다
-```
-docker exec -it drone-bombard-dev bash
-```
 
-### Termianl 1
-```
-MicroXRCEAgent udp4 -p 8888
-```
+Gazebo Harmonic으로 마이그레이션 후, **단일 launch 명령어**로 전체 시뮬레이션 스택을 시작합니다.
 
-### Termianl 2
-VM 상에서 GUI가 느리기 때문에, gazebo를 실행하고 바로 최소 크기로 화면을 줄여야 한다
-```
+### 11.1 최초 1회: PX4 빌드
+
+컨테이너 내부에서 최초 1회만 실행합니다.
+
+```bash
 cd /opt/PX4-Autopilot
-make px4_sitl gazebo-classic
+DONT_RUN=1 make px4_sitl gz_x500
 ```
 
-### Terminal 3
-mission_manager, drone_controller, vision_detection 패키지의 노드 실행 파일을 하나의 launch파일로 제작하였다
-Launch file은 최상위 노드인 mission_manager/launch에 존재한다.
+### 11.2 빌드
+
+```bash
+cd /workspace/ros2_ws
+colcon build
+source install/setup.bash
 ```
-cd /opt/ros2_ws/
+
+### 11.3 전체 시뮬레이션 실행 (단일 명령)
+
+```bash
+cd /workspace/ros2_ws
+source install/setup.bash
 ros2 launch mission_manager drone_mission.launch.py
 ```
-* 추후 rl_navigation도 같이 추가할 예정
+
+이 명령 하나로 다음 순서대로 모든 컴포넌트가 자동 기동됩니다:
+
+| 시간 | 컴포넌트 |
+|------|---------|
+| t=0s | MicroXRCE-DDS Agent (PX4 ↔ ROS2 통신) |
+| t=0s | Gazebo Harmonic (x_marker_world 시뮬레이션) |
+| t=5s | PX4 SITL (gz_x500 모델, 비행 제어 스택) |
+| t=8s | ros_gz_bridge (Gazebo ↔ ROS2 토픽 브릿지) |
+| t=12s | vision_detection (YOLOv8 X마커 탐지) |
+| t=0s | mission_manager, drone_controller, rl_navigation, drop_calculator (토픽 대기 후 기동) |
+
+### 11.4 선택적 옵션
+
+```bash
+# GUI 없이 headless 모드로 실행 (서버 환경)
+ros2 launch mission_manager drone_mission.launch.py headless:=true
+
+# 비전 노드 비활성화 (카메라 없이 테스트)
+ros2 launch mission_manager drone_mission.launch.py enable_vision:=false
+```
+
+### 11.5 테스트 (비전 탐지 시뮬레이션)
+
+별도 터미널에서 가짜 탐지 신호를 발행하여 미션 FSM 동작을 테스트할 수 있습니다:
+
+```bash
+# 컨테이너 추가 접속
+docker exec -it drone-bombard-harmonic bash
+
+cd /workspace/ros2_ws
+python3 system_tester.py
+```
+
 ## Phase 5: Reinforcement Learning — Fighter Jet Fly-by Drop
 
 ### Overview
