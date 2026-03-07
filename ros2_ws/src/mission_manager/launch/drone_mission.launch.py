@@ -14,7 +14,7 @@ Launch order:
 Prerequisites (inside drone-bombard-harmonic container):
   1. Build PX4 for Harmonic target (one-time):
        cd /opt/PX4-Autopilot
-       DONT_RUN=1 make px4_sitl gz_x500
+       cd /opt/PX4-Autopilot && DONT_RUN=1 make px4_sitl gz_x500
   2. Build ROS2 workspace:
        cd /workspace/ros2_ws && colcon build && source install/setup.bash
 
@@ -134,15 +134,24 @@ def generate_launch_description():
     # ---------------------------------------------------------------------------
     # [3] PX4 SITL (t=5s — wait for Gazebo)
     # ---------------------------------------------------------------------------
+    # Run the pre-built PX4 binary directly so we can set PX4_SIM_MODEL=gz_x500_bombard.
+    # 'make px4_sitl gz_x500' hardcodes PX4_SIM_MODEL=gz_x500 via cmake and cannot be
+    # overridden; running the binary directly lets us choose any SITL model at runtime.
+    # Working directory must be the gz_bridge subdir so PX4 resolves its etc/ tree.
+    _px4_gz_bridge_dir = (
+        f"{px4_dir}/build/px4_sitl_default/src/modules/simulation/gz_bridge"
+    )
+    _px4_bin = f"{px4_dir}/build/px4_sitl_default/bin/px4"
     px4_sitl = TimerAction(
         period=5.0,
         actions=[ExecuteProcess(
             cmd=["bash", "-c",
-                 f"cd {px4_dir} && "
+                 f"cd {_px4_gz_bridge_dir} && "
                  f"PX4_GZ_STANDALONE=1 "
-                 f"PX4_GZ_MODEL=x500_bombard "
+                 f"PX4_GZ_WORLD=x_marker_world "
+                 f"PX4_SIM_MODEL=gz_x500_bombard "
                  f"GZ_SIM_RESOURCE_PATH={gz_resource_path} "
-                 f"make px4_sitl gz_x500"],
+                 f"{_px4_bin}"],
             name="px4_sitl",
             output="screen",
         )],

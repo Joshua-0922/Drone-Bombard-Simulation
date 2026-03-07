@@ -364,13 +364,15 @@ GZ_SIM_RESOURCE_PATH=$GZ_PATH \
 
 **Terminal 3 — PX4 SITL (Gazebo 기동 후 실행):**
 ```bash
-cd /opt/PX4-Autopilot
+cd /opt/PX4-Autopilot/build/px4_sitl_default/src/modules/simulation/gz_bridge
 PX4_GZ_STANDALONE=1 \
-PX4_GZ_MODEL=x500_bombard \
+PX4_GZ_WORLD=x_marker_world \
+PX4_SIM_MODEL=gz_x500_bombard \
 GZ_SIM_RESOURCE_PATH=$GZ_PATH \
-  make px4_sitl gz_x500
+  /opt/PX4-Autopilot/build/px4_sitl_default/bin/px4
 ```
 
+> `make px4_sitl gz_x500`는 cmake가 `PX4_SIM_MODEL=gz_x500`을 강제로 덮어쓰기 때문에 바이너리를 직접 실행합니다.
 > PX4는 실행 시 Gazebo에 자동으로 접속해 `x500_bombard` 드론을 스폰합니다.
 
 **Terminal 4 — ros_gz_bridge (PX4 기동 후 실행):**
