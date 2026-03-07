@@ -12,42 +12,53 @@ class DroneControllerNode(Node):
         super().__init__('drone_controller_node')
 
         # --- [1] QoS 설정 ---
-        qos_profile = QoSProfile(
+        # Publishers → PX4: BEST_EFFORT is sufficient; TRANSIENT_LOCAL is compatible
+        pub_qos = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+        # Subscribers ← PX4: PX4 publishes VOLATILE; using TRANSIENT_LOCAL here
+        # causes a silent DDS incompatibility and no messages are ever received.
+        sub_qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
 
         # --- [2] Publishers (To PX4) ---
         self.offboard_control_mode_pub = self.create_publisher(
-            OffboardControlMode, '/fmu/in/offboard_control_mode', qos_profile)
+            OffboardControlMode, '/fmu/in/offboard_control_mode', pub_qos)
         self.trajectory_setpoint_pub = self.create_publisher(
-            TrajectorySetpoint, '/fmu/in/trajectory_setpoint', qos_profile)
+            TrajectorySetpoint, '/fmu/in/trajectory_setpoint', pub_qos)
         self.vehicle_command_pub = self.create_publisher(
-            VehicleCommand, '/fmu/in/vehicle_command', qos_profile)
+            VehicleCommand, '/fmu/in/vehicle_command', pub_qos)
 
         # --- [3] Subscribers (From Brains) ---
         # A. 위치 제어 (순항 모드)
         self.pos_sub = self.create_subscription(
             Vector3, '/drone/cmd/position', self.position_command_callback, 10)
-        
+
         # B. 속도 제어 (추적 모드)
         self.vel_sub = self.create_subscription(
             Twist, '/drone/cmd/velocity', self.velocity_command_callback, 10)
-        
+
         self.status_sub = self.create_subscription(
-            VehicleStatus, '/fmu/out/vehicle_status', self.vehicle_status_callback, qos_profile)
+            VehicleStatus, '/fmu/out/vehicle_status',
+            self.vehicle_status_callback, sub_qos)
 
         # --- [4] 내부 변수 ---
         self.control_mode = "POSITION"
-        
-        # [변경] 초기 고도 설정: 10m (NED 좌표계이므로 -10.0)
-        self.target_pos = [0.0, 0.0, -10.0] 
-        self.target_vel = [0.0, 0.0, 0.0, 0.0] # vx, vy, vz, yaw_speed
-        
+
+        # 초기 고도 설정: 10m (NED 좌표계이므로 -10.0)
+        self.target_pos = [0.0, 0.0, -10.0]
+        self.target_vel = [0.0, 0.0, 0.0, 0.0]  # vx, vy, vz, yaw_speed
+
         self.vehicle_status = VehicleStatus()
         self.offboard_set_counter = 0
+        self.px4_connected = False  # True after first vehicle_status received
 
         # --- [5] Main Loop (20Hz) ---
         self.timer = self.create_timer(0.05, self.cmdloop_callback)
@@ -66,6 +77,9 @@ class DroneControllerNode(Node):
         self.target_vel = [msg.linear.x, -msg.linear.y, -msg.linear.z, -msg.angular.z]
 
     def vehicle_status_callback(self, msg):
+        if not self.px4_connected:
+            self.get_logger().info("PX4 connected — vehicle_status received.")
+        self.px4_connected = True
         self.vehicle_status = msg
 
     def cmdloop_callback(self):
@@ -76,13 +90,25 @@ class DroneControllerNode(Node):
         elif self.control_mode == "VELOCITY":
             self.publish_velocity_setpoint(self.target_vel)
 
-        # 실행 5초 후 시동 및 Offboard 전환
-        if self.offboard_set_counter == 100:
-            self.engage_offboard_mode()
-            self.arm()
-        
-        if self.offboard_set_counter < 101:
-            self.offboard_set_counter += 1
+        self.offboard_set_counter += 1
+
+        # Wait until PX4 vehicle_status is actually received before arming.
+        # Sending arm/offboard commands before PX4 is ready silently fails.
+        if not self.px4_connected:
+            return
+
+        already_armed = (self.vehicle_status.arming_state == 2)   # ARMED
+        in_offboard = (self.vehicle_status.nav_state == 14)        # OFFBOARD
+
+        if already_armed and in_offboard:
+            return  # Nothing to do
+
+        # Retry arm + offboard every 2 s (40 ticks at 20 Hz) until confirmed
+        if self.offboard_set_counter % 40 == 0:
+            if not in_offboard:
+                self.engage_offboard_mode()
+            if not already_armed:
+                self.arm()
 
     def publish_offboard_control_mode(self):
         msg = OffboardControlMode()

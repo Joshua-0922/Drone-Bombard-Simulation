@@ -64,10 +64,12 @@ class XMarkerDetectorNode(Node):
             self.get_logger().error(f'Failed to load YOLO model: {e}')
             self.model = None
 
-        # QoS profile for PX4 and camera topics (BEST_EFFORT)
+        # QoS for subscriptions: ros_gz_bridge and PX4 both publish VOLATILE.
+        # Using TRANSIENT_LOCAL here causes a silent DDS incompatibility and no
+        # messages are ever received.
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
             depth=1
         )
@@ -384,13 +386,15 @@ class XMarkerDetectorNode(Node):
 
                 self.detection_pub.publish(detection_msg)
 
-            # Publish pixel coordinates for path_generation and drop_calculator
+            # Publish pixel coordinates for mission_manager and rl_navigation.
+            # z carries the detection confidence so receivers can distinguish
+            # a real detection (z > 0) from "no target" (z == 0).
+            pixel_coords_msg = Point()
             if detected:
-                pixel_coords_msg = Point()
                 pixel_coords_msg.x = float(bbox_center_x)  # u coordinate
                 pixel_coords_msg.y = float(bbox_center_y)  # v coordinate
-                pixel_coords_msg.z = 0.0
-                self.pixel_coords_pub.publish(pixel_coords_msg)
+                pixel_coords_msg.z = float(confidence)     # > 0 means detected
+            self.pixel_coords_pub.publish(pixel_coords_msg)
 
             # Publish annotated image
             annotated_msg = self.bridge.cv2_to_imgmsg(cv_image, 'bgr8')
