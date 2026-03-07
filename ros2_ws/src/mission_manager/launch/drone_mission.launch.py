@@ -6,9 +6,9 @@ Single launch file for the full Gazebo Harmonic drone simulation.
 Launch order:
   t=0s  : MicroXRCEAgent  (PX4 <-> ROS2 DDS bridge)
   t=0s  : gz sim          (Gazebo Harmonic world)
-  t=5s  : PX4 SITL        (connects to running gz, spawns x500_bombard)
-  t=8s  : ros_gz_bridge   (bridges gz-transport -> ROS2 topics)
-  t=12s : xmarker_detector (YOLO vision node)
+  t=12s : PX4 SITL        (connects to running gz, spawns x500_bombard)
+  t=16s : ros_gz_bridge   (bridges gz-transport -> ROS2 topics)
+  t=22s : xmarker_detector (YOLO vision node)
   t=0s  : mission nodes   (wait on ROS2 topics; start immediately)
 
 Prerequisites (inside drone-bombard-harmonic container):
@@ -132,7 +132,7 @@ def generate_launch_description():
     )
 
     # ---------------------------------------------------------------------------
-    # [3] PX4 SITL (t=5s — wait for Gazebo)
+    # [3] PX4 SITL (t=12s — Gazebo with ogre2 sensors needs ~10s to fully load)
     # ---------------------------------------------------------------------------
     # Run the pre-built PX4 binary directly so we can set PX4_SIM_MODEL=gz_x500_bombard.
     # 'make px4_sitl gz_x500' hardcodes PX4_SIM_MODEL=gz_x500 via cmake and cannot be
@@ -143,7 +143,7 @@ def generate_launch_description():
     )
     _px4_bin = f"{px4_dir}/build/px4_sitl_default/bin/px4"
     px4_sitl = TimerAction(
-        period=5.0,
+        period=12.0,
         actions=[ExecuteProcess(
             cmd=["bash", "-c",
                  f"cd {_px4_gz_bridge_dir} && "
@@ -158,10 +158,10 @@ def generate_launch_description():
     )
 
     # ---------------------------------------------------------------------------
-    # [4] ros_gz_bridge (t=8s — wait for Gazebo + PX4 + sensors)
+    # [4] ros_gz_bridge (t=16s — wait for Gazebo + PX4 + sensors)
     # ---------------------------------------------------------------------------
     ros_gz_bridge = TimerAction(
-        period=8.0,
+        period=16.0,
         actions=[Node(
             package="ros_gz_bridge",
             executable="parameter_bridge",
@@ -172,10 +172,10 @@ def generate_launch_description():
     )
 
     # ---------------------------------------------------------------------------
-    # [5] YOLO vision node (t=12s — wait for bridge + camera)
+    # [5] YOLO vision node (t=22s — wait for bridge + camera)
     # ---------------------------------------------------------------------------
     xmarker_detector = TimerAction(
-        period=12.0,
+        period=22.0,
         actions=[Node(
             package="vision_detection",
             executable="xmarker_detector",
