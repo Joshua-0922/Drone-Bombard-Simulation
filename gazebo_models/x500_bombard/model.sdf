@@ -119,11 +119,11 @@
 
          Payload world spawn pose must match this link's world position:
            drone base_link world-z ≈ 0.24 m (from x500_base model pose)
-           mount world-z = 0.24 - 0.10 = 0.14 m
-         → spawn payload_cylinder at z = 0.14 in x_marker_harmonic.sdf
+           mount world-z = 0.24 - 0.07 = 0.17 m
+         → spawn payload_cylinder at z = 0.17 in x_marker_world.sdf
     ============================================================ -->
     <link name="payload_mount">
-      <pose relative_to="base_link">0 0 -0.10 0 0 0</pose>
+      <pose relative_to="base_link">0 0 -0.07 0 0 0</pose>
       <inertial>
         <mass>0.001</mass>
         <inertia>
