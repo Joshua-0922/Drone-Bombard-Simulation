@@ -5,7 +5,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 
 from geometry_msgs.msg import Point, Vector3, Twist
 from std_msgs.msg import String, Bool
-from px4_msgs.msg import VehicleLocalPosition
+from px4_msgs.msg import VehicleLocalPosition, VehicleStatus
 
 import math
 import time
@@ -44,6 +44,11 @@ class MissionManagerNode(Node):
         self.local_pos_sub = self.create_subscription(
             VehicleLocalPosition, '/fmu/out/vehicle_local_position', self.local_pos_callback, qos_profile)
 
+        self.px4_armed = False
+        self.status_sub = self.create_subscription(
+            VehicleStatus, '/fmu/out/vehicle_status',
+            self.vehicle_status_callback, qos_profile)
+
         # --- [4] 내부 변수 ---
         self.state = STATE_TAKEOFF
         self.current_pos = [0.0, 0.0, 0.0] # [x, y, z] (NED)
@@ -69,10 +74,17 @@ class MissionManagerNode(Node):
     def local_pos_callback(self, msg):
         self.current_pos = [msg.x, msg.y, msg.z]
 
+    def vehicle_status_callback(self, msg):
+        if not self.px4_armed and msg.arming_state == 2:  # ARMING_STATE_ARMED
+            self.get_logger().info('PX4 armed — starting TAKEOFF sequence.')
+        self.px4_armed = (msg.arming_state == 2)
+
     def vision_callback(self, msg):
-        # 타겟 발견 (msg.z가 0이면 감지 안 된 것, 0보다 크면 Confidence)
-        # vision 노드에서 z=0.0으로 보내면 감지 안 된 것으로 처리
-        if msg.z > 0.0: 
+        # Ignore detections during TAKEOFF/DROP — only update tracking state
+        # when the FSM is actually in a state that uses it.
+        if self.state not in (STATE_CRUISE, STATE_TRACK):
+            return
+        if msg.z > 0.0:
             self.target_visible = True
             self.target_u = msg.x
             self.target_v = msg.y
@@ -100,6 +112,8 @@ class MissionManagerNode(Node):
         # --- FSM Logic ---
         
         if self.state == STATE_TAKEOFF:
+            if not self.px4_armed:
+                return
             self.send_position_cmd(0.0, 0.0, self.target_altitude)
 
             # 고도 도달 체크 (NED 좌표계 주의: 위쪽이 -z)
@@ -111,6 +125,9 @@ class MissionManagerNode(Node):
                 # [중요] 순항 시작점을 현재 위치로 초기화해야 튐 현상 방지
                 self.cruise_target_x = self.current_pos[0]
                 self.cruise_target_y = self.current_pos[1]
+                # Clear any stale detections accumulated during TAKEOFF
+                self.target_visible = False
+                self.last_detection_time = 0
 
         elif self.state == STATE_CRUISE:
             # 타겟 발견 시
