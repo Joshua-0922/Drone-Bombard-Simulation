@@ -45,6 +45,7 @@ class MissionManagerNode(Node):
             VehicleLocalPosition, '/fmu/out/vehicle_local_position', self.local_pos_callback, qos_profile)
 
         self.px4_armed = False
+        self.armed_stamp = None          # wall-clock time when first armed
         self.status_sub = self.create_subscription(
             VehicleStatus, '/fmu/out/vehicle_status',
             self.vehicle_status_callback, qos_profile)
@@ -52,6 +53,8 @@ class MissionManagerNode(Node):
         # --- [4] 내부 변수 ---
         self.state = STATE_TAKEOFF
         self.current_pos = [0.0, 0.0, 0.0] # [x, y, z] (NED)
+        self.altitude_hold_ticks = 0     # consecutive ticks at target altitude
+        self.on_ground_at_arm = None     # True = on ground when armed; False = floating
         
         # 순항 목표 지점 (초기화는 TAKEOFF 완료 시점에 함)
         self.cruise_target_x = 0.0
@@ -76,7 +79,16 @@ class MissionManagerNode(Node):
 
     def vehicle_status_callback(self, msg):
         if not self.px4_armed and msg.arming_state == 2:  # ARMING_STATE_ARMED
-            self.get_logger().info('PX4 armed — starting TAKEOFF sequence.')
+            # NED z ≈ 0 on ground; < -1.0 means drone is already > 1 m airborne.
+            self.on_ground_at_arm = (self.current_pos[2] > -1.0)
+            if self.on_ground_at_arm:
+                self.get_logger().info('PX4 armed — starting TAKEOFF sequence.')
+            else:
+                self.get_logger().error(
+                    f'GROUND CHECK FAILED: drone NED z={self.current_pos[2]:.2f} m '
+                    f'at arming (> 1 m airborne). Spawn or DetachableJoint issue. '
+                    f'TAKEOFF suppressed.')
+            self.armed_stamp = time.time()
         self.px4_armed = (msg.arming_state == 2)
 
     def vision_callback(self, msg):
@@ -114,13 +126,28 @@ class MissionManagerNode(Node):
         if self.state == STATE_TAKEOFF:
             if not self.px4_armed:
                 return
+            # Ground check: refuse to climb if drone was already airborne when armed.
+            if self.on_ground_at_arm is False:
+                return
             self.send_position_cmd(0.0, 0.0, self.target_altitude)
 
-            # 고도 도달 체크 (NED 좌표계 주의: 위쪽이 -z)
-            # 목표 -10m, 현재 -9.5m 이하이면 도달로 판단
-            if self.current_pos[2] <= -(self.target_altitude * 0.95):
+            # Altitude check (NED: up = negative-z).
+            # Guard: EKF needs a few seconds after arming to settle; also require
+            # the reading to be sustained for 5 consecutive ticks (~0.5 s) so that
+            # a single spurious value cannot trigger the transition prematurely.
+            min_armed_secs = 5.0
+            armed_long_enough = (
+                self.armed_stamp is not None
+                and (time.time() - self.armed_stamp) >= min_armed_secs
+            )
+            if armed_long_enough and self.current_pos[2] <= -(self.target_altitude * 0.95):
+                self.altitude_hold_ticks += 1
+            else:
+                self.altitude_hold_ticks = 0
+            if self.altitude_hold_ticks >= 5:
                 self.get_logger().info("Altitude Reached! Switching to CRUISE mode.")
                 self.state = STATE_CRUISE
+                self.altitude_hold_ticks = 0
                 
                 # [중요] 순항 시작점을 현재 위치로 초기화해야 튐 현상 방지
                 self.cruise_target_x = self.current_pos[0]
