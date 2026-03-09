@@ -132,10 +132,10 @@ class MissionManagerNode(Node):
             self.send_position_cmd(0.0, 0.0, self.target_altitude)
 
             # Altitude check (NED: up = negative-z).
-            # Guard: EKF needs a few seconds after arming to settle; also require
-            # the reading to be sustained for 5 consecutive ticks (~0.5 s) so that
-            # a single spurious value cannot trigger the transition prematurely.
-            min_armed_secs = 5.0
+            # 1 s EKF settle guard after arming (reduced from 5 s; saves ~4 s per RL episode).
+            # Requires 5 consecutive ticks (~0.5 s) at target altitude to prevent
+            # spurious transitions from a single noisy reading.
+            min_armed_secs = 1.0
             armed_long_enough = (
                 self.armed_stamp is not None
                 and (time.time() - self.armed_stamp) >= min_armed_secs

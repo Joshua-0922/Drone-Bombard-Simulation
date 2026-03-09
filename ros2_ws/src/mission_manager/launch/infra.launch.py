@@ -1,0 +1,156 @@
+"""
+infra.launch.py
+===============
+Persistent infrastructure layer for RL training.
+
+Start ONCE per training session; never kill between episodes.
+The Gymnasium DroneDropEnv.reset() manages PX4 and mission nodes separately
+via episode.launch.py.
+
+Launch order:
+  t=0s  : MicroXRCEAgent  (PX4 <-> ROS2 DDS bridge)
+  t=0s  : Gazebo Harmonic  (simulation world)
+  t=16s : ros_gz_bridge    (gz-transport <-> ROS2 topic bridge)
+  t=22s : xmarker_detector (YOLO vision, optional)
+
+Launch arguments:
+  headless      Run Gazebo without GUI (default: true for RL training)
+  enable_vision Launch xmarker_detector YOLO node (default: true)
+"""
+
+import os
+from pathlib import Path
+
+from launch import LaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    ExecuteProcess,
+    LogInfo,
+    TimerAction,
+)
+from launch.conditions import IfCondition, UnlessCondition
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+
+def _find_models_dir() -> str:
+    candidates = [
+        "/workspace/gazebo_models",
+        "/opt/drone-bombard/Drone-Bombard-Simulation/gazebo_models",
+        str(Path.home() / "Drone-Bombard-Simulation/gazebo_models"),
+    ]
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+    return candidates[0]
+
+
+def generate_launch_description():
+    models_dir = _find_models_dir()
+    worlds_dir = os.path.join(models_dir, "worlds")
+    px4_gz_models = "/opt/PX4-Autopilot/Tools/simulation/gz/models"
+    px4_gz_worlds = "/opt/PX4-Autopilot/Tools/simulation/gz/worlds"
+
+    gz_resource_path = ":".join([models_dir, px4_gz_models, px4_gz_worlds])
+
+    bridge_config = os.path.join(
+        os.path.dirname(__file__), "..", "config", "ros_gz_bridge.yaml")
+
+    # ---------------------------------------------------------------------------
+    # Launch arguments
+    # ---------------------------------------------------------------------------
+    headless_arg = DeclareLaunchArgument(
+        "headless", default_value="true",
+        description="Run Gazebo server-only without GUI (default: true for RL)")
+
+    vision_arg = DeclareLaunchArgument(
+        "enable_vision", default_value="true",
+        description="Launch xmarker_detector YOLO detection node")
+
+    headless = LaunchConfiguration("headless")
+    enable_vision = LaunchConfiguration("enable_vision")
+
+    # ---------------------------------------------------------------------------
+    # [1] uXRCE-DDS Agent -- stateless UDP bridge, start once
+    # ---------------------------------------------------------------------------
+    micro_xrce_agent = ExecuteProcess(
+        cmd=["MicroXRCEAgent", "udp4", "-p", "8888"],
+        name="micro_xrce_dds_agent",
+        output="screen",
+    )
+
+    # ---------------------------------------------------------------------------
+    # [2] Gazebo Harmonic -- keep running; world is reset via gz service between episodes
+    # ---------------------------------------------------------------------------
+    _gz_env_prefix = (
+        "mkdir -p /tmp/runtime-root && "
+        "export XDG_RUNTIME_DIR=/tmp/runtime-root && "
+        f"GZ_SIM_RESOURCE_PATH={gz_resource_path} "
+    )
+    gz_sim_gui = ExecuteProcess(
+        cmd=["bash", "-c",
+             _gz_env_prefix +
+             f"gz sim -r {worlds_dir}/x_marker_world.sdf"],
+        name="gz_sim",
+        output="screen",
+        condition=UnlessCondition(headless),
+    )
+    gz_sim_headless = ExecuteProcess(
+        cmd=["bash", "-c",
+             _gz_env_prefix +
+             f"gz sim -r -s {worlds_dir}/x_marker_world.sdf"],
+        name="gz_sim_headless",
+        output="screen",
+        condition=IfCondition(headless),
+    )
+
+    # ---------------------------------------------------------------------------
+    # [3] ros_gz_bridge (t=16s -- wait for Gazebo sensors to fully load)
+    # ---------------------------------------------------------------------------
+    ros_gz_bridge = TimerAction(
+        period=16.0,
+        actions=[Node(
+            package="ros_gz_bridge",
+            executable="parameter_bridge",
+            name="ros_gz_bridge",
+            output="screen",
+            parameters=[{"config_file": bridge_config}],
+        )],
+    )
+
+    # ---------------------------------------------------------------------------
+    # [4] YOLO vision node (t=22s -- wait for bridge + camera)
+    # ---------------------------------------------------------------------------
+    xmarker_detector = TimerAction(
+        period=22.0,
+        actions=[Node(
+            package="vision_detection",
+            executable="xmarker_detector",
+            name="xmarker_detector",
+            output="screen",
+            parameters=[
+                {"inference_rate": 10.0},
+                {"model_path":
+                    "/workspace/ros2_ws/yolo_workspace/runs/train/"
+                    "drone_bombard_train2/weights/best.pt"},
+            ],
+            condition=IfCondition(enable_vision),
+        )],
+    )
+
+    return LaunchDescription([
+        headless_arg,
+        vision_arg,
+        micro_xrce_agent,
+        gz_sim_gui,
+        gz_sim_headless,
+        ros_gz_bridge,
+        xmarker_detector,
+        LogInfo(msg=[
+            "\n=== Infrastructure Layer Started ===\n",
+            "  Gazebo + MicroXRCEAgent + ros_gz_bridge + YOLO\n",
+            "  Keep this running for the full training session.\n",
+            "  Episode processes (PX4 + mission nodes) are managed by\n",
+            "  DroneDropEnv.reset() via episode.launch.py.\n",
+        ]),
+    ])

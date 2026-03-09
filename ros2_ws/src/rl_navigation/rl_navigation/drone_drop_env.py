@@ -2,6 +2,8 @@
 
 import math
 import queue
+import os
+import signal
 import subprocess
 import threading
 import time
@@ -47,7 +49,6 @@ STABILITY_PENALTY_SCALE = 1.0
 ACCURACY_REWARD_SCALE = 2.0
 
 OBS_WAIT_TIMEOUT = 0.15   # seconds
-RESET_SETTLE_TIME = 2.0   # seconds after gz world reset
 CRUISE_POLL_TIMEOUT = 60.0  # seconds to wait for CRUISE state
 
 
@@ -220,6 +221,7 @@ class DroneDropEnv(gym.Env):
         self._has_dropped = False
         self._drop_reward_pending = 0.0
         self._episode_reward = 0.0
+        self._episode_proc = None   # Popen handle for episode.launch.py
 
         # Start ROS2
         if not rclpy.ok():
@@ -257,17 +259,19 @@ class DroneDropEnv(gym.Env):
                 break
         with self._state_lock:
             self._node.payload_attached = True
+            # Prevent _wait_for_cruise from seeing a stale CRUISE from last episode
+            self._node.mission_state = 'IDLE'
 
-        # 2. Reset Gazebo world (resets all poses + re-initialises DetachableJoint)
+        # 2. Kill previous episode processes (PX4 + mission nodes)
+        self._kill_episode()
+
+        # 3. Reset Gazebo world (restores all model poses + DetachableJoint)
         self._gz_world_reset()
 
-        # 3. Settle
-        time.sleep(RESET_SETTLE_TIME)
+        # 4. Start fresh episode processes
+        self._start_episode()
 
-        # 4. Hold drone with zero velocity
-        self._node.publish_velocity(0.0, 0.0, 0.0, 0.0)
-
-        # 5. Wait for CRUISE state
+        # 5. Wait for CRUISE state (blocks until takeoff + climb complete)
         self._wait_for_cruise()
 
         # 6. Return initial observation
@@ -340,6 +344,7 @@ class DroneDropEnv(gym.Env):
 
     def close(self):
         """Shutdown ROS2 node and executor."""
+        self._kill_episode()
         if rclpy.ok():
             self._node.destroy_node()
             rclpy.shutdown()
@@ -405,6 +410,30 @@ class DroneDropEnv(gym.Env):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _kill_episode(self):
+        """Terminate the episode-layer process group (PX4 + mission nodes)."""
+        if self._episode_proc is not None and self._episode_proc.poll() is None:
+            try:
+                os.killpg(os.getpgid(self._episode_proc.pid), signal.SIGTERM)
+                self._episode_proc.wait(timeout=5)
+            except (ProcessLookupError, subprocess.TimeoutExpired):
+                try:
+                    os.killpg(os.getpgid(self._episode_proc.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        # Brief pause to let DDS participants deregister
+        time.sleep(1.5)
+
+    def _start_episode(self):
+        """Launch a fresh episode-layer process group (PX4 + mission nodes)."""
+        self._episode_proc = subprocess.Popen(
+            ['ros2', 'launch', 'mission_manager', 'episode.launch.py',
+             'rl_mode:=true'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid,   # own process group -> clean kill
+        )
 
     def _gz_world_reset(self):
         """Call gz service to reset the simulation world."""

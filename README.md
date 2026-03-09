@@ -277,7 +277,7 @@ vncserver :1 -geometry 1920x1080 -localhost no
     - 여기서 클립보드 내용을 입력해야 VM 내부로 텍스트가 전달됨
 
 
-## 11. 노드 통합(Launch) 실행 — Gazebo Harmonic
+## 11. 시뮬레이션 실행 — Gazebo Harmonic
 
 ### 시뮬레이션 구성
 
@@ -288,9 +288,9 @@ vncserver :1 -geometry 1920x1080 -localhost no
 | 월드 파일 | `gazebo_models/worlds/x_marker_world.sdf` |
 | 타겟 위치 | X마커 (11, 10) m — 월드 원점에서 북동쪽 |
 
-### 11.1 최초 1회: PX4 빌드
+---
 
-컨테이너 내부에서 최초 1회만 실행합니다.
+### 11.1 최초 1회: PX4 빌드
 
 ```bash
 cd /opt/PX4-Autopilot
@@ -305,47 +305,125 @@ colcon build
 source install/setup.bash
 ```
 
-### 11.3 전체 시뮬레이션 실행 (단일 명령 — 권장)
+---
+
+### 11.3 단일 실행 (데모·디버그용)
+
+Launch 파일 하나로 전체 스택을 기동합니다.
 
 ```bash
-cd /workspace/ros2_ws
-source install/setup.bash
+cd /workspace/ros2_ws && source install/setup.bash
 ros2 launch mission_manager drone_mission.launch.py
 ```
 
-이 명령 하나로 다음 순서대로 모든 컴포넌트가 자동 기동됩니다:
+자동 기동 순서:
 
 | 시간 | 컴포넌트 |
 |------|---------|
-| t=0s | MicroXRCE-DDS Agent (PX4 ↔ ROS2 DDS 통신) |
-| t=0s | Gazebo Harmonic (`x_marker_world.sdf`, `x500_bombard` 드론) |
-| t=12s | PX4 SITL (Gazebo ogre2 센서가 완전히 로드된 후 스폰) |
-| t=16s | ros_gz_bridge (Gazebo ↔ ROS2 토픽 브릿지) |
-| t=22s | vision_detection (YOLOv8 X마커 탐지, 10 Hz) |
+| t=0s | MicroXRCE-DDS Agent |
+| t=0s | Gazebo Harmonic |
+| t=12s | PX4 SITL |
+| t=16s | ros_gz_bridge |
+| t=22s | vision_detection (YOLOv8) |
 | t=0s | mission_manager / drone_controller / rl_navigation / drop_calculator |
-
-> **재실행 전 주의:** 이전 launch에서 남은 프로세스가 있으면 충돌이 발생합니다.
-> 재실행 전에 반드시 기존 프로세스를 종료하세요:
-> ```bash
-> pkill -f "gz sim" ; pkill -f "px4" ; pkill -f "MicroXRCEAgent" ; pkill -f "ros2"
-> ```
 
 옵션 인수:
 
 ```bash
-# GUI 없이 headless 모드 (서버 환경)
 ros2 launch mission_manager drone_mission.launch.py headless:=true
-
-# 비전 노드 비활성화 (카메라 없이 FSM 테스트)
 ros2 launch mission_manager drone_mission.launch.py enable_vision:=false
-
-# RL 학습 모드 (rl_navigation_node 제외, RL 환경이 직접 속도 제어)
 ros2 launch mission_manager drone_mission.launch.py rl_mode:=true
 ```
 
-### 11.4 수동 실행 (개별 컴포넌트 — 디버깅용)
+재실행 전 이전 프로세스 정리:
 
-단일 launch 대신 각 컴포넌트를 별도 터미널에서 수동으로 실행할 수 있습니다.
+```bash
+pkill -f "gz sim" ; pkill -f "px4" ; pkill -f "MicroXRCEAgent" ; pkill -f "ros2"
+```
+
+---
+
+### 11.4 RL 학습용 2-레이어 실행 (권장)
+
+에피소드를 수만 번 반복하는 RL 학습에서는 프로세스를 **역할별로 분리**합니다.
+
+```
+┌─────────────────────────────────────────────────┐
+│  INFRA LAYER  (학습 세션 내내 유지)              │
+│  infra.launch.py                                 │
+│  - MicroXRCEAgent  (DDS 브릿지, 완전 무상태)    │
+│  - Gazebo Harmonic (물리 엔진; 에피소드 간 리셋)│
+│  - ros_gz_bridge   (토픽 포워더)                │
+│  - xmarker_detector (YOLO 모델 상주)            │
+└─────────────────────────────────────────────────┘
+             ↕  에피소드마다 재시작
+┌─────────────────────────────────────────────────┐
+│  EPISODE LAYER  (DroneDropEnv.reset()가 자동 관리)│
+│  episode.launch.py                               │
+│  - PX4 SITL         (t=2s, Gazebo 이미 기동 중) │
+│  - mission_manager  (FSM 커맨더)                │
+│  - drone_controller (PX4 브릿지)                │
+│  - drop_calculator  (착탄 오차 계산)            │
+└─────────────────────────────────────────────────┘
+```
+
+**에피소드당 소요 시간 (단일 환경 기준):**
+
+| 단계 | 시간 |
+|------|-----|
+| 에피소드 프로세스 종료 | ~1.5 s |
+| Gazebo 월드 리셋 | ~0.5 s |
+| PX4 재기동 및 드론 스폰 | ~3 s |
+| ARM + Offboard 진입 | ~2 s |
+| 10 m 고도 도달 후 CRUISE 진입 | ~5 s |
+| **합계** | **~12 s** |
+
+#### Step 1 — Infra Layer 기동 (1회)
+
+```bash
+cd /workspace/ros2_ws && source install/setup.bash
+ros2 launch mission_manager infra.launch.py          # headless=true 기본값
+ros2 launch mission_manager infra.launch.py headless:=false  # GUI 포함
+```
+
+Gazebo가 완전히 로드될 때까지(~25 s) 기다린 후 학습을 시작합니다.
+
+#### Step 2 — SAC 학습 시작 (별도 터미널)
+
+```bash
+cd /workspace/ros2_ws && source install/setup.bash
+ros2 run rl_navigation train_sac
+```
+
+`DroneDropEnv.reset()` 가 호출될 때마다 자동으로:
+1. 이전 에피소드 프로세스 종료 (`SIGTERM` → 프로세스 그룹)
+2. Gazebo 월드 리셋 (`gz service`)
+3. `episode.launch.py` 재기동
+4. CRUISE 상태까지 대기
+
+체크포인트는 `/workspace/ros2_ws/rl_checkpoints/`에 5,000 스텝마다 저장됩니다.
+
+```bash
+# 학습 재개
+ros2 run rl_navigation train_sac --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip
+
+# 학습 모니터링
+tensorboard --logdir /workspace/ros2_ws/rl_logs/sac_drop
+```
+
+#### Step 3 — 평가
+
+```bash
+ros2 run rl_navigation evaluate \
+  --model /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip \
+  --episodes 20
+```
+
+결과는 `/workspace/ros2_ws/rl_eval_results/`에 저장됩니다.
+
+---
+
+### 11.5 수동 실행 (개별 컴포넌트 — 디버깅용)
 
 **공통 환경 변수:**
 ```bash
@@ -359,29 +437,18 @@ MicroXRCEAgent udp4 -p 8888
 
 **Terminal 2 — Gazebo Harmonic:**
 ```bash
-# GUI 있음
-GZ_SIM_RESOURCE_PATH=$GZ_PATH \
-  gz sim -r /workspace/gazebo_models/worlds/x_marker_world.sdf
-
-# GUI 없음 (headless, 서버 환경)
-GZ_SIM_RESOURCE_PATH=$GZ_PATH \
-  gz sim -r -s /workspace/gazebo_models/worlds/x_marker_world.sdf
+GZ_SIM_RESOURCE_PATH=$GZ_PATH gz sim -r -s /workspace/gazebo_models/worlds/x_marker_world.sdf
 ```
 
-**Terminal 3 — PX4 SITL (Gazebo 기동 후 실행):**
+**Terminal 3 — PX4 SITL (Gazebo 기동 후):**
 ```bash
 cd /opt/PX4-Autopilot/build/px4_sitl_default/src/modules/simulation/gz_bridge
-PX4_GZ_STANDALONE=1 \
-PX4_GZ_WORLD=x_marker_world \
-PX4_SIM_MODEL=gz_x500_bombard \
+PX4_GZ_STANDALONE=1 PX4_GZ_WORLD=x_marker_world PX4_SIM_MODEL=gz_x500_bombard \
 GZ_SIM_RESOURCE_PATH=$GZ_PATH \
   /opt/PX4-Autopilot/build/px4_sitl_default/bin/px4
 ```
 
-> `make px4_sitl gz_x500`는 cmake가 `PX4_SIM_MODEL=gz_x500`을 강제로 덮어쓰기 때문에 바이너리를 직접 실행합니다.
-> PX4는 실행 시 Gazebo에 자동으로 접속해 `x500_bombard` 드론을 스폰합니다.
-
-**Terminal 4 — ros_gz_bridge (PX4 기동 후 실행):**
+**Terminal 4 — ros_gz_bridge:**
 ```bash
 cd /workspace/ros2_ws && source install/setup.bash
 ros2 run ros_gz_bridge parameter_bridge \
@@ -397,75 +464,46 @@ ros2 run rl_navigation rl_navigation_node &
 ros2 run drop_calculator calculator
 ```
 
-### 11.5 테스트 (비전 탐지 시뮬레이션)
+---
 
-별도 터미널에서 가짜 탐지 신호를 발행하여 미션 FSM 동작을 테스트할 수 있습니다:
+### 11.6 테스트 (비전 탐지 시뮬레이션)
 
 ```bash
 docker exec -it drone-bombard-harmonic bash
-
-cd /workspace/ros2_ws
-python3 system_tester.py
+cd /workspace/ros2_ws && python3 system_tester.py
 ```
 
-### 11.6 실시간 모니터링
+### 11.7 실시간 모니터링
 
-시뮬레이션 실행 중 별도 터미널에서 각 채널을 확인합니다.
-
-**카메라 영상 확인 (RViz2):**
 ```bash
-docker exec -it drone-bombard-harmonic bash -c "
-  source /workspace/ros2_ws/install/setup.bash
-  rviz2 -d /workspace/ros2_ws/src/vision_detection/config/camera_view.rviz 2>/dev/null ||
-  rviz2
-"
-# RViz2에서 Add → By topic → /vision/annotated_image (Image 타입) 추가
-# 또는 원본 카메라: /camera/rgb/image_raw
+# 미션 상태 + 투하 오차
+ros2 topic echo /mission/state &
+ros2 topic echo /rl/drop_error
+
+# 페이로드 위치
+ros2 topic echo /drone/payload/position
+
+# 카메라 영상 (RViz2)
+rviz2
+# Add → By topic → /vision/annotated_image
 ```
 
-**카메라 토픽 발행 여부 확인 (텍스트):**
-```bash
-docker exec -it drone-bombard-harmonic bash -c "
-  source /workspace/ros2_ws/install/setup.bash
-  ros2 topic hz /camera/rgb/image_raw
-"
-```
-
-**페이로드 위치 실시간 확인:**
-```bash
-docker exec -it drone-bombard-harmonic bash -c "
-  source /workspace/ros2_ws/install/setup.bash
-  ros2 topic echo /drone/payload/position
-"
-```
-
-**미션 상태 + 투하 오차 실시간 확인:**
-```bash
-docker exec -it drone-bombard-harmonic bash -c "
-  source /workspace/ros2_ws/install/setup.bash
-  ros2 topic echo /mission/state &
-  ros2 topic echo /rl/drop_error
-"
-```
-
-### 11.7 전체 미션 시퀀스
-
-시뮬레이션이 정상 작동할 때의 전체 흐름:
+### 11.8 전체 미션 시퀀스
 
 ```
-[t=0s]   Gazebo 기동 → x_marker_world 로드, x500_bombard 스폰 (페이로드 부착)
-[t=12s]  PX4 SITL 연결 → uXRCE-DDS 통신 시작
-[t=16s]  ros_gz_bridge 기동 → 카메라·페이로드 토픽 브릿지
-[t=22s]  YOLOv8 노드 기동 → /target/pixel_coords 발행 시작
+[INFRA]  Gazebo 기동 → x_marker_world 로드
+[INFRA]  t=16s ros_gz_bridge 기동
+[INFRA]  t=22s YOLOv8 노드 기동
 
---- mission_manager FSM ---
-[TAKEOFF]   drone_controller가 PX4에 Arm + Offboard 진입, ENU (0,0,10) 상승
-[CRUISE]    고도 10m 도달 → 북동쪽으로 1 m/s 순항 (position setpoint 점진 증가)
-[TRACKING]  카메라가 X마커 감지(z>0) → rl_navigation이 속도 제어 인수
-            rl_navigation: 전진 2 m/s 유지 + 횡방향 정렬
-[DROP]      rl_navigation이 /payload/drop_cmd (Empty) 발행
-            → DetachableJoint 해제 → 페이로드 자유낙하
-            → drop_calculator가 착탄점 계산 → /rl/drop_error (m) 발행
+--- 에피소드 시작 (reset() 호출) ---
+[EPISODE] Gazebo 월드 리셋 → 드론·페이로드 초기 위치 복원
+[EPISODE] PX4 SITL 재기동 → t=2s 후 드론 스폰
+
+[TAKEOFF]   drone_controller: ARM + OFFBOARD 진입, ENU (0,0,10) 상승
+[CRUISE]    고도 10m 도달 → 북동쪽 1 m/s 순항
+[TRACKING]  X마커 감지 → rl_navigation 속도 제어 인수
+[DROP]      /payload/drop_cmd → DetachableJoint 해제 → 자유낙하
+            drop_calculator → /rl/drop_error (m)
 ```
 
 ## Phase 5: Reinforcement Learning — Fighter Jet Fly-by Drop
@@ -481,15 +519,27 @@ moment so that projectile physics carry it to the X-marker.
 
 | Component | File | Role |
 |-----------|------|------|
-| Gymnasium env | `rl_navigation/drone_drop_env.py` | 15-dim obs / 5-dim action space; Gazebo reset via `gz service` |
+| Gymnasium env | `rl_navigation/drone_drop_env.py` | 15-dim obs / 5-dim action space; manages episode.launch.py process group |
 | SAC trainer | `rl_navigation/train_sac.py` | Stable-Baselines3 SAC; TensorBoard logging; checkpoint resume |
 | Evaluator | `rl_navigation/evaluate.py` | Runs N episodes; saves report, plots, JSON summary |
 
 ### Why SAC over PPO
 
-- **Off-policy** → more sample-efficient (crucial since each Gazebo reset takes ~30 s)
+- **Off-policy** → more sample-efficient (crucial since each episode reset takes ~12 s)
 - **Entropy regularization** → naturally explores diverse drop trajectories
 - **Continuous actions** → maps directly to velocity commands
+
+### Reset Architecture
+
+`DroneDropEnv.reset()` runs this sequence on every episode boundary:
+
+```
+1. os.killpg(SIGTERM)   → kill PX4 + mission nodes (process group)  ~1.5 s
+2. gz service call       → Gazebo world reset (physics + poses)       ~0.5 s
+3. episode.launch.py     → PX4 reconnects to Gazebo, drone spawned    ~2 s
+4. _wait_for_cruise()    → blocks until TAKEOFF → CRUISE complete     ~8 s
+                                                          Total: ~12 s/episode
+```
 
 ### Observation Space (15-dim)
 
@@ -528,20 +578,20 @@ at impact:  accuracy_reward = -drop_error_m × 2.0        # from /rl/drop_error
 ### Training
 
 ```bash
-# 1. Launch simulation in RL mode (skips rl_navigation_node)
-ros2 launch mission_manager drone_mission.launch.py rl_mode:=true
+# Terminal 1 — start persistent infra (once per session)
+ros2 launch mission_manager infra.launch.py
 
-# 2. In a second terminal, start SAC training
+# Terminal 2 — start SAC training (episode.launch.py managed automatically)
 ros2 run rl_navigation train_sac
 
-# Optional flags:
-ros2 run rl_navigation train_sac --timesteps 1000000 --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip
+# Resume from checkpoint
+ros2 run rl_navigation train_sac --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip
 
-# Monitor training
+# Monitor
 tensorboard --logdir /workspace/ros2_ws/rl_logs/sac_drop
 ```
 
-Checkpoints are saved to `/workspace/ros2_ws/rl_checkpoints/` every 5,000 steps.
+Checkpoints saved to `/workspace/ros2_ws/rl_checkpoints/` every 5,000 steps.
 
 ### Evaluation
 
