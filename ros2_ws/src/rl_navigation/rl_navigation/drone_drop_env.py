@@ -11,6 +11,7 @@ import time
 import gymnasium as gym
 import numpy as np
 import rclpy
+import yaml
 from geometry_msgs.msg import Point, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
@@ -24,32 +25,20 @@ except ImportError:
     _PX4_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
-# Constants
+# Module-level scaling constants (used in _get_obs; also mirrored in yaml)
 # ---------------------------------------------------------------------------
-TARGET_ENU_X = 11.0   # East
-TARGET_ENU_Y = 10.0   # North
-
 POS_SCALE = 50.0
 VEL_SCALE = 15.0
 ANG_VEL_SCALE = math.pi
 
-ACTION_VX_SCALE = 15.0
-ACTION_VY_SCALE = 5.0
-ACTION_VZ_SCALE = 3.0
-ACTION_YAW_SCALE = 1.0
+TARGET_ENU_X = 11.0   # East  — overridable via yaml
+TARGET_ENU_Y = 10.0   # North — overridable via yaml
 
-MAX_STEPS = 500
-MIN_ALTITUDE = 2.0
-MIN_ALTITUDE_START_STEP = 20
 
-TIME_PENALTY = -0.005
-HOVER_PENALTY_SCALE = 0.5
-SPEED_REWARD_SCALE = 5.0
-STABILITY_PENALTY_SCALE = 1.0
-ACCURACY_REWARD_SCALE = 2.0
-
-OBS_WAIT_TIMEOUT = 0.15   # seconds
-CRUISE_POLL_TIMEOUT = 60.0  # seconds to wait for CRUISE state
+def _load_config(config_path):
+    """Load hyperparams yaml and return the parsed dict."""
+    with open(config_path, 'r') as f:
+        return yaml.safe_load(f)
 
 
 class _RLBridgeNode(Node):
@@ -202,8 +191,36 @@ class DroneDropEnv(gym.Env):
 
     metadata = {'render_modes': []}
 
-    def __init__(self):
+    def __init__(self, config_path=None):
         super().__init__()
+
+        # --- Load config ---
+        cfg_env = {}
+        cfg_reward = {}
+        if config_path is not None:
+            cfg = _load_config(config_path)
+            cfg_env = cfg.get('environment', {})
+            cfg_reward = cfg.get('reward', {})
+
+        # Environment constants (yaml overrides module-level defaults)
+        self._cfg_target_x = cfg_env.get('target_enu_x', TARGET_ENU_X)
+        self._cfg_target_y = cfg_env.get('target_enu_y', TARGET_ENU_Y)
+        self._cfg_pos_scale = cfg_env.get('pos_scale', POS_SCALE)
+        self._cfg_vel_scale = cfg_env.get('vel_scale', VEL_SCALE)
+        self._cfg_ang_vel_scale = cfg_env.get('ang_vel_scale', ANG_VEL_SCALE)
+        self._cfg_action_vx_scale = cfg_env.get('action_vx_scale', 15.0)
+        self._cfg_action_vy_scale = cfg_env.get('action_vy_scale', 5.0)
+        self._cfg_action_vz_scale = cfg_env.get('action_vz_scale', 3.0)
+        self._cfg_action_yaw_scale = cfg_env.get('action_yaw_scale', 1.0)
+        self._cfg_max_steps = cfg_env.get('max_steps', 500)
+        self._cfg_min_altitude = cfg_env.get('min_altitude', 2.0)
+        self._cfg_min_alt_start = cfg_env.get('min_altitude_start_step', 20)
+        self._cfg_obs_wait = cfg_env.get('obs_wait_timeout', 0.15)
+        self._cfg_cruise_timeout = cfg_env.get('cruise_poll_timeout', 60.0)
+
+        # Reward constants (used in step() for terminal accuracy reward)
+        self._cfg_accuracy_reward_scale = cfg_reward.get(
+            'accuracy_reward_scale', 2.0)
 
         self.observation_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(15,), dtype=np.float32)
@@ -283,10 +300,10 @@ class DroneDropEnv(gym.Env):
         self._step_count += 1
 
         # --- Decode action ---
-        vx = float(action[0]) * ACTION_VX_SCALE
-        vy = float(action[1]) * ACTION_VY_SCALE
-        vz = float(action[2]) * ACTION_VZ_SCALE
-        yaw_rate = float(action[3]) * ACTION_YAW_SCALE
+        vx = float(action[0]) * self._cfg_action_vx_scale
+        vy = float(action[1]) * self._cfg_action_vy_scale
+        vz = float(action[2]) * self._cfg_action_vz_scale
+        yaw_rate = float(action[3]) * self._cfg_action_yaw_scale
         drop_trigger = float(action[4])
 
         # --- Execute velocity command ---
@@ -301,7 +318,7 @@ class DroneDropEnv(gym.Env):
 
         # --- Wait for next observation ---
         self._obs_ready.clear()
-        self._obs_ready.wait(timeout=OBS_WAIT_TIMEOUT)
+        self._obs_ready.wait(timeout=self._cfg_obs_wait)
         obs = self._get_obs()
 
         # --- Reward ---
@@ -314,11 +331,11 @@ class DroneDropEnv(gym.Env):
 
         # Wait for drop_error if we have dropped
         if self._has_dropped:
-            got_error = self._drop_error_event.wait(timeout=OBS_WAIT_TIMEOUT)
+            got_error = self._drop_error_event.wait(timeout=self._cfg_obs_wait)
             if got_error:
                 try:
                     drop_error = self._drop_error_queue.get_nowait()
-                    accuracy_reward = -drop_error * ACCURACY_REWARD_SCALE
+                    accuracy_reward = -drop_error * self._cfg_accuracy_reward_scale
                     reward += accuracy_reward
                     info['drop_error_m'] = drop_error
                     info['accuracy_reward'] = accuracy_reward
@@ -327,13 +344,13 @@ class DroneDropEnv(gym.Env):
                 terminated = True
 
         # Crash detection
-        altitude = float(obs[2]) * POS_SCALE
-        if self._step_count > MIN_ALTITUDE_START_STEP and altitude < MIN_ALTITUDE:
+        altitude = float(obs[2]) * self._cfg_pos_scale
+        if self._step_count > self._cfg_min_alt_start and altitude < self._cfg_min_altitude:
             terminated = True
             info['crash'] = True
 
         # Step limit
-        if self._step_count >= MAX_STEPS:
+        if self._step_count >= self._cfg_max_steps:
             truncated = True
 
         self._episode_reward += reward
@@ -370,8 +387,8 @@ class DroneDropEnv(gym.Env):
         v_norm = (pix[1] / 480.0) * 2.0 - 1.0 if pix[2] > 0 else 0.0
         conf = float(np.clip(pix[2], 0.0, 1.0))
 
-        rel_dx = (pos[0] - TARGET_ENU_X) / POS_SCALE
-        rel_dy = (pos[1] - TARGET_ENU_Y) / POS_SCALE
+        rel_dx = (pos[0] - self._cfg_target_x) / POS_SCALE
+        rel_dy = (pos[1] - self._cfg_target_y) / POS_SCALE
 
         obs = np.array([
             *np.clip(pos_n, -1.0, 1.0),    # 0-2
@@ -389,23 +406,8 @@ class DroneDropEnv(gym.Env):
     # ------------------------------------------------------------------
 
     def _compute_reward(self, obs, drop_fired_this_step):
-        vel = obs[3:6] * VEL_SCALE
-        ang = obs[6:9] * ANG_VEL_SCALE
-
-        horiz_speed = math.sqrt(float(vel[0])**2 + float(vel[1])**2)
-
-        time_penalty = TIME_PENALTY
-        hover_penalty = (math.tanh(horiz_speed / 5.0) - 1.0) * HOVER_PENALTY_SCALE
-
-        reward = time_penalty + hover_penalty
-
-        if drop_fired_this_step:
-            speed_reward = math.tanh(horiz_speed / 3.0) * SPEED_REWARD_SCALE
-            stability_penalty = (
-                -float(np.linalg.norm(ang)) * STABILITY_PENALTY_SCALE)
-            reward += speed_reward + stability_penalty
-
-        return reward
+        """TODO: implement per-step reward function."""
+        return 0.0
 
     # ------------------------------------------------------------------
     # Helpers
@@ -456,7 +458,7 @@ class DroneDropEnv(gym.Env):
 
     def _wait_for_cruise(self):
         """Poll mission_state until CRUISE or timeout."""
-        deadline = time.time() + CRUISE_POLL_TIMEOUT
+        deadline = time.time() + self._cfg_cruise_timeout
         while time.time() < deadline:
             with self._state_lock:
                 state = self._node.mission_state

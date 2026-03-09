@@ -1,0 +1,46 @@
+training:
+  total_timesteps: 500000
+  checkpoint_freq: 5000
+  log_dir: "/workspace/ros2_ws/rl_logs/sac_drop"
+  checkpoint_dir: "/workspace/ros2_ws/rl_checkpoints"
+
+sac:
+  learning_rate: 3.0e-4
+  buffer_size: 100000
+  batch_size: 256
+  tau: 0.005
+  gamma: 0.99
+  learning_starts: 1000
+  net_arch: [256, 256]
+  device: "cuda"            # L4 GPU; change to "cpu" if no GPU available
+
+environment:
+  target_enu_x: 11.0
+  target_enu_y: 10.0
+  pos_scale: 50.0
+  vel_scale: 15.0
+  ang_vel_scale: 3.14159265
+  action_vx_scale: 15.0
+  action_vy_scale: 5.0
+  action_vz_scale: 3.0
+  action_yaw_scale: 1.0
+  max_steps: 500
+  min_altitude: 2.0
+  min_altitude_start_step: 20
+  obs_wait_timeout: 0.15
+  cruise_poll_timeout: 60.0
+
+reward:                     # Placeholder — used when _compute_reward() is implemented
+  time_penalty: -0.005
+  hover_penalty_scale: 0.5
+  speed_reward_scale: 5.0
+  stability_penalty_scale: 1.0
+  accuracy_reward_scale: 2.0
+
+wandb:
+  project: "drone-bombard-sac"
+  entity: null              # Fill in your WandB username or team name
+  run_name: null            # Auto-generated if null
+  tags: ["sac", "spot-vm", "l4-gpu"]
+  save_model_artifact: true
+  log_freq: 100             # gradient_save_freq for WandbCallback

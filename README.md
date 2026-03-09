@@ -575,6 +575,47 @@ at drop:    speed_reward = tanh(speed/3) × 5.0           # reward high speed
 at impact:  accuracy_reward = -drop_error_m × 2.0        # from /rl/drop_error
 ```
 
+### Hyperparameter Config
+
+All training, SAC, environment, and WandB settings live in one file:
+
+```
+ros2_ws/src/rl_navigation/config/hyperparams.yaml
+```
+
+Edit the yaml and rebuild (`colcon build --packages-select rl_navigation`) to apply changes. No code edits needed for tuning runs.
+
+### WandB Setup
+
+```bash
+# Inside container — one-time login
+wandb login
+
+# Set your entity (username or team) in hyperparams.yaml:
+#   wandb:
+#     entity: "your-wandb-username"
+```
+
+WandB run resumes automatically after Spot VM preemption (uses `resume="allow"`).
+
+### CUDA / GPU
+
+`device: "cuda"` in `hyperparams.yaml` enables the NVIDIA L4 GPU. Change to `"cpu"` if training without a GPU. SB3 runs fp32 on CUDA by default.
+
+### Spot VM Resilience
+
+The training script handles GCP Spot VM preemption automatically:
+
+- **SIGTERM handler** — when GCP sends SIGTERM (~30 s before eviction), saves `sac_drop_preempt.zip` + `sac_drop_preempt_replay.pkl` and uploads to WandB
+- **Replay buffer checkpoint** — saved every 5,000 steps alongside model checkpoints; avoids cold-start after preemption
+- **WandB resume** — same run ID continues after restart
+
+```bash
+# After preemption, resume from emergency checkpoint
+ros2 run rl_navigation train_sac \
+  --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip
+```
+
 ### Training
 
 ```bash
@@ -584,14 +625,19 @@ ros2 launch mission_manager infra.launch.py
 # Terminal 2 — start SAC training (episode.launch.py managed automatically)
 ros2 run rl_navigation train_sac
 
-# Resume from checkpoint
-ros2 run rl_navigation train_sac --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip
+# With explicit config path
+ros2 run rl_navigation train_sac \
+  --config /workspace/ros2_ws/src/rl_navigation/config/hyperparams.yaml
 
-# Monitor
+# Resume from checkpoint
+ros2 run rl_navigation train_sac \
+  --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip
+
+# Monitor (TensorBoard + WandB both active)
 tensorboard --logdir /workspace/ros2_ws/rl_logs/sac_drop
 ```
 
-Checkpoints saved to `/workspace/ros2_ws/rl_checkpoints/` every 5,000 steps.
+Checkpoints saved to `/workspace/ros2_ws/rl_checkpoints/` every 5,000 steps (model + replay buffer).
 
 ### Evaluation
 
