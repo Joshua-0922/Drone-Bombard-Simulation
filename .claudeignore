@@ -1,0 +1,19 @@
+# Build and Install files (?? ?? 1??)
+build/
+install/
+log/
+
+# Git internals
+.git/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# PX4/Gazebo temporary files
+*.log
+*.bak
