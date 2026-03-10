@@ -165,3 +165,41 @@ Built from `drone_drop_system/docker/Dockerfile`:
 - uXRCE-DDS-Agent at `/opt/Micro-XRCE-DDS-Agent`
 - px4_msgs pre-built at `/root/ros2_ws` (separate from workspace volume)
 - Python deps from `drone_drop_system/docker/requirements.txt`
+
+---
+
+## Auto-Logging and Git Sync Rules (MANDATORY)
+
+These rules apply to every Claude Code session working in this repository.
+
+### RL_Project_Log.md — Enforced Structure
+
+`RL_Project_Log.md` in the project root MUST always follow this exact 4-section structure:
+
+```
+# 1. Current State
+(Overwrite each session) — Current reward formula, key hyperparameters, path to best checkpoint.
+
+# 2. Recent Progress
+(Update each session) — Completed tasks, implemented plans, architecture changes moved from Remaining Tasks.
+
+# 3. Remaining Tasks (Next Steps)
+(Checklist) — Bulleted `- [ ]` items for what needs to be done next.
+
+# 4. Training History (Append-only)
+(Never overwrite) — Chronological experiment log: Date, WandB run link, metrics, brief summary.
+```
+
+### Zero-Prompt Execution Rule
+
+Before concluding **any** major task, code modification, or session, Claude MUST:
+1. Automatically update `RL_Project_Log.md` following the 4-section structure above — **without asking for permission**.
+2. Immediately after updating the log, run the following git commands to sync to the remote:
+
+```bash
+git add .
+git commit -m "Auto-sync: [Brief summary of what was done]"
+GIT_SSH_COMMAND="ssh -i /home/ubuntu/.ssh/id_ed25519" git push origin feature/migration-harmonic
+```
+
+> **Note on git auth:** Commits should be made as the `drone-bombard` user (`sudo -u drone-bombard git commit ...`). The push must be issued as `ubuntu` with the explicit SSH key because `sudo` drops key access. If the working directory is not trusted, first run: `git config --global --add safe.directory /opt/drone-bombard/Drone-Bombard-Simulation`
