@@ -58,8 +58,8 @@ reward:
 
 wandb:
   project: "drone-bombard-sac"
-  entity: null              # Fill in your WandB username or team name
-  run_name: null            # Auto-generated if null
+  entity: "nayoonho0922"              # Fill in your WandB username or team name
+  run_name: "L4-AutoDrop-v1"            # Auto-generated if null
   tags: ["sac", "spot-vm", "l4-gpu"]
   save_model_artifact: true
   log_freq: 100             # gradient_save_freq for WandbCallback
