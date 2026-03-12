@@ -64,8 +64,8 @@ def generate_launch_description():
         description="Run Gazebo server-only without GUI (default: true for RL)")
 
     vision_arg = DeclareLaunchArgument(
-        "enable_vision", default_value="true",
-        description="Launch xmarker_detector YOLO detection node")
+        "enable_vision", default_value="false",
+        description="Launch xmarker_detector YOLO detection node (default: false for RL)")
 
     headless = LaunchConfiguration("headless")
     enable_vision = LaunchConfiguration("enable_vision")
@@ -105,10 +105,10 @@ def generate_launch_description():
     )
 
     # ---------------------------------------------------------------------------
-    # [3] ros_gz_bridge (t=16s -- wait for Gazebo sensors to fully load)
+    # [3] ros_gz_bridge (t=10s -- camera sensor removed; Gazebo loads faster)
     # ---------------------------------------------------------------------------
     ros_gz_bridge = TimerAction(
-        period=16.0,
+        period=10.0,
         actions=[Node(
             package="ros_gz_bridge",
             executable="parameter_bridge",

@@ -27,8 +27,9 @@ environment:
   max_steps: 500
   min_altitude: 2.0
   min_altitude_start_step: 20
-  obs_wait_timeout: 0.15
+  obs_wait_timeout: 0.10     # 100 ms — 5x the 20 ms PX4 publish interval
   cruise_poll_timeout: 60.0
+  use_vision: false          # disable camera-based obs/termination for RL training
 
 reward:
   # --- Physics ---
@@ -62,4 +63,4 @@ wandb:
   run_name: "L4-AutoDrop-v1"            # Auto-generated if null
   tags: ["sac", "spot-vm", "l4-gpu"]
   save_model_artifact: true
-  log_freq: 100             # gradient_save_freq for WandbCallback
+  log_freq: 1000            # gradient_save_freq for WandbCallback (increased to avoid blocking training loop)

@@ -85,25 +85,29 @@ No training runs completed yet. Checkpoints saved to:
 - **Phase 5 base:** SAC Gymnasium environment (`drone_drop_env.py`) — 15-dim obs, 5-dim action space; `train_sac.py` with TensorBoard + WandB
 - **2-layer launch architecture:** `infra.launch.py` + `episode.launch.py` → episode cycle ~12 s
 - **Phase 5 enhancements:** `hyperparams.yaml` centralised config; WandB + CUDA + SIGTERM preemption checkpoint; `setup.py` registers yaml as package data
-- **Phase 6 — 4-Layer Hierarchical Reward (this session):**
-  - `_compute_reward()` fully implemented with Layers 1, 2, 3 (safety, stability, approach)
-  - `_predict_impact_point()` added: AeroThrow projectile physics (`z + vz·t − ½g·t² = 0`, positive root `t_f = (vz + √(vz² + 2gz)) / g`)
-  - Auto-drop logic in `step()`: fires drop when `d_impact ≤ 0.5 m` and computes Layer 4 terminal reward
-  - Layer 4: exponential precision reward + jackpot + instability penalty using live roll/pitch from `VehicleAttitude`
-  - `VehicleAttitude` subscriber added to `_RLBridgeNode` for roll/pitch extraction (quaternion → Euler ZYX)
-  - `d_impact_prev` seeded from initial state in `reset()`; `action_prev` tracked for smoothness penalty
-  - Old placeholder `_has_dropped` / `accuracy_reward_scale` replaced by clean `dropped` flag and new reward params
-  - `hyperparams.yaml` `reward:` section completely replaced with 4-layer parameters
+- **Phase 6 — 4-Layer Hierarchical Reward:**
+  - `_compute_reward()` fully implemented with Layers 1–4; AeroThrow kinematic predictor; auto-drop at 0.5 m; Layer 4 jackpot + instability penalty
+- **Phase 7 — RL Speed Optimisations (2026-03-12):**
+  - **Diagnosis:** First run completed 386 steps / 188 episodes in ~3 hours (0 FPS); ~60 s/episode dominated by real-time TAKEOFF→CRUISE; conf==0 termination with camera off caused 1-step episodes
+  - **Gazebo physics unlocked** (`x_marker_world.sdf`): `real_time_factor=0`, `real_time_update_rate=0`, `max_step_size=0.01` (100 Hz). Simulation now runs at max CPU speed — expected 3–8× episode speedup
+  - **Camera sensor removed** (`x500_bombard/model.sdf`): eliminated 640×480@30 Hz ogre2 GPU rendering; `gz-sim-sensors-system` removed from world plugins
+  - **Bridge stripped** (`ros_gz_bridge.yaml`): removed camera image/info and IMU bridges; only clock, payload odometry, drop cmd remain
+  - **`use_vision=False` mode** (`drone_drop_env.py`): new `_cfg_use_vision` param; skips `conf==0` Layer 1 termination; synthesises `conf=1.0` in obs when camera absent. Prevents immediate 1-step-episode termination
+  - **Kill-episode sleep** reduced 1.5 s → 0.5 s; saves 1 s per reset
+  - **infra.launch.py**: vision default `false`; bridge start delay 16 s → 10 s
+  - **hyperparams.yaml**: `use_vision: false`, `obs_wait_timeout: 0.10`, `log_freq: 1000`
+  - **colcon build**: both `rl_navigation` and `mission_manager` build cleanly
 
 ---
 
 # 3. Remaining Tasks (Next Steps)
 
 - [ ] **WandB login inside container** — run `wandb login` and enter API key; verify entity name matches `hyperparams.yaml`
-- [ ] **Run first training session**
-  - `ros2 launch mission_manager infra.launch.py`
-  - `ros2 run rl_navigation train_sac`
-- [ ] **Evaluate first run** — check WandB: episode_reward, d_impact trend, Layer 4 reward frequency, jackpot rate
+- [ ] **Run optimised training session** (resume from preempt checkpoint or fresh start)
+  - `ros2 launch mission_manager infra.launch.py`  (Gazebo unlocked, no camera, bridge starts at 10 s)
+  - `ros2 run rl_navigation train_sac --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip`
+- [ ] **Verify RTF=0 speedup** — watch WandB `time/fps` metric; expect 3–8× vs. previous 0 FPS
+- [ ] **Evaluate first meaningful run** — check: episode_reward, d_impact trend, Layer 4 reward frequency, jackpot rate
 - [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`; adjust if approach gradient dominates or drops too early
 - [ ] **Verify auto-drop threshold** — log `d_impact` at each drop; confirm 0.5 m threshold yields meaningful Layer 4 rewards
 - [ ] **Multi-env parallelism** — `SubprocVecEnv` if multiple GPUs available
@@ -115,7 +119,7 @@ No training runs completed yet. Checkpoints saved to:
 
 | Date | Run ID | WandB Link | Steps | Mean Drop Error | Notes |
 |------|--------|-----------|-------|-----------------|-------|
-| — | — | — | — | — | No runs yet — reward function implemented 2026-03-12; first run pending |
+| 2026-03-12 | vekkz83a | drone-bombard-sac / L4-AutoDrop-v1 | 386 | — | First run aborted; 0 FPS (60 s/episode real-time locked). Optimisations applied in Phase 7. |
 
 ---
 

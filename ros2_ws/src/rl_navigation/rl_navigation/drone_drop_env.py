@@ -267,6 +267,8 @@ class DroneDropEnv(gym.Env):
         self._cfg_min_alt_start = cfg_env.get('min_altitude_start_step', 20)
         self._cfg_obs_wait = cfg_env.get('obs_wait_timeout', 0.15)
         self._cfg_cruise_timeout = cfg_env.get('cruise_poll_timeout', 60.0)
+        # use_vision=False: skip camera termination + synthesise conf=1.0 in obs
+        self._cfg_use_vision = cfg_env.get('use_vision', True)
 
         # --- Reward constants (4-Layer Hierarchical) ---
         r = cfg_reward
@@ -538,7 +540,10 @@ class DroneDropEnv(gym.Env):
             info['overspeed'] = True
             return -8.0, True, info
 
-        if conf == 0.0:
+        # Skip vision-based termination when running without camera sensor.
+        # use_vision=False means pixel_coords will always be zero (no detector),
+        # so penalising conf==0.0 would terminate every step immediately.
+        if self._cfg_use_vision and conf == 0.0:
             info['target_lost'] = True
             return -10.0, True, info
 
@@ -617,10 +622,18 @@ class DroneDropEnv(gym.Env):
         vel_n = vel / VEL_SCALE
         ang_n = ang / ANG_VEL_SCALE
 
-        # Pixel coordinates normalised to [-1, 1]
-        u_norm = (pix[0] / 640.0) * 2.0 - 1.0 if pix[2] > 0 else 0.0
-        v_norm = (pix[1] / 480.0) * 2.0 - 1.0 if pix[2] > 0 else 0.0
-        conf = float(np.clip(pix[2], 0.0, 1.0))
+        # Pixel coordinates normalised to [-1, 1].
+        # When use_vision=False (camera disabled), synthesise conf=1.0 so
+        # downstream reward layers and SB3 normalisation see a valid signal;
+        # u_norm/v_norm remain 0.0 (centred) since no pixel data is available.
+        if self._cfg_use_vision:
+            u_norm = (pix[0] / 640.0) * 2.0 - 1.0 if pix[2] > 0 else 0.0
+            v_norm = (pix[1] / 480.0) * 2.0 - 1.0 if pix[2] > 0 else 0.0
+            conf = float(np.clip(pix[2], 0.0, 1.0))
+        else:
+            u_norm = 0.0
+            v_norm = 0.0
+            conf = 1.0   # synthetic: "target always visible" via kinematics
 
         rel_dx = (pos[0] - self._cfg_target_x) / POS_SCALE
         rel_dy = (pos[1] - self._cfg_target_y) / POS_SCALE
@@ -651,8 +664,8 @@ class DroneDropEnv(gym.Env):
                     os.killpg(os.getpgid(self._episode_proc.pid), signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-        # Brief pause to let DDS participants deregister
-        time.sleep(1.5)
+        # Brief pause to let DDS participants deregister (reduced from 1.5 s)
+        time.sleep(0.5)
 
     def _start_episode(self):
         """Launch a fresh episode-layer process group (PX4 + mission nodes)."""

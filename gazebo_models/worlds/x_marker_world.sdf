@@ -25,12 +25,17 @@
   <world name="x_marker_world">
 
     <!-- ============================================================
-         Physics: same parameters as Classic world (ODE, 250 Hz)
+         Physics: unlocked for RL training (max CPU, no wall-clock cap)
+         real_time_factor=0  → no real-time limit (runs as fast as CPU allows)
+         real_time_update_rate=0 → same effect (0 = unlimited)
+         max_step_size=0.01  → 100 Hz physics (was 250 Hz / 4 ms);
+                               coarser steps trade accuracy for speed;
+                               quadrotor control at 100 Hz is sufficient.
     ============================================================ -->
     <physics type="ode">
-      <max_step_size>0.004</max_step_size>
-      <real_time_factor>1.0</real_time_factor>
-      <real_time_update_rate>250</real_time_update_rate>
+      <max_step_size>0.01</max_step_size>
+      <real_time_factor>0</real_time_factor>
+      <real_time_update_rate>0</real_time_update_rate>
     </physics>
 
     <!-- ============================================================
@@ -46,7 +51,10 @@
     <plugin name="gz::sim::systems::Contact"
             filename="gz-sim-contact-system"/>
 
-    <!-- Sensor systems: handle IMU, baro, GPS, magnetometer, camera -->
+    <!-- Sensor systems: handle IMU, baro, GPS, magnetometer for PX4 SITL -->
+    <!-- NOTE: gz-sim-sensors-system (camera/ogre2 rendering) is intentionally
+         omitted for RL training — no camera sensor exists in x500_bombard RL
+         model variant, so removing it eliminates GPU rendering overhead entirely. -->
     <plugin name="gz::sim::systems::Imu"
             filename="gz-sim-imu-system"/>
     <plugin name="gz::sim::systems::AirPressure"
@@ -55,10 +63,6 @@
             filename="gz-sim-navsat-system"/>
     <plugin name="gz::sim::systems::Magnetometer"
             filename="gz-sim-magnetometer-system"/>
-    <plugin name="gz::sim::systems::Sensors"
-            filename="gz-sim-sensors-system">
-      <render_engine>ogre2</render_engine>
-    </plugin>
 
     <!-- Note: gz::sim::systems::DetachableJoint is a model-level plugin.
          It is defined inside x500_bombard/model.sdf on the drone model,
