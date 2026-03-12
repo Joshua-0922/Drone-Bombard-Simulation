@@ -30,12 +30,31 @@ environment:
   obs_wait_timeout: 0.15
   cruise_poll_timeout: 60.0
 
-reward:                     # Placeholder — used when _compute_reward() is implemented
-  time_penalty: -0.005
-  hover_penalty_scale: 0.5
-  speed_reward_scale: 5.0
-  stability_penalty_scale: 1.0
-  accuracy_reward_scale: 2.0
+reward:
+  # --- Physics ---
+  g: 9.81                   # gravity (m/s^2)
+
+  # --- Auto-drop ---
+  auto_drop_threshold: 0.5  # fire drop when predicted impact <= this (m)
+
+  # --- Approach shaping (Layer 3) ---
+  k1_potential: 1.0         # potential field decay constant for approach reward
+  w_dist: 10.0              # weight for impact-distance gradient reward
+  w_heading: 1.0            # weight for heading alignment (cos delta_yaw)
+
+  # --- Stability/efficiency (Layer 2) ---
+  w_time: 0.01              # per-step time penalty
+  w_ang_vel: 0.05           # penalty weight for ||omega||^2
+  w_action_smooth: 0.05     # penalty weight for ||action_t - action_{t-1}||^2
+
+  # --- Terminal drop accuracy (Layer 4) ---
+  k2_precision: 5.0         # precision decay constant for drop reward
+  w_drop_base: 50.0         # base weight for drop accuracy reward
+  r_success_jackpot: 100.0  # bonus for landing within success_threshold
+  success_threshold: 0.1    # distance threshold for jackpot (m)
+  penalty_instability: 50.0 # subtracted if drone is unstable at drop
+  limit_ang_vel: 2.0        # rad/s — instability threshold for angular velocity
+  limit_tilt: 0.26          # rad (~15 deg) — instability threshold for roll/pitch
 
 wandb:
   project: "drone-bombard-sac"

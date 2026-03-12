@@ -6,31 +6,59 @@
 
 # 1. Current State
 
-## Reward Formula
+## Reward Formula — 4-Layer Hierarchical System
 
-`_compute_reward()` is currently a **placeholder returning 0.0**. Terminal accuracy reward from `drop_calculator` via `/rl/drop_error` is the only active signal.
+Fully implemented in `drone_drop_env.py`. Active on every `step()` call.
 
-**Planned per-step formula (not yet implemented):**
+### Layer 1 — Safety (hard termination)
+| Trigger | Reward | `done` |
+|---|---|---|
+| altitude < `min_altitude` (2 m), after step 20 | −10 | True |
+| speed > 20 m/s | −8 | True |
+| vision confidence == 0 (target lost) | −10 | True |
 
+### Layer 2 — Efficiency/Stability (per step)
 ```
-R = time_penalty
-  + hover_penalty_scale  × (-|vx| - |vy|)   [penalise hovering, encourage forward motion]
-  - stability_penalty_scale × |angular_velocity|  [penalise instability at drop moment]
-  + speed_reward_scale   × forward_speed      [reward closing on target]
-  + accuracy_reward_scale × (1 / drop_error)  [terminal: reward at episode end]
+R2 = -w_time  -  w_ang_vel × ||ω||²  -  w_action_smooth × ||Δa||²
 ```
 
-**Constants (from `config/hyperparams.yaml`):**
+### Layer 3 — Approach (per step, gradient of predicted impact)
+```
+R3 = w_dist × (exp(-k1 × d_impact_now) - exp(-k1 × d_impact_prev))
+   + w_heading × cos(Δyaw_to_target)
+```
+`d_impact` comes from the kinematic predictor, not raw XY distance.
 
-| Constant | Value |
+### Layer 4 — Terminal (fires once at drop moment)
+```
+R4 = w_drop_base × exp(-k2 × d_error)
+   + r_success_jackpot  [if d_error ≤ success_threshold]
+   - penalty_instability [if ||ω|| > limit_ang_vel OR |roll|/|pitch| > limit_tilt]
+```
+
+**Auto-drop:** If `d_impact ≤ auto_drop_threshold` (0.5 m), drop is forced regardless of policy action[4].
+
+## Key Reward Hyperparameters (`config/hyperparams.yaml`)
+
+| Parameter | Value |
 |---|---|
-| `time_penalty` | −0.005 / step |
-| `hover_penalty_scale` | 0.5 |
-| `speed_reward_scale` | 5.0 |
-| `stability_penalty_scale` | 1.0 |
-| `accuracy_reward_scale` | 2.0 |
+| `g` | 9.81 m/s² |
+| `auto_drop_threshold` | 0.5 m |
+| `k1_potential` | 1.0 |
+| `k2_precision` | 5.0 |
+| `w_dist` | 10.0 |
+| `w_heading` | 1.0 |
+| `w_time` | 0.01 |
+| `w_ang_vel` | 0.05 |
+| `w_action_smooth` | 0.05 |
+| `w_drop_base` | 50.0 |
+| `r_success_jackpot` | 100.0 |
+| `success_threshold` | 0.1 m |
+| `penalty_instability` | 50.0 |
+| `limit_ang_vel` | 2.0 rad/s |
+| `limit_tilt` | 0.26 rad (≈15°) |
 
-## Key Hyperparameters
+## Key SAC Hyperparameters
 
 | Parameter | Value |
 |---|---|
@@ -39,17 +67,14 @@ R = time_penalty
 | `learning_rate` | 3.0 × 10⁻⁴ |
 | `buffer_size` | 100,000 |
 | `batch_size` | 256 |
-| `tau` | 0.005 |
 | `gamma` | 0.99 |
 | `learning_starts` | 1,000 |
 | `net_arch` | [256, 256] |
 | `device` | cuda |
-| `checkpoint_freq` | 5,000 steps |
-| `max_steps` / episode | 500 |
 
 ## Best Checkpoint
 
-No training runs completed yet. Checkpoints will be saved to:
+No training runs completed yet. Checkpoints saved to:
 `/workspace/ros2_ws/rl_checkpoints/sac_drop_<N>_steps.zip`
 
 ---
@@ -57,31 +82,30 @@ No training runs completed yet. Checkpoints will be saved to:
 # 2. Recent Progress
 
 - **Phase 1–4:** Full Gazebo Harmonic simulation stack (PX4 SITL, ros_gz_bridge, DetachableJoint payload drop)
-- **Phase 5 base:** SAC Gymnasium environment (`drone_drop_env.py`) — 15-dim obs, 5-dim action space
-- **Phase 5 base:** `train_sac.py` with TensorBoard logging + CheckpointCallback
-- **2-layer launch architecture:** `infra.launch.py` (Gazebo + bridge, stays up) + `episode.launch.py` (PX4 + mission nodes, resets each episode) → episode cycle ~12 s
-- **Phase 5 enhancements (latest commit `4c652de`):**
-  - `config/hyperparams.yaml` — centralised hyperparameter file; loaded by env at runtime
-  - `drone_drop_env.py` — loads yaml config; `_compute_reward()` stubbed to 0.0
-  - `train_sac.py` — WandB integration (`resume="allow"` for preemption continuity), CUDA device selection, SIGTERM handler (emergency checkpoint save 30 s before GCP preemption), replay buffer checkpointing
-  - `setup.py` — registers `config/hyperparams.yaml` as installed package data
-  - `requirements.txt` — added `wandb>=0.18.0`
-  - `README.md` Phase 5 — documents WandB setup, CUDA, Spot VM resilience workflow
+- **Phase 5 base:** SAC Gymnasium environment (`drone_drop_env.py`) — 15-dim obs, 5-dim action space; `train_sac.py` with TensorBoard + WandB
+- **2-layer launch architecture:** `infra.launch.py` + `episode.launch.py` → episode cycle ~12 s
+- **Phase 5 enhancements:** `hyperparams.yaml` centralised config; WandB + CUDA + SIGTERM preemption checkpoint; `setup.py` registers yaml as package data
+- **Phase 6 — 4-Layer Hierarchical Reward (this session):**
+  - `_compute_reward()` fully implemented with Layers 1, 2, 3 (safety, stability, approach)
+  - `_predict_impact_point()` added: AeroThrow projectile physics (`z + vz·t − ½g·t² = 0`, positive root `t_f = (vz + √(vz² + 2gz)) / g`)
+  - Auto-drop logic in `step()`: fires drop when `d_impact ≤ 0.5 m` and computes Layer 4 terminal reward
+  - Layer 4: exponential precision reward + jackpot + instability penalty using live roll/pitch from `VehicleAttitude`
+  - `VehicleAttitude` subscriber added to `_RLBridgeNode` for roll/pitch extraction (quaternion → Euler ZYX)
+  - `d_impact_prev` seeded from initial state in `reset()`; `action_prev` tracked for smoothness penalty
+  - Old placeholder `_has_dropped` / `accuracy_reward_scale` replaced by clean `dropped` flag and new reward params
+  - `hyperparams.yaml` `reward:` section completely replaced with 4-layer parameters
 
 ---
 
 # 3. Remaining Tasks (Next Steps)
 
-- [ ] **Implement `_compute_reward()`** in `drone_drop_env.py`
-  - Shape: `time_penalty + speed_reward - hover_penalty - stability_penalty + accuracy_reward`
-  - All constants already defined in `hyperparams.yaml` under `reward:` section
-- [ ] **WandB entity setup** — fill in `entity:` field in `config/hyperparams.yaml` with WandB username/team
+- [ ] **WandB login inside container** — run `wandb login` and enter API key; verify entity name matches `hyperparams.yaml`
 - [ ] **Run first training session**
-  - `wandb login`
-  - Start infra: `ros2 launch mission_manager infra.launch.py`
-  - Start training: `ros2 run rl_navigation train_sac`
-- [ ] **Evaluate first run** — inspect WandB dashboard; check episode length, mean reward, drop error
-- [ ] **Tune hyperparameters** — adjust `learning_rate`, `buffer_size`, `net_arch` based on first run results
+  - `ros2 launch mission_manager infra.launch.py`
+  - `ros2 run rl_navigation train_sac`
+- [ ] **Evaluate first run** — check WandB: episode_reward, d_impact trend, Layer 4 reward frequency, jackpot rate
+- [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`; adjust if approach gradient dominates or drops too early
+- [ ] **Verify auto-drop threshold** — log `d_impact` at each drop; confirm 0.5 m threshold yields meaningful Layer 4 rewards
 - [ ] **Multi-env parallelism** — `SubprocVecEnv` if multiple GPUs available
 - [ ] **Custom SB3 policy** — add PyTorch AMP (mixed precision) for faster L4 training
 
@@ -91,7 +115,7 @@ No training runs completed yet. Checkpoints will be saved to:
 
 | Date | Run ID | WandB Link | Steps | Mean Drop Error | Notes |
 |------|--------|-----------|-------|-----------------|-------|
-| — | — | — | — | — | No runs yet — reward function not yet implemented |
+| — | — | — | — | — | No runs yet — reward function implemented 2026-03-12; first run pending |
 
 ---
 
