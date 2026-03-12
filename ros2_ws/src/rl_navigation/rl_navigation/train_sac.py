@@ -8,6 +8,7 @@ import sys
 import rclpy
 import yaml
 import wandb
+from ament_index_python.packages import get_package_share_directory
 from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
 from wandb.integration.sb3 import WandbCallback
@@ -15,7 +16,7 @@ from wandb.integration.sb3 import WandbCallback
 from rl_navigation.drone_drop_env import DroneDropEnv
 
 _DEFAULT_CONFIG = os.path.join(
-    os.path.dirname(__file__), '..', 'config', 'hyperparams.yaml')
+    get_package_share_directory('rl_navigation'), 'config', 'hyperparams.yaml')
 
 # Will be set in main() so the SIGTERM handler can reference them
 _model = None

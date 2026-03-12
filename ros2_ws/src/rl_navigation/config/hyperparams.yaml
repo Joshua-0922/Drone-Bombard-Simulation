@@ -58,7 +58,7 @@ reward:
 
 wandb:
   project: "drone-bombard-sac"
-  entity: "nayoonho0922"              # Fill in your WandB username or team name
+  entity: "nayoonho0922-seoul-national-university"  # team entity (personal entities disabled)
   run_name: "L4-AutoDrop-v1"            # Auto-generated if null
   tags: ["sac", "spot-vm", "l4-gpu"]
   save_model_artifact: true
