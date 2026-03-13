@@ -74,8 +74,10 @@ R4 = w_drop_base × exp(-k2 × d_error)
 
 ## Best Checkpoint
 
-No training runs completed yet. Checkpoints saved to:
-`/workspace/ros2_ws/rl_checkpoints/sac_drop_<N>_steps.zip`
+Preempt checkpoint (from Phase 7 Spot VM preemption):
+- Model: `/workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip`
+- Replay buffer: `/workspace/ros2_ws/rl_checkpoints/sac_drop_preempt_replay.pkl`
+- Periodic checkpoints: `/workspace/ros2_ws/rl_checkpoints/sac_drop_<N>_steps.zip`
 
 ---
 
@@ -87,6 +89,11 @@ No training runs completed yet. Checkpoints saved to:
 - **Phase 5 enhancements:** `hyperparams.yaml` centralised config; WandB + CUDA + SIGTERM preemption checkpoint; `setup.py` registers yaml as package data
 - **Phase 6 — 4-Layer Hierarchical Reward:**
   - `_compute_reward()` fully implemented with Layers 1–4; AeroThrow kinematic predictor; auto-drop at 0.5 m; Layer 4 jackpot + instability penalty
+- **Phase 8 — Training Resume (2026-03-13):**
+  - Spot VM preempted after 386 steps; container restarted, infra relaunched headless
+  - Resumed from `sac_drop_preempt.zip` + replay buffer; WandB run `vekkz83a` (L4-AutoDrop-v1) reattached via `WANDB_RUN_ID`
+  - All processes running detached (`docker exec -d`): survive Termius disconnection
+  - Fixed missing source: must source `/root/ros2_ws/install/setup.bash` for `ros_gz_bridge`
 - **Phase 7 — RL Speed Optimisations (2026-03-12):**
   - **Diagnosis:** First run completed 386 steps / 188 episodes in ~3 hours (0 FPS); ~60 s/episode dominated by real-time TAKEOFF→CRUISE; conf==0 termination with camera off caused 1-step episodes
   - **Gazebo physics unlocked** (`x_marker_world.sdf`): `real_time_factor=0`, `real_time_update_rate=0`, `max_step_size=0.01` (100 Hz). Simulation now runs at max CPU speed — expected 3–8× episode speedup
@@ -103,9 +110,7 @@ No training runs completed yet. Checkpoints saved to:
 # 3. Remaining Tasks (Next Steps)
 
 - [ ] **WandB login inside container** — run `wandb login` and enter API key; verify entity name matches `hyperparams.yaml`
-- [ ] **Run optimised training session** (resume from preempt checkpoint or fresh start)
-  - `ros2 launch mission_manager infra.launch.py`  (Gazebo unlocked, no camera, bridge starts at 10 s)
-  - `ros2 run rl_navigation train_sac --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip`
+- [x] **Run optimised training session** — resumed 2026-03-13 from preempt checkpoint; WandB run vekkz83a reattached; replay buffer restored
 - [ ] **Verify RTF=0 speedup** — watch WandB `time/fps` metric; expect 3–8× vs. previous 0 FPS
 - [ ] **Evaluate first meaningful run** — check: episode_reward, d_impact trend, Layer 4 reward frequency, jackpot rate
 - [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`; adjust if approach gradient dominates or drops too early
@@ -120,6 +125,7 @@ No training runs completed yet. Checkpoints saved to:
 | Date | Run ID | WandB Link | Steps | Mean Drop Error | Notes |
 |------|--------|-----------|-------|-----------------|-------|
 | 2026-03-12 | vekkz83a | drone-bombard-sac / L4-AutoDrop-v1 | 386 | — | First run aborted; 0 FPS (60 s/episode real-time locked). Optimisations applied in Phase 7. |
+| 2026-03-13 | vekkz83a | drone-bombard-sac / L4-AutoDrop-v1 | resumed | — | Resumed from preempt checkpoint + replay buffer. RTF=0, headless, no camera. WANDB_RUN_ID set to reattach existing run. |
 
 ---
 
