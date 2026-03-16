@@ -1,16 +1,20 @@
 """SAC training script for drone fly-by drop policy."""
 
 import argparse
+import glob as _glob
 import os
+import shutil
 import signal
 import sys
+import time
 
 import rclpy
 import yaml
 import wandb
 from ament_index_python.packages import get_package_share_directory
 from stable_baselines3 import SAC
-from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
+from stable_baselines3.common.callbacks import (
+    BaseCallback, CallbackList, CheckpointCallback)
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from wandb.integration.sb3 import WandbCallback
 
@@ -37,6 +41,25 @@ def _emergency_save(signum, frame):
     sys.exit(0)
 
 
+class CleanupOldCheckpointsCallback(BaseCallback):
+    """Keep only the N most-recent periodic checkpoints to cap disk usage."""
+
+    def __init__(self, checkpoint_dir, name_prefix, keep_last=3, verbose=0):
+        super().__init__(verbose)
+        self._dir = checkpoint_dir
+        self._prefix = name_prefix
+        self._keep = keep_last
+
+    def _on_step(self):
+        files = sorted(_glob.glob(
+            os.path.join(self._dir, f'{self._prefix}_*_steps.zip')))
+        for old in files[:-self._keep]:
+            os.remove(old)
+            if self.verbose:
+                print(f'[Cleanup] Deleted old checkpoint: {old}')
+        return True
+
+
 def _parse_args():
     parser = argparse.ArgumentParser(
         description='Train SAC policy for drone fly-by drop.')
@@ -50,9 +73,6 @@ def _parse_args():
     parser.add_argument(
         '--resume', type=str, default=None, metavar='PATH',
         help='Path to existing .zip checkpoint to resume training')
-    parser.add_argument(
-        '--log-dir', type=str, default=None,
-        help='Override TensorBoard log directory from config')
     parser.add_argument(
         '--checkpoint-dir', type=str, default=None,
         help='Override checkpoint directory from config')
@@ -77,14 +97,21 @@ def main(args=None):
     cfg_wandb = cfg.get('wandb', {})
 
     total_timesteps = cli.timesteps or cfg_train.get('total_timesteps', 500_000)
-    log_dir = cli.log_dir or cfg_train.get('log_dir', '/workspace/ros2_ws/rl_logs/sac_drop')
     checkpoint_dir = cli.checkpoint_dir or cfg_train.get(
         'checkpoint_dir', '/workspace/ros2_ws/rl_checkpoints')
     checkpoint_freq = cfg_train.get('checkpoint_freq', 5_000)
+    max_checkpoints_kept = cfg_train.get('max_checkpoints_kept', 3)
     _checkpoint_dir = checkpoint_dir
 
-    os.makedirs(log_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
+
+    # --- Prune stale WandB offline-run directories (older than 7 days) ---
+    _wandb_dir = os.path.join(os.getcwd(), 'wandb')
+    if os.path.isdir(_wandb_dir):
+        cutoff = time.time() - 7 * 86400
+        for entry in os.scandir(_wandb_dir):
+            if entry.is_dir() and entry.stat().st_mtime < cutoff:
+                shutil.rmtree(entry.path, ignore_errors=True)
 
     # --- WandB ---
     wandb.init(
@@ -94,7 +121,6 @@ def main(args=None):
         tags=cfg_wandb.get('tags', []),
         config=cfg,
         resume='allow',   # re-attaches to existing run after preemption
-        sync_tensorboard=True,
     )
 
     num_envs = cfg_train.get('num_envs', 1)
@@ -102,7 +128,6 @@ def main(args=None):
     print('=== SAC Drone Drop Training ===')
     print(f'  Config     : {config_path}')
     print(f'  Timesteps  : {total_timesteps:,}')
-    print(f'  Log dir    : {log_dir}')
     print(f'  Checkpoints: {checkpoint_dir}')
     print(f'  Device     : {cfg_sac.get("device", "cuda")}')
     print(f'  Num envs   : {num_envs}')
@@ -125,15 +150,17 @@ def main(args=None):
         save_freq=checkpoint_freq,
         save_path=checkpoint_dir,
         name_prefix='sac_drop',
-        save_replay_buffer=True,   # critical for Spot VM resume
+        save_replay_buffer=False,  # only SIGTERM handler saves replay buffer
         verbose=1,
     )
+    cleanup_callback = CleanupOldCheckpointsCallback(
+        checkpoint_dir, 'sac_drop', keep_last=max_checkpoints_kept, verbose=1)
     wandb_callback = WandbCallback(
         gradient_save_freq=cfg_wandb.get('log_freq', 100),
         model_save_path=checkpoint_dir,
         verbose=2,
     )
-    callbacks = CallbackList([checkpoint_callback, wandb_callback])
+    callbacks = CallbackList([checkpoint_callback, cleanup_callback, wandb_callback])
 
     # --- Model ---
     if cli.resume:
@@ -142,7 +169,7 @@ def main(args=None):
             cli.resume,
             env=env,
             device=cfg_sac.get('device', 'cuda'),
-            tensorboard_log=log_dir,
+            tensorboard_log=None,
         )
         # Reload replay buffer if preempt checkpoint exists
         replay_path = cli.resume.replace('.zip', '_replay.pkl')
@@ -161,7 +188,7 @@ def main(args=None):
             learning_starts=cfg_sac.get('learning_starts', 1_000),
             policy_kwargs=dict(net_arch=cfg_sac.get('net_arch', [256, 256])),
             device=cfg_sac.get('device', 'cuda'),
-            tensorboard_log=log_dir,
+            tensorboard_log=None,
             verbose=1,
         )
 

@@ -1,7 +1,7 @@
 training:
   total_timesteps: 500000
   checkpoint_freq: 5000
-  log_dir: "/workspace/ros2_ws/rl_logs/sac_drop"
+  max_checkpoints_kept: 3        # keep only last 3 periodic checkpoints
   checkpoint_dir: "/workspace/ros2_ws/rl_checkpoints"
   num_envs: 8              # parallel environments via SubprocVecEnv
 
