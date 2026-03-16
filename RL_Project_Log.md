@@ -6,6 +6,15 @@
 
 # 1. Current State
 
+## Environment Setup (2026-03-16)
+| Component | Status |
+|---|---|
+| GPU | NVIDIA L4, driver 580.126.09, CUDA 13.0 — `nvidia-smi` ✅ |
+| DKMS modules | Built + installed for kernel `6.8.0-1048-gcp` |
+| NVIDIA Container Toolkit | 1.19.0 installed; Docker nvidia runtime configured ✅ |
+| Docker | 29.3.0, `--gpus all` working inside containers ✅ |
+| Old packages purged | `nvidia-settings` 510 fully purged |
+
 ## Reward Formula — 4-Layer Hierarchical System
 
 Fully implemented in `drone_drop_env.py`. Active on every `step()` call.
@@ -89,6 +98,13 @@ Preempt checkpoint (from Phase 7 Spot VM preemption):
 - **Phase 5 enhancements:** `hyperparams.yaml` centralised config; WandB + CUDA + SIGTERM preemption checkpoint; `setup.py` registers yaml as package data
 - **Phase 6 — 4-Layer Hierarchical Reward:**
   - `_compute_reward()` fully implemented with Layers 1–4; AeroThrow kinematic predictor; auto-drop at 0.5 m; Layer 4 jackpot + instability penalty
+- **Phase 9 — Env Setup + Reward Refactor (2026-03-16):**
+  - GPU driver 580 DKMS modules built for kernel `6.8.0-1048-gcp`; nvidia-smi working
+  - NVIDIA Container Toolkit 1.19.0 installed; Docker nvidia runtime configured
+  - Old `nvidia-settings` 510 package purged
+  - **Layer 1 reward refactored**: crash / overspeed / target-lost now apply configurable penalties (`penalty_crash`, `penalty_overspeed`, `penalty_target_lost`) instead of hard termination — episode continues
+  - **num_envs=8**: added to `hyperparams.yaml`; `train_sac.py` now wraps with `SubprocVecEnv` (each subprocess gets its own `ROS_DOMAIN_ID`)
+  - W&B API key configured
 - **Phase 8 — Training Resume (2026-03-13):**
   - Spot VM preempted after 386 steps; container restarted, infra relaunched headless
   - Resumed from `sac_drop_preempt.zip` + replay buffer; WandB run `vekkz83a` (L4-AutoDrop-v1) reattached via `WANDB_RUN_ID`
@@ -109,13 +125,13 @@ Preempt checkpoint (from Phase 7 Spot VM preemption):
 
 # 3. Remaining Tasks (Next Steps)
 
-- [ ] **WandB login inside container** — run `wandb login` and enter API key; verify entity name matches `hyperparams.yaml`
+- [x] **WandB login inside container** — API key set; entity `nayoonho0922-seoul-national-university` confirmed in hyperparams.yaml
 - [x] **Run optimised training session** — resumed 2026-03-13 from preempt checkpoint; WandB run vekkz83a reattached; replay buffer restored
 - [ ] **Verify RTF=0 speedup** — watch WandB `time/fps` metric; expect 3–8× vs. previous 0 FPS
 - [ ] **Evaluate first meaningful run** — check: episode_reward, d_impact trend, Layer 4 reward frequency, jackpot rate
 - [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`; adjust if approach gradient dominates or drops too early
 - [ ] **Verify auto-drop threshold** — log `d_impact` at each drop; confirm 0.5 m threshold yields meaningful Layer 4 rewards
-- [ ] **Multi-env parallelism** — `SubprocVecEnv` if multiple GPUs available
+- [x] **Multi-env parallelism** — `SubprocVecEnv` with num_envs=8; each env isolated via `ROS_DOMAIN_ID`
 - [ ] **Custom SB3 policy** — add PyTorch AMP (mixed precision) for faster L4 training
 
 ---

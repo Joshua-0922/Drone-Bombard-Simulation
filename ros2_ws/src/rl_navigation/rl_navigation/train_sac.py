@@ -11,6 +11,7 @@ import wandb
 from ament_index_python.packages import get_package_share_directory
 from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import CallbackList, CheckpointCallback
+from stable_baselines3.common.vec_env import SubprocVecEnv
 from wandb.integration.sb3 import WandbCallback
 
 from rl_navigation.drone_drop_env import DroneDropEnv
@@ -96,17 +97,28 @@ def main(args=None):
         sync_tensorboard=True,
     )
 
+    num_envs = cfg_train.get('num_envs', 1)
+
     print('=== SAC Drone Drop Training ===')
     print(f'  Config     : {config_path}')
     print(f'  Timesteps  : {total_timesteps:,}')
     print(f'  Log dir    : {log_dir}')
     print(f'  Checkpoints: {checkpoint_dir}')
     print(f'  Device     : {cfg_sac.get("device", "cuda")}')
+    print(f'  Num envs   : {num_envs}')
     print(f'  WandB run  : {wandb.run.name}')
     if cli.resume:
         print(f'  Resuming   : {cli.resume}')
 
-    env = DroneDropEnv(config_path=config_path)
+    if num_envs > 1:
+        def _make_env(rank, cfg_path):
+            def _init():
+                os.environ['ROS_DOMAIN_ID'] = str(rank)
+                return DroneDropEnv(config_path=cfg_path)
+            return _init
+        env = SubprocVecEnv([_make_env(i, config_path) for i in range(num_envs)])
+    else:
+        env = DroneDropEnv(config_path=config_path)
 
     # --- Callbacks ---
     checkpoint_callback = CheckpointCallback(

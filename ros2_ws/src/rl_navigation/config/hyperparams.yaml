@@ -3,6 +3,7 @@ training:
   checkpoint_freq: 5000
   log_dir: "/workspace/ros2_ws/rl_logs/sac_drop"
   checkpoint_dir: "/workspace/ros2_ws/rl_checkpoints"
+  num_envs: 8              # parallel environments via SubprocVecEnv
 
 sac:
   learning_rate: 3.0e-4
@@ -56,6 +57,11 @@ reward:
   penalty_instability: 50.0 # subtracted if drone is unstable at drop
   limit_ang_vel: 2.0        # rad/s — instability threshold for angular velocity
   limit_tilt: 0.26          # rad (~15 deg) — instability threshold for roll/pitch
+
+  # --- Layer 1 penalties (no hard termination; episode continues) ---
+  penalty_crash: -10.0      # altitude below min_altitude after step 20
+  penalty_overspeed: -8.0   # speed > 20 m/s
+  penalty_target_lost: -10.0 # vision confidence == 0 (only if use_vision: true)
 
 wandb:
   project: "drone-bombard-sac"

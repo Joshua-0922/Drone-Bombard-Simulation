@@ -1,7 +1,7 @@
 """Gymnasium environment for drone fly-by drop RL training.
 
 Reward structure — 4-Layer Hierarchical:
-  Layer 1: Safety    — hard termination on crash / overspeed / target lost
+  Layer 1: Safety    — penalty on crash / overspeed / target lost (no hard termination)
   Layer 2: Stability — per-step time, angular-velocity and action-smoothness penalties
   Layer 3: Approach  — predicted-impact distance gradient + heading alignment
   Layer 4: Terminal  — kinematic drop accuracy + jackpot + instability penalty
@@ -287,6 +287,10 @@ class DroneDropEnv(gym.Env):
         self._cfg_penalty_instability = r.get('penalty_instability', 50.0)
         self._cfg_limit_ang_vel = r.get('limit_ang_vel', 2.0)
         self._cfg_limit_tilt = r.get('limit_tilt', 0.26)
+        # Layer 1 penalties (no hard termination)
+        self._cfg_penalty_crash = r.get('penalty_crash', -10.0)
+        self._cfg_penalty_overspeed = r.get('penalty_overspeed', -8.0)
+        self._cfg_penalty_target_lost = r.get('penalty_target_lost', -10.0)
 
         self.observation_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(15,), dtype=np.float32)
@@ -516,7 +520,7 @@ class DroneDropEnv(gym.Env):
     def _compute_reward(self, pos, vel, ang, pix, d_impact, action):
         """Compute per-step reward for non-terminal steps.
 
-        Layer 1 — Safety:     hard termination on crash / overspeed / target lost
+        Layer 1 — Safety:     penalty on crash / overspeed / target lost (no termination)
         Layer 2 — Stability:  time + angular-velocity + action-smoothness penalties
         Layer 3 — Approach:   predicted-impact gradient + heading alignment reward
 
@@ -524,9 +528,10 @@ class DroneDropEnv(gym.Env):
             reward (float), terminated (bool), info (dict)
         """
         info = {}
+        reward = 0.0
 
         # ----------------------------------------------------------------
-        # Layer 1 — Safety (hard terminations)
+        # Layer 1 — Safety (penalties only; episode continues)
         # ----------------------------------------------------------------
         altitude = float(pos[2])
         speed = float(np.linalg.norm(vel))
@@ -534,18 +539,17 @@ class DroneDropEnv(gym.Env):
 
         if self._step_count > self._cfg_min_alt_start and altitude < self._cfg_min_altitude:
             info['crash'] = True
-            return -10.0, True, info
+            reward += self._cfg_penalty_crash
 
         if speed > self._V_MAX_SAFETY:
             info['overspeed'] = True
-            return -8.0, True, info
+            reward += self._cfg_penalty_overspeed
 
-        # Skip vision-based termination when running without camera sensor.
-        # use_vision=False means pixel_coords will always be zero (no detector),
-        # so penalising conf==0.0 would terminate every step immediately.
+        # Skip vision-based penalty when running without camera sensor.
+        # use_vision=False means pixel_coords will always be zero (no detector).
         if self._cfg_use_vision and conf == 0.0:
             info['target_lost'] = True
-            return -10.0, True, info
+            reward += self._cfg_penalty_target_lost
 
         # ----------------------------------------------------------------
         # Layer 2 — Efficiency / Stability
@@ -598,7 +602,7 @@ class DroneDropEnv(gym.Env):
         # Advance d_impact_prev for next step
         self.d_impact_prev = d_impact
 
-        reward = r2 + r3
+        reward += r2 + r3
         info['r2'] = r2
         info['r3'] = r3
         info['d_impact'] = d_impact
