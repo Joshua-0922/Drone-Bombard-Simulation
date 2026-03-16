@@ -6,6 +6,19 @@
 
 # 1. Current State
 
+## Disk Space Optimization (2026-03-16)
+All four disk-space fixes applied and pushed. Checkpoint accumulation, TensorBoard logs, and Docker log bloat are now bounded.
+
+| Fix | Status |
+|---|---|
+| TensorBoard disabled (`tensorboard_log=None`, `sync_tensorboard` removed) | ✅ |
+| `CheckpointCallback`: `save_replay_buffer=False` | ✅ |
+| `CleanupOldCheckpointsCallback`: keep last 3 `.zip` files | ✅ |
+| WandB offline-run directory pruning (>7 days) on startup | ✅ |
+| `hyperparams.yaml`: `max_checkpoints_kept: 3`, `log_dir` removed | ✅ |
+| `docker-compose.yml` at `/opt/drone-bombard/`: log driver `json-file` max 10 MB × 3 | ✅ |
+| `nachoigpt` cron: 6-hour ROS log + docker prune + journalctl vacuum | ✅ |
+
 ## Environment Setup (2026-03-16)
 | Component | Status |
 |---|---|
@@ -98,6 +111,14 @@ Preempt checkpoint (from Phase 7 Spot VM preemption):
 - **Phase 5 enhancements:** `hyperparams.yaml` centralised config; WandB + CUDA + SIGTERM preemption checkpoint; `setup.py` registers yaml as package data
 - **Phase 6 — 4-Layer Hierarchical Reward:**
   - `_compute_reward()` fully implemented with Layers 1–4; AeroThrow kinematic predictor; auto-drop at 0.5 m; Layer 4 jackpot + instability penalty
+- **Phase 10 — Disk Space Optimization (2026-03-16):**
+  - TensorBoard logging disabled (`tensorboard_log=None`, `sync_tensorboard` removed from `wandb.init`)
+  - `CheckpointCallback.save_replay_buffer=False` — only SIGTERM preempt handler saves replay buffer
+  - Added `CleanupOldCheckpointsCallback`: deletes oldest `.zip` files, keeping only last 3
+  - Added WandB offline-run directory pruning (entries older than 7 days) on training startup
+  - `hyperparams.yaml`: removed `log_dir`, added `max_checkpoints_kept: 3`
+  - Created `/opt/drone-bombard/docker-compose.yml` with `json-file` log driver (10 MB × 3 = 30 MB max)
+  - `nachoigpt` cron job: every 6 hours — clears ROS2 logs, `docker system prune -af`, `journalctl --vacuum-time=1d`
 - **Phase 9 — Env Setup + Reward Refactor (2026-03-16):**
   - GPU driver 580 DKMS modules built for kernel `6.8.0-1048-gcp`; nvidia-smi working
   - NVIDIA Container Toolkit 1.19.0 installed; Docker nvidia runtime configured
@@ -127,6 +148,8 @@ Preempt checkpoint (from Phase 7 Spot VM preemption):
 
 - [x] **WandB login inside container** — API key set; entity `nayoonho0922-seoul-national-university` confirmed in hyperparams.yaml
 - [x] **Run optimised training session** — resumed 2026-03-13 from preempt checkpoint; WandB run vekkz83a reattached; replay buffer restored
+- [x] **Disk space fixes applied** — TB disabled, checkpoints capped at 3, docker log limits, 6-hour cron cleanup
+- [ ] **Verify disk fix works** — after 15k steps: only 3 `.zip` files in `rl_checkpoints/`, no `rl_logs/` dir, `docker inspect` shows json-file log config
 - [ ] **Verify RTF=0 speedup** — watch WandB `time/fps` metric; expect 3–8× vs. previous 0 FPS
 - [ ] **Evaluate first meaningful run** — check: episode_reward, d_impact trend, Layer 4 reward frequency, jackpot rate
 - [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`; adjust if approach gradient dominates or drops too early
