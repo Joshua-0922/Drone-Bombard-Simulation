@@ -141,6 +141,7 @@ def generate_launch_description():
                  f"PX4_GZ_STANDALONE=1 "
                  f"PX4_GZ_WORLD=x_marker_world "
                  f"PX4_SIM_MODEL=gz_x500_bombard "
+                 f"PX4_SIM_SPEED_FACTOR=10 "
                  f"GZ_SIM_RESOURCE_PATH={gz_resource_path} "
                  f"{_px4_bin}"],
             name="px4_sitl",

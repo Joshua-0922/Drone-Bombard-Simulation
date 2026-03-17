@@ -6,6 +6,22 @@
 
 # 1. Current State
 
+## Training Speed Fix Phase 3 — PX4_SIM_SPEED_FACTOR=10 (2026-03-17)
+10x simulation speed via PX4 lockstep speed factor.
+
+| Mechanism | Effect |
+|-----------|--------|
+| `PX4_SIM_SPEED_FACTOR=10` in `infra.launch.py` | PX4 sim clock runs 10x; Gazebo steps 10x faster via lockstep |
+| Drone climb 0→5m | ~4s sim-time → ~0.4s wall-clock |
+| PX4 publishes `VehicleLocalPosition` | 50Hz sim-rate → ~500Hz wall-clock |
+| RL `step()` obs_wait | ~20ms/step → ~2ms/step (10x throughput) |
+| `obs_wait_timeout` | 50ms → 20ms (10x safety margin at 500Hz) |
+
+**Note — Gazebo SDF NOT changed**: `real_time_factor=0, real_time_update_rate=0` are already unlimited. Under lockstep, `real_time_update_rate` is irrelevant — Gazebo only advances when PX4 signals it. `PX4_SIM_SPEED_FACTOR` controls the pace.
+**Note — headless already default**, **lockstep already active** (PX4 gz_bridge enables it by default; `PX4_GZ_NO_LOCKSTEP` not set).
+
+Expected: step time 2.8h → 17 min; reset ~6s/ep × 5K eps = 8h; **total ≈ 8–9 hours**
+
 ## Training Speed Fix Phase 2 (2026-03-17)
 Reset time reduced from ~17s to ~10s per episode.
 
@@ -188,6 +204,7 @@ Preempt checkpoint (from Phase 7 Spot VM preemption):
 - [x] **Run optimised training session** — resumed 2026-03-13 from preempt checkpoint; WandB run vekkz83a reattached; replay buffer restored
 - [x] **Disk space fixes applied** — TB disabled, checkpoints capped at 3, docker log limits, 6-hour cron cleanup
 - [x] **Training speed Phase 2** — target_altitude 10→5m, EKF sleep 3→1.5s, obs_wait_timeout 100→50ms (2026-03-17)
+- [x] **Training speed Phase 3** — PX4_SIM_SPEED_FACTOR=10, obs_wait_timeout→20ms (2026-03-17)
 - [ ] **Rebuild after speed fix** — run `colcon build --packages-select mission_manager rl_navigation && source install/setup.bash` inside container
 - [ ] **Verify disk fix works** — after 15k steps: only 3 `.zip` files in `rl_checkpoints/`, no `rl_logs/` dir, `docker inspect` shows json-file log config
 - [ ] **Verify RTF=0 speedup** — watch WandB `time/fps` metric; expect 3–8× vs. previous 0 FPS
