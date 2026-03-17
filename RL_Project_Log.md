@@ -6,8 +6,8 @@
 
 # 1. Current State
 
-## Disk Space Optimization (2026-03-16)
-All four disk-space fixes applied and pushed. Checkpoint accumulation, TensorBoard logs, and Docker log bloat are now bounded.
+## Disk Space Optimization (2026-03-16 → 2026-03-17)
+All disk-space fixes applied. Root cause of 92 GB overflow identified and resolved.
 
 | Fix | Status |
 |---|---|
@@ -17,7 +17,12 @@ All four disk-space fixes applied and pushed. Checkpoint accumulation, TensorBoa
 | WandB offline-run directory pruning (>7 days) on startup | ✅ |
 | `hyperparams.yaml`: `max_checkpoints_kept: 3`, `log_dir` removed | ✅ |
 | `docker-compose.yml` at `/opt/drone-bombard/`: log driver `json-file` max 10 MB × 3 | ✅ |
-| `nachoigpt` cron: 6-hour ROS log + docker prune + journalctl vacuum | ✅ |
+| **`px4_build.log` (92 GB) deleted** — PX4 SITL runtime flooded log via `pxh>` ANSI prompts | ✅ |
+| **`build_px4.sh` created** — enforces `DONT_RUN=1` so build exits immediately, no SITL runtime | ✅ |
+| **`start_training.sh` Fix 3** — truncates `px4_build.log` + kills stray PX4 SITL after build confirms | ✅ |
+| **Cron fixed** — removed `-a` from `docker system prune` (was deleting 50 GB image when container stopped) | ✅ |
+| **Cron added** — `docker exec drone-bombard-harmonic rm -rf /root/.ros/log/*` cleans container ROS logs | ✅ |
+| **`docker run` updated in CLAUDE.md** — added `--log-driver=json-file --log-opt max-size=10m --log-opt max-file=3` | ✅ |
 
 ## Environment Setup (2026-03-16)
 | Component | Status |

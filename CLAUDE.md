@@ -23,6 +23,7 @@ docker run -itd --gpus all --net=host --privileged --ipc=host \
   -v /opt/drone-bombard/Drone-Bombard-Simulation/ros2_ws:/workspace/ros2_ws \
   -v /opt/drone-bombard/Drone-Bombard-Simulation/gazebo_models:/workspace/gazebo_models \
   -v ~/.cache:/root/.cache \
+  --log-driver=json-file --log-opt max-size=10m --log-opt max-file=3 \
   us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest /bin/bash
 
 # Reconnect to existing container
