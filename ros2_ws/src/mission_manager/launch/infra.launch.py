@@ -4,13 +4,15 @@ infra.launch.py
 Persistent infrastructure layer for RL training.
 
 Start ONCE per training session; never kill between episodes.
-The Gymnasium DroneDropEnv.reset() manages PX4 and mission nodes separately
-via episode.launch.py.
+The Gymnasium DroneDropEnv.reset() manages ONLY mission nodes (mission_manager,
+drone_controller, drop_calculator) via episode.launch.py.
+PX4 SITL is now persistent here — Gazebo world reset resyncs its pose each episode.
 
 Launch order:
   t=0s  : MicroXRCEAgent  (PX4 <-> ROS2 DDS bridge)
   t=0s  : Gazebo Harmonic  (simulation world)
-  t=16s : ros_gz_bridge    (gz-transport <-> ROS2 topic bridge)
+  t=10s : ros_gz_bridge    (gz-transport <-> ROS2 topic bridge)
+  t=20s : PX4 SITL         (persistent; survives episode resets via gz world reset)
   t=22s : xmarker_detector (YOLO vision, optional)
 
 Launch arguments:
@@ -48,8 +50,9 @@ def _find_models_dir() -> str:
 def generate_launch_description():
     models_dir = _find_models_dir()
     worlds_dir = os.path.join(models_dir, "worlds")
-    px4_gz_models = "/opt/PX4-Autopilot/Tools/simulation/gz/models"
-    px4_gz_worlds = "/opt/PX4-Autopilot/Tools/simulation/gz/worlds"
+    px4_dir = "/opt/PX4-Autopilot"
+    px4_gz_models = f"{px4_dir}/Tools/simulation/gz/models"
+    px4_gz_worlds = f"{px4_dir}/Tools/simulation/gz/worlds"
 
     gz_resource_path = ":".join([models_dir, px4_gz_models, px4_gz_worlds])
 
@@ -119,7 +122,34 @@ def generate_launch_description():
     )
 
     # ---------------------------------------------------------------------------
-    # [4] YOLO vision node (t=22s -- wait for bridge + camera)
+    # [4] PX4 SITL (t=20s -- persistent across episodes; gz world reset resyncs pose)
+    #
+    # Keeping PX4 running avoids the ~10-12s relaunch cost on every episode reset.
+    # DroneDropEnv._gz_world_reset() adds a 3s stabilisation sleep so PX4's EKF
+    # can absorb the pose snap before mission nodes re-arm the drone.
+    # ---------------------------------------------------------------------------
+    _px4_gz_bridge_dir = (
+        f"{px4_dir}/build/px4_sitl_default/src/modules/simulation/gz_bridge"
+    )
+    _px4_bin = f"{px4_dir}/build/px4_sitl_default/bin/px4"
+
+    px4_sitl = TimerAction(
+        period=20.0,
+        actions=[ExecuteProcess(
+            cmd=["bash", "-c",
+                 f"cd {_px4_gz_bridge_dir} && "
+                 f"PX4_GZ_STANDALONE=1 "
+                 f"PX4_GZ_WORLD=x_marker_world "
+                 f"PX4_SIM_MODEL=gz_x500_bombard "
+                 f"GZ_SIM_RESOURCE_PATH={gz_resource_path} "
+                 f"{_px4_bin}"],
+            name="px4_sitl",
+            output="screen",
+        )],
+    )
+
+    # ---------------------------------------------------------------------------
+    # [5] YOLO vision node (t=22s -- wait for bridge + camera)
     # ---------------------------------------------------------------------------
     xmarker_detector = TimerAction(
         period=22.0,
@@ -145,12 +175,13 @@ def generate_launch_description():
         gz_sim_gui,
         gz_sim_headless,
         ros_gz_bridge,
+        px4_sitl,
         xmarker_detector,
         LogInfo(msg=[
             "\n=== Infrastructure Layer Started ===\n",
-            "  Gazebo + MicroXRCEAgent + ros_gz_bridge + YOLO\n",
+            "  Gazebo + MicroXRCEAgent + ros_gz_bridge + PX4 SITL (persistent) + YOLO\n",
             "  Keep this running for the full training session.\n",
-            "  Episode processes (PX4 + mission nodes) are managed by\n",
-            "  DroneDropEnv.reset() via episode.launch.py.\n",
+            "  Episode resets restart ONLY mission nodes (mission_manager,\n",
+            "  drone_controller, drop_calculator) via episode.launch.py.\n",
         ]),
     ])

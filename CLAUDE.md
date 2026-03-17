@@ -60,7 +60,12 @@ ros2 launch mission_manager drone_mission.launch.py headless:=true
 ros2 launch mission_manager drone_mission.launch.py enable_vision:=false
 ```
 
-This single launch starts everything in order: MicroXRCEAgent + Gazebo Harmonic (t=0s) → PX4 SITL (t=5s) → ros_gz_bridge (t=8s) → YOLO vision node (t=12s) → mission nodes (t=0s, block on topics).
+This single launch starts everything in order: MicroXRCEAgent + Gazebo Harmonic (t=0s) → ros_gz_bridge (t=10s) → PX4 SITL (t=12s) → YOLO vision node (t=22s) → mission nodes (t=0s, block on topics).
+
+**RL training launch order** (two-step):
+1. `ros2 launch mission_manager infra.launch.py` — starts Gazebo + MicroXRCEAgent + ros_gz_bridge (t=10s) + **PX4 SITL (t=20s, persistent)** + YOLO (t=22s)
+2. Then start training: `ros2 run rl_navigation train_sac`
+   Each episode reset restarts only mission nodes (mission_manager, drone_controller, drop_calculator) via `episode.launch.py`. PX4 stays alive across resets.
 
 ## Testing
 

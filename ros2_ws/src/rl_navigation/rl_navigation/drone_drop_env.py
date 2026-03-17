@@ -658,7 +658,10 @@ class DroneDropEnv(gym.Env):
     # ------------------------------------------------------------------
 
     def _kill_episode(self):
-        """Terminate the episode-layer process group (PX4 + mission nodes)."""
+        """Terminate the episode-layer process group (mission nodes only).
+
+        PX4 SITL is persistent in infra.launch.py and is NOT killed here.
+        """
         if self._episode_proc is not None and self._episode_proc.poll() is None:
             try:
                 os.killpg(os.getpgid(self._episode_proc.pid), signal.SIGTERM)
@@ -672,7 +675,10 @@ class DroneDropEnv(gym.Env):
         time.sleep(0.5)
 
     def _start_episode(self):
-        """Launch a fresh episode-layer process group (PX4 + mission nodes)."""
+        """Launch a fresh episode-layer process group (mission nodes only).
+
+        PX4 SITL is persistent in infra.launch.py and is already running.
+        """
         self._episode_proc = subprocess.Popen(
             ['ros2', 'launch', 'mission_manager', 'episode.launch.py',
              'rl_mode:=true'],
@@ -682,7 +688,13 @@ class DroneDropEnv(gym.Env):
         )
 
     def _gz_world_reset(self):
-        """Call gz service to reset the simulation world."""
+        """Call gz service to reset the simulation world.
+
+        After reset, all entity poses (including the drone) snap back to their
+        spawn positions. PX4 SITL (persistent in infra) sees this as a sudden
+        position jump in its EKF. The 3-second sleep gives PX4 time to absorb
+        the snap and stabilise before mission nodes re-arm the drone.
+        """
         try:
             subprocess.run(
                 [
@@ -699,6 +711,8 @@ class DroneDropEnv(gym.Env):
         except subprocess.TimeoutExpired:
             if rclpy.ok():
                 self._node.get_logger().warning('gz world reset timed out')
+        # Allow PX4 EKF to stabilise after the pose snap before mission nodes start
+        time.sleep(3.0)
 
     def _wait_for_cruise(self):
         """Poll /mission/state until CRUISE or timeout."""

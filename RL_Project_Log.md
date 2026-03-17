@@ -6,6 +6,23 @@
 
 # 1. Current State
 
+## Training Speed Fix (2026-03-17)
+Root cause of 35-day estimated training time identified and fixed.
+
+| Problem | Root Cause | Fix |
+|---------|-----------|-----|
+| 3.44 steps/episode | `num_envs=8` → 8 processes competing for 1 Gazebo/PX4 | `num_envs=1` |
+| 21s reset / episode | PX4 SITL relaunched on every reset (~10-12s boot cost) | PX4 moved to `infra.launch.py` (persistent) |
+| 0.163 ts/s (35 days for 500K) | Both above combined | Expected: ~3-5 ts/s → **3-5 days** |
+
+Architecture change:
+- `infra.launch.py`: now launches PX4 SITL at t=20s (persistent across all episodes)
+- `episode.launch.py`: now launches mission nodes ONLY (no PX4)
+- `drone_drop_env._gz_world_reset()`: +3s sleep so PX4 EKF stabilises after world reset pose snap
+- `hyperparams.yaml`: `num_envs: 8 → 1`
+
+
+
 ## Disk Space Optimization (2026-03-16 → 2026-03-17)
 All disk-space fixes applied. Root cause of 92 GB overflow identified and resolved.
 
