@@ -134,10 +134,10 @@ class MissionManagerNode(Node):
             self.send_position_cmd(0.0, 0.0, self.target_altitude)
 
             # Altitude check (NED: up = negative-z).
-            # 1 s EKF settle guard after arming (reduced from 5 s; saves ~4 s per RL episode).
-            # Requires 5 consecutive ticks (~0.5 s) at target altitude to prevent
+            # 0.3 s EKF settle guard after arming (reduced from 1 s; saves ~0.7 s per episode).
+            # Requires 2 consecutive ticks (~0.2 s) at target altitude to prevent
             # spurious transitions from a single noisy reading.
-            min_armed_secs = 1.0
+            min_armed_secs = 0.3
             armed_long_enough = (
                 self.armed_stamp is not None
                 and (time.time() - self.armed_stamp) >= min_armed_secs
@@ -146,7 +146,7 @@ class MissionManagerNode(Node):
                 self.altitude_hold_ticks += 1
             else:
                 self.altitude_hold_ticks = 0
-            if self.altitude_hold_ticks >= 5:
+            if self.altitude_hold_ticks >= 2:
                 self.get_logger().info("Altitude Reached! Switching to CRUISE mode.")
                 self.state = STATE_CRUISE
                 self.altitude_hold_ticks = 0
