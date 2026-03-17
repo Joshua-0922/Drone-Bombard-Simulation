@@ -7,17 +7,18 @@
 # 1. Current State
 
 ## Training Phase 11 — Running (2026-03-17)
-Training actively running. WandB run: `apax52d7` (L4-AutoDrop-v1).
+Training actively running. WandB run: `27mbu6qk` (L4-AutoDrop-v1).
 
 | Metric | Value |
 |--------|-------|
-| Steps so far | ~3,244 (observed at 128s) |
-| Throughput | ~25 steps/sec |
-| ep_len_mean | 6 (early exploration; policy drops quickly) |
-| ep_rew_mean | -0.289 |
+| Steps so far | ~49,242 (at 210s elapsed) |
+| Throughput | **4 fps** (up from 2 fps before Phase 11 TAKEOFF optimisations) |
+| ep_len_mean | 219 |
+| ep_rew_mean | -367 |
+| Episodes | 1,176 |
 | Gazebo | Alive (model_only reset — no crash) |
 | PX4 | Armed + Takeoff confirmed |
-| Disk | 20% (56G/291G) |
+| Disk | 21% |
 
 **Bugs fixed this session:**
 - `reset: {all: true}` → `{model_only: true}` — fixes dartsim crash in DetachableJoint + world reset
@@ -25,6 +26,9 @@ Training actively running. WandB run: `apax52d7` (L4-AutoDrop-v1).
 - Replay buffer renamed (incompatible: saved with num_envs=8) — model weights still loaded
 - `PX4_SIM_SPEED_FACTOR=10` removed (caused DDS time-sync jumps)
 - `real_time_factor=1, real_time_update_rate=100` in SDF (stable PX4 DDS sync)
+- TAKEOFF timing reduced: `min_armed_secs=0.3` (was 1.0), `altitude_hold_ticks≥2` (was 5), `_gz_world_reset sleep=0.5s` (was 1.5s)
+- 5m SDF spawn caused gz service timeouts — reverted to 0.14m spawn (ground)
+- gz set_pose teleport unavailable/unreliable in this Gazebo Harmonic build — approach abandoned
 
 **Current config:**
 - `obs_wait_timeout: 0.02` (20ms)
@@ -32,6 +36,7 @@ Training actively running. WandB run: `apax52d7` (L4-AutoDrop-v1).
 - `use_vision: false`
 - `target_altitude: 5.0`
 - Checkpoint: `/workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip`
+- WandB run: `27mbu6qk`
 
 ## Training Speed Fix Phase 2 (2026-03-17)
 Reset time reduced from ~17s to ~10s per episode.
@@ -241,6 +246,7 @@ Preempt checkpoint (from Phase 7 Spot VM preemption):
 | 2026-03-12 | vekkz83a | drone-bombard-sac / L4-AutoDrop-v1 | 386 | — | First run aborted; 0 FPS (60 s/episode real-time locked). Optimisations applied in Phase 7. |
 | 2026-03-13 | vekkz83a | drone-bombard-sac / L4-AutoDrop-v1 | resumed | — | Resumed from preempt checkpoint + replay buffer. RTF=0, headless, no camera. WANDB_RUN_ID set to reattach existing run. |
 | 2026-03-17 | apax52d7 | drone-bombard-sac / L4-AutoDrop-v1 | ~3K (started) | — | New session: fixed dartsim crash (model_only reset), EKF yaw fix (COM_ARM_WO_GPS=1), removed PX4_SIM_SPEED_FACTOR. ~25 steps/sec, ep_len=6 (early exploration). |
+| 2026-03-17 | 27mbu6qk | drone-bombard-sac / L4-AutoDrop-v1 | 49,242 | — | Resumed from preempt checkpoint after replay buffer incompatibility fix. TAKEOFF optimisations: min_armed_secs=0.3, altitude_hold_ticks≥2, world_reset_sleep=0.5s. fps improved 2→4. ep_len_mean=219, ep_rew_mean=-367. gz set_pose teleport abandoned (unreliable in Harmonic). |
 
 ---
 
