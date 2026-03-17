@@ -712,7 +712,8 @@ class DroneDropEnv(gym.Env):
             if rclpy.ok():
                 self._node.get_logger().warning('gz world reset timed out')
         # Allow PX4 EKF to stabilise after the pose snap before mission nodes start
-        time.sleep(3.0)
+        # Reduced from 3.0s: 5m cruise altitude means pose snap is smaller magnitude
+        time.sleep(1.5)
 
     def _wait_for_cruise(self):
         """Poll /mission/state until CRUISE or timeout."""

@@ -22,7 +22,7 @@ class MissionManagerNode(Node):
         super().__init__('mission_manager_node')
 
         # --- [1] 파라미터 ---
-        self.target_altitude = 10.0   # 순항 고도 10m
+        self.target_altitude = 5.0    # 순항 고도 5m (RL: reduced for faster reset)
         
         # (1, 1) 방향으로 움직이게 설정
         self.cruise_speed_x = 1.0     # 북쪽(X) 속도 (m/s)

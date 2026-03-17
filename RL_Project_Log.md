@@ -6,14 +6,30 @@
 
 # 1. Current State
 
-## Training Speed Fix (2026-03-17)
+## Training Speed Fix Phase 2 (2026-03-17)
+Reset time reduced from ~17s to ~10s per episode.
+
+| Change | Before | After | Savings |
+|--------|--------|-------|---------|
+| `target_altitude` | 10m (~10s climb) | 5m (~4s climb) | ~6s/episode |
+| EKF stabilize sleep | 3.0s | 1.5s | 1.5s/episode |
+| `obs_wait_timeout` | 100ms | 50ms | <1ms/step |
+
+Files changed:
+- `mission_manager_node.py`: `target_altitude = 10.0 → 5.0`
+- `drone_drop_env._gz_world_reset()`: `time.sleep(3.0) → time.sleep(1.5)`
+- `hyperparams.yaml`: `obs_wait_timeout: 0.10 → 0.05`
+
+Expected: ~10s reset → for 5K episodes (500K steps / 100 steps/ep) = 50K s overhead + 10K s step time = ~16.7 hrs ≈ **0.7–1.5 days**
+
+## Training Speed Fix Phase 1 (2026-03-17)
 Root cause of 35-day estimated training time identified and fixed.
 
 | Problem | Root Cause | Fix |
 |---------|-----------|-----|
 | 3.44 steps/episode | `num_envs=8` → 8 processes competing for 1 Gazebo/PX4 | `num_envs=1` |
 | 21s reset / episode | PX4 SITL relaunched on every reset (~10-12s boot cost) | PX4 moved to `infra.launch.py` (persistent) |
-| 0.163 ts/s (35 days for 500K) | Both above combined | Expected: ~3-5 ts/s → **3-5 days** |
+| 0.163 ts/s (35 days for 500K) | Both above combined | Expected: ~3-5 ts/s |
 
 Architecture change:
 - `infra.launch.py`: now launches PX4 SITL at t=20s (persistent across all episodes)
@@ -171,6 +187,8 @@ Preempt checkpoint (from Phase 7 Spot VM preemption):
 - [x] **WandB login inside container** — API key set; entity `nayoonho0922-seoul-national-university` confirmed in hyperparams.yaml
 - [x] **Run optimised training session** — resumed 2026-03-13 from preempt checkpoint; WandB run vekkz83a reattached; replay buffer restored
 - [x] **Disk space fixes applied** — TB disabled, checkpoints capped at 3, docker log limits, 6-hour cron cleanup
+- [x] **Training speed Phase 2** — target_altitude 10→5m, EKF sleep 3→1.5s, obs_wait_timeout 100→50ms (2026-03-17)
+- [ ] **Rebuild after speed fix** — run `colcon build --packages-select mission_manager rl_navigation && source install/setup.bash` inside container
 - [ ] **Verify disk fix works** — after 15k steps: only 3 `.zip` files in `rl_checkpoints/`, no `rl_logs/` dir, `docker inspect` shows json-file log config
 - [ ] **Verify RTF=0 speedup** — watch WandB `time/fps` metric; expect 3–8× vs. previous 0 FPS
 - [ ] **Evaluate first meaningful run** — check: episode_reward, d_impact trend, Layer 4 reward frequency, jackpot rate

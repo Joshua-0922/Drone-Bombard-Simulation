@@ -28,7 +28,7 @@ environment:
   max_steps: 500
   min_altitude: 2.0
   min_altitude_start_step: 20
-  obs_wait_timeout: 0.10     # 100 ms — 5x the 20 ms PX4 publish interval
+  obs_wait_timeout: 0.05     # 50 ms — 2.5x the 20 ms PX4 publish interval
   cruise_poll_timeout: 60.0
   use_vision: false          # disable camera-based obs/termination for RL training
 
