@@ -244,10 +244,10 @@
          Spawned as a separate model; attached to x500_bombard's
          payload_mount link via DetachableJoint plugin in model.sdf.
 
-         Spawn z = 0.14 m:
-           drone base_link world-z ≈ 0.24 (x500_base model pose)
+         Spawn z = 5.14 m (drone spawns at 5m via PX4_GZ_MODEL_POSE=0,0,5):
+           drone base_link world-z ≈ 5.24 (5m spawn + 0.24 model offset)
            payload_mount offset from base_link = -0.10
-           → belly world-z = 0.24 - 0.10 = 0.14
+           → belly world-z = 5.24 - 0.10 = 5.14
 
          Position reporting:
            Harmonic: gz::sim::systems::OdometryPublisher in payload.sdf
@@ -257,7 +257,7 @@
     <include>
       <uri>model://payload_cylinder</uri>
       <name>payload_cylinder</name>
-      <pose>0 0 0.14 0 0 0</pose>
+      <pose>0 0 5.14 0 0 0</pose>
     </include>
 
     <!-- ============================================================

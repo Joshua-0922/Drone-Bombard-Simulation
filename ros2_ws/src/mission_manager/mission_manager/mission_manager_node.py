@@ -79,8 +79,10 @@ class MissionManagerNode(Node):
 
     def vehicle_status_callback(self, msg):
         if not self.px4_armed and msg.arming_state == 2:  # ARMING_STATE_ARMED
-            # NED z ≈ 0 on ground; < -1.0 means drone is already > 1 m airborne.
-            self.on_ground_at_arm = (self.current_pos[2] > -1.0)
+            # Accept arming if: (a) drone is on/near ground (NED z > -1.0), or
+            # (b) drone is already at/above target cruise altitude (spawned at 5m).
+            ned_z = self.current_pos[2]
+            self.on_ground_at_arm = (ned_z > -1.0) or (ned_z <= -(self.target_altitude * 0.90))
             if self.on_ground_at_arm:
                 self.get_logger().info('PX4 armed — starting TAKEOFF sequence.')
             else:

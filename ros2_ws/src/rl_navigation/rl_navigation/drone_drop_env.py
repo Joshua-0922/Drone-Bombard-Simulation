@@ -360,7 +360,13 @@ class DroneDropEnv(gym.Env):
         # 4. Start fresh episode processes
         self._start_episode()
 
-        # 5. Wait for CRUISE state (blocks until takeoff + climb complete)
+        # 5. Wait for PX4 to arm and enter OFFBOARD (drone_controller: 40 ticks = 2s),
+        #    then teleport drone+payload to 5m cruise altitude. Teleporting while
+        #    armed avoids free-fall: PX4 holds the new position immediately.
+        time.sleep(2.5)
+        self._teleport_to_cruise_altitude()
+
+        # 6. Wait for CRUISE state — completes quickly since drone is already at 5m
         self._wait_for_cruise()
 
         # 6. Seed d_impact_prev from the initial state
@@ -688,12 +694,11 @@ class DroneDropEnv(gym.Env):
         )
 
     def _gz_world_reset(self):
-        """Call gz service to reset the simulation world.
+        """model_only world reset — snaps all entities to SDF spawn positions.
 
-        After reset, all entity poses (including the drone) snap back to their
-        spawn positions. PX4 SITL (persistent in infra) sees this as a sudden
-        position jump in its EKF. The 3-second sleep gives PX4 time to absorb
-        the snap and stabilise before mission nodes re-arm the drone.
+        Resets drone to ground (~0.24m) and payload to 0.14m; re-attaches
+        DetachableJoint. Teleport to cruise altitude happens separately in
+        _teleport_to_cruise_altitude(), called after PX4 is armed.
         """
         try:
             subprocess.run(
@@ -711,9 +716,39 @@ class DroneDropEnv(gym.Env):
         except subprocess.TimeoutExpired:
             if rclpy.ok():
                 self._node.get_logger().warning('gz world reset timed out')
-        # Allow PX4 EKF to stabilise after the pose snap before mission nodes start
-        # Reduced from 3.0s: 5m cruise altitude means pose snap is smaller magnitude
-        time.sleep(1.5)
+        # Brief settle so physics registers the joint re-attachment
+        time.sleep(0.5)
+
+    def _teleport_to_cruise_altitude(self):
+        """Teleport drone and payload to 5m after PX4 is armed in OFFBOARD.
+
+        Called 2.5s after _start_episode() so drone_controller has had time to
+        arm PX4 (40 ticks = 2s). Teleporting while armed avoids the free-fall
+        problem: PX4 is already in stable OFFBOARD control and will hold the
+        new 5m position setpoint immediately after the snap.
+
+        Drone model origin at z=5.0 → base_link at ~5.24m.
+        Payload at z=5.14m → payload_mount offset preserved → DetachableJoint intact.
+        """
+        _DRONE_Z = 5.0
+        _PAYLOAD_Z = 5.14
+        for entity, z in (('x500_bombard_0', _DRONE_Z), ('payload_cylinder', _PAYLOAD_Z)):
+            try:
+                subprocess.run(
+                    [
+                        'gz', 'service',
+                        '-s', '/world/x_marker_world/set_pose',
+                        '--reqtype', 'gz.msgs.Pose',
+                        '--reptype', 'gz.msgs.Boolean',
+                        '--timeout', '2000',
+                        '--req', f'name: "{entity}" position: {{x: 0 y: 0 z: {z}}}',
+                    ],
+                    timeout=3.0,
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                if rclpy.ok():
+                    self._node.get_logger().warning(f'teleport timed out for {entity}')
 
     def _wait_for_cruise(self):
         """Poll /mission/state until CRUISE or timeout."""
