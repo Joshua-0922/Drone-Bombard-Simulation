@@ -6,21 +6,32 @@
 
 # 1. Current State
 
-## Training Speed Fix Phase 3 — PX4_SIM_SPEED_FACTOR=10 (2026-03-17)
-10x simulation speed via PX4 lockstep speed factor.
+## Training Phase 11 — Running (2026-03-17)
+Training actively running. WandB run: `apax52d7` (L4-AutoDrop-v1).
 
-| Mechanism | Effect |
-|-----------|--------|
-| `PX4_SIM_SPEED_FACTOR=10` in `infra.launch.py` | PX4 sim clock runs 10x; Gazebo steps 10x faster via lockstep |
-| Drone climb 0→5m | ~4s sim-time → ~0.4s wall-clock |
-| PX4 publishes `VehicleLocalPosition` | 50Hz sim-rate → ~500Hz wall-clock |
-| RL `step()` obs_wait | ~20ms/step → ~2ms/step (10x throughput) |
-| `obs_wait_timeout` | 50ms → 20ms (10x safety margin at 500Hz) |
+| Metric | Value |
+|--------|-------|
+| Steps so far | ~3,244 (observed at 128s) |
+| Throughput | ~25 steps/sec |
+| ep_len_mean | 6 (early exploration; policy drops quickly) |
+| ep_rew_mean | -0.289 |
+| Gazebo | Alive (model_only reset — no crash) |
+| PX4 | Armed + Takeoff confirmed |
+| Disk | 20% (56G/291G) |
 
-**Note — Gazebo SDF NOT changed**: `real_time_factor=0, real_time_update_rate=0` are already unlimited. Under lockstep, `real_time_update_rate` is irrelevant — Gazebo only advances when PX4 signals it. `PX4_SIM_SPEED_FACTOR` controls the pace.
-**Note — headless already default**, **lockstep already active** (PX4 gz_bridge enables it by default; `PX4_GZ_NO_LOCKSTEP` not set).
+**Bugs fixed this session:**
+- `reset: {all: true}` → `{model_only: true}` — fixes dartsim crash in DetachableJoint + world reset
+- Custom airframe `4015_gz_x500_bombard` + `COM_ARM_WO_GPS=1` + `EKF2_MAG_TYPE=1` — fixes EKF yaw preflight failure
+- Replay buffer renamed (incompatible: saved with num_envs=8) — model weights still loaded
+- `PX4_SIM_SPEED_FACTOR=10` removed (caused DDS time-sync jumps)
+- `real_time_factor=1, real_time_update_rate=100` in SDF (stable PX4 DDS sync)
 
-Expected: step time 2.8h → 17 min; reset ~6s/ep × 5K eps = 8h; **total ≈ 8–9 hours**
+**Current config:**
+- `obs_wait_timeout: 0.02` (20ms)
+- `num_envs: 1`
+- `use_vision: false`
+- `target_altitude: 5.0`
+- Checkpoint: `/workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip`
 
 ## Training Speed Fix Phase 2 (2026-03-17)
 Reset time reduced from ~17s to ~10s per episode.
@@ -165,6 +176,13 @@ Preempt checkpoint (from Phase 7 Spot VM preemption):
 - **Phase 5 enhancements:** `hyperparams.yaml` centralised config; WandB + CUDA + SIGTERM preemption checkpoint; `setup.py` registers yaml as package data
 - **Phase 6 — 4-Layer Hierarchical Reward:**
   - `_compute_reward()` fully implemented with Layers 1–4; AeroThrow kinematic predictor; auto-drop at 0.5 m; Layer 4 jackpot + instability penalty
+- **Phase 11 — Training Running (2026-03-17):**
+  - Fixed Gazebo Harmonic dartsim crash: `reset: {all: true}` → `{model_only: true}` in `_gz_world_reset()`
+  - Fixed EKF yaw preflight failure: added `COM_ARM_WO_GPS=1` + `EKF2_MAG_TYPE=1` to `4015_gz_x500_bombard` airframe (container-only, not in repo)
+  - Removed `PX4_SIM_SPEED_FACTOR=10` from `infra.launch.py` (caused DDS time-sync jumps)
+  - Set `real_time_factor=1, real_time_update_rate=100` in `x_marker_world.sdf`
+  - Renamed incompatible replay buffer (saved with num_envs=8); model weights still loaded
+  - Training started: WandB run `apax52d7`, ~25 steps/sec, Gazebo+PX4 stable
 - **Phase 10 — Disk Space Optimization (2026-03-16):**
   - TensorBoard logging disabled (`tensorboard_log=None`, `sync_tensorboard` removed from `wandb.init`)
   - `CheckpointCallback.save_replay_buffer=False` — only SIGTERM preempt handler saves replay buffer
@@ -205,7 +223,7 @@ Preempt checkpoint (from Phase 7 Spot VM preemption):
 - [x] **Disk space fixes applied** — TB disabled, checkpoints capped at 3, docker log limits, 6-hour cron cleanup
 - [x] **Training speed Phase 2** — target_altitude 10→5m, EKF sleep 3→1.5s, obs_wait_timeout 100→50ms (2026-03-17)
 - [x] **Training speed Phase 3** — PX4_SIM_SPEED_FACTOR=10, obs_wait_timeout→20ms (2026-03-17)
-- [ ] **Rebuild after speed fix** — run `colcon build --packages-select mission_manager rl_navigation && source install/setup.bash` inside container
+- [x] **Rebuild after speed fix** — run `colcon build --packages-select mission_manager rl_navigation && source install/setup.bash` inside container
 - [ ] **Verify disk fix works** — after 15k steps: only 3 `.zip` files in `rl_checkpoints/`, no `rl_logs/` dir, `docker inspect` shows json-file log config
 - [ ] **Verify RTF=0 speedup** — watch WandB `time/fps` metric; expect 3–8× vs. previous 0 FPS
 - [ ] **Evaluate first meaningful run** — check: episode_reward, d_impact trend, Layer 4 reward frequency, jackpot rate
@@ -222,6 +240,7 @@ Preempt checkpoint (from Phase 7 Spot VM preemption):
 |------|--------|-----------|-------|-----------------|-------|
 | 2026-03-12 | vekkz83a | drone-bombard-sac / L4-AutoDrop-v1 | 386 | — | First run aborted; 0 FPS (60 s/episode real-time locked). Optimisations applied in Phase 7. |
 | 2026-03-13 | vekkz83a | drone-bombard-sac / L4-AutoDrop-v1 | resumed | — | Resumed from preempt checkpoint + replay buffer. RTF=0, headless, no camera. WANDB_RUN_ID set to reattach existing run. |
+| 2026-03-17 | apax52d7 | drone-bombard-sac / L4-AutoDrop-v1 | ~3K (started) | — | New session: fixed dartsim crash (model_only reset), EKF yaw fix (COM_ARM_WO_GPS=1), removed PX4_SIM_SPEED_FACTOR. ~25 steps/sec, ep_len=6 (early exploration). |
 
 ---
 

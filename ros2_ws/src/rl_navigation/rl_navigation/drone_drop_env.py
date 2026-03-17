@@ -703,7 +703,7 @@ class DroneDropEnv(gym.Env):
                     '--reqtype', 'gz.msgs.WorldControl',
                     '--reptype', 'gz.msgs.Boolean',
                     '--timeout', '3000',
-                    '--req', 'reset: {all: true}',
+                    '--req', 'reset: {model_only: true}',
                 ],
                 timeout=5.0,
                 check=False,
