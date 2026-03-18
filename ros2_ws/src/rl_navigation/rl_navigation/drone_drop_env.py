@@ -19,6 +19,7 @@ import gymnasium as gym
 import numpy as np
 import rclpy
 import yaml
+from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Point, Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
@@ -56,7 +57,8 @@ class _RLBridgeNode(Node):
     """Background ROS2 node owning all pub/sub for the RL environment."""
 
     def __init__(self, state_lock, obs_ready_event,
-                 drop_error_event, drop_error_queue):
+                 drop_error_event, drop_error_queue,
+                 px4_topic_prefix=''):
         super().__init__('drone_drop_rl_bridge')
 
         self._lock = state_lock
@@ -74,6 +76,10 @@ class _RLBridgeNode(Node):
         self.mission_state = 'IDLE'
         self.payload_attached = True
 
+        # PX4 topic prefix: empty for instance 0, '/px4_N' for instance N > 0
+        # (PX4 SITL -i N adds namespace px4_N to all UXRCE DDS topics)
+        pfx = px4_topic_prefix
+
         # --- QoS for PX4 topics ---
         px4_qos = QoSProfile(
             reliability=QoSReliabilityPolicy.BEST_EFFORT,
@@ -85,19 +91,19 @@ class _RLBridgeNode(Node):
         if _PX4_AVAILABLE:
             self.create_subscription(
                 VehicleLocalPosition,
-                '/fmu/out/vehicle_local_position',
+                f'{pfx}/fmu/out/vehicle_local_position',
                 self._on_local_pos,
                 px4_qos,
             )
             self.create_subscription(
                 VehicleAngularVelocity,
-                '/fmu/out/vehicle_angular_velocity',
+                f'{pfx}/fmu/out/vehicle_angular_velocity',
                 self._on_ang_vel,
                 px4_qos,
             )
             self.create_subscription(
                 VehicleAttitude,
-                '/fmu/out/vehicle_attitude',
+                f'{pfx}/fmu/out/vehicle_attitude',
                 self._on_attitude,
                 px4_qos,
             )
@@ -245,8 +251,18 @@ class DroneDropEnv(gym.Env):
     # Safety limits for Layer 1 (not in yaml — physical hard stops)
     _V_MAX_SAFETY = 20.0   # m/s horizontal+vertical magnitude
 
-    def __init__(self, config_path=None):
+    def __init__(self, config_path=None, instance_id=0):
         super().__init__()
+
+        # --- Instance isolation ---
+        self._instance_id = instance_id
+        self._gz_partition = f'drone_env_{instance_id}'
+        self._uxrce_port = 8888 + instance_id
+        # PX4 -i N adds namespace /px4_N for N > 0; instance 0 has no namespace
+        self._px4_ns = f'/px4_{instance_id}' if instance_id > 0 else ''
+
+        # Set ROS_DOMAIN_ID before rclpy.init() so DDS uses the right domain
+        os.environ['ROS_DOMAIN_ID'] = str(instance_id)
 
         # --- Load config ---
         cfg_env = {}
@@ -311,9 +327,12 @@ class DroneDropEnv(gym.Env):
         self._step_count = 0
         self.dropped = False
         self._episode_reward = 0.0
-        self._episode_proc = None     # Popen handle for episode.launch.py
+        self._episode_procs = []      # Popen handles for episode nodes
         self.d_impact_prev = 0.0      # predicted impact distance at previous step
         self.action_prev = np.zeros(5, dtype=np.float32)
+
+        # --- Infra state ---
+        self._infra_procs = []        # Popen handles for infra processes
 
         # --- Start ROS2 ---
         if not rclpy.ok():
@@ -323,10 +342,14 @@ class DroneDropEnv(gym.Env):
             self._obs_ready,
             self._drop_error_event,
             self._drop_error_queue,
+            px4_topic_prefix=self._px4_ns,
         )
         self._spin_thread = threading.Thread(
             target=rclpy.spin, args=(self._node,), daemon=True)
         self._spin_thread.start()
+
+        # --- Self-managed infrastructure ---
+        self._start_infra()
 
     # ------------------------------------------------------------------
     # Gymnasium API
@@ -464,8 +487,9 @@ class DroneDropEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
     def close(self):
-        """Shutdown ROS2 node and executor."""
+        """Shutdown episode nodes, infrastructure, and ROS2."""
         self._kill_episode()
+        self._kill_infra()
         if rclpy.ok():
             self._node.destroy_node()
             rclpy.shutdown()
@@ -662,55 +686,198 @@ class DroneDropEnv(gym.Env):
         return obs
 
     # ------------------------------------------------------------------
+    # Infrastructure lifecycle (self-managed per instance)
+    # ------------------------------------------------------------------
+
+    def _start_infra(self):
+        """Launch Gazebo, MicroXRCEAgent, ros_gz_bridge, and PX4 SITL.
+
+        Each instance gets isolated infra via GZ_PARTITION + ROS_DOMAIN_ID.
+        PX4 uses -i <instance_id> for unique lock files and
+        PX4_UXRCE_DDS_PORT for the per-instance agent port.
+        """
+        iid = self._instance_id
+        infra_env = os.environ.copy()
+        infra_env['ROS_DOMAIN_ID'] = str(iid)
+        infra_env['GZ_PARTITION'] = self._gz_partition
+        infra_env['XDG_RUNTIME_DIR'] = '/tmp/runtime-root'
+
+        models_dir = '/workspace/gazebo_models'
+        px4_dir = '/opt/PX4-Autopilot'
+        gz_resource_path = ':'.join([
+            models_dir,
+            f'{px4_dir}/Tools/simulation/gz/models',
+            f'{px4_dir}/Tools/simulation/gz/worlds',
+        ])
+        infra_env['GZ_SIM_RESOURCE_PATH'] = gz_resource_path
+        os.makedirs('/tmp/runtime-root', exist_ok=True)
+
+        self._node.get_logger().info(
+            f'[Instance {iid}] Starting infra (port={self._uxrce_port}, '
+            f'partition={self._gz_partition})...')
+
+        # 1. MicroXRCEAgent
+        uxrce = subprocess.Popen(
+            ['MicroXRCEAgent', 'udp4', '-p', str(self._uxrce_port)],
+            env=infra_env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid,
+        )
+
+        # 2. Gazebo Harmonic (headless, server-only)
+        worlds_dir = os.path.join(models_dir, 'worlds')
+        gz = subprocess.Popen(
+            ['gz', 'sim', '-r', '-s',
+             os.path.join(worlds_dir, 'x_marker_world.sdf')],
+            env=infra_env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid,
+        )
+
+        # 3. ros_gz_bridge (wait 10s for Gazebo to load world)
+        time.sleep(10)
+        bridge_config = os.path.join(
+            get_package_share_directory('mission_manager'),
+            'config', 'ros_gz_bridge.yaml')
+        bridge = subprocess.Popen(
+            ['ros2', 'run', 'ros_gz_bridge', 'parameter_bridge',
+             '--ros-args', '-p', f'config_file:={bridge_config}'],
+            env=infra_env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid,
+        )
+
+        # 4. PX4 SITL (wait 10s more for bridge to be ready)
+        time.sleep(10)
+        px4_env = infra_env.copy()
+        px4_env.update({
+            'PX4_GZ_STANDALONE': '1',
+            'PX4_GZ_WORLD': 'x_marker_world',
+            'PX4_SIM_MODEL': 'gz_x500_bombard',
+            'PX4_SIM_SPEED_FACTOR': '1',
+            'PX4_GZ_MODEL_POSE': '0,0,5,0,0,0',
+            'PX4_UXRCE_DDS_PORT': str(self._uxrce_port),
+        })
+        px4_bridge_dir = (
+            f'{px4_dir}/build/px4_sitl_default/src/modules/simulation/gz_bridge')
+        px4_bin = f'{px4_dir}/build/px4_sitl_default/bin/px4'
+        px4 = subprocess.Popen(
+            [px4_bin, '-i', str(iid)],
+            cwd=px4_bridge_dir,
+            env=px4_env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid,
+        )
+
+        self._infra_procs = [uxrce, gz, bridge, px4]
+
+        # Wait for PX4 readiness (obs_ready set by _on_local_pos callback)
+        self._node.get_logger().info(
+            f'[Instance {iid}] Waiting for PX4 position data...')
+        deadline = time.time() + 90.0
+        while not self._obs_ready.is_set() and time.time() < deadline:
+            time.sleep(1.0)
+        if not self._obs_ready.is_set():
+            self._node.get_logger().error(
+                f'[Instance {iid}] Timed out waiting for PX4 readiness (90s)')
+        else:
+            self._node.get_logger().info(
+                f'[Instance {iid}] PX4 ready — infra up')
+
+    def _kill_infra(self):
+        """Kill all infrastructure processes in reverse order."""
+        for proc in reversed(self._infra_procs):
+            if proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    proc.wait(timeout=5)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+        self._infra_procs = []
+
+        # Clean PX4 lock/socket files for this instance
+        iid = self._instance_id
+        for path in [f'/tmp/px4_lock-{iid}', f'/tmp/px4-sock-{iid}']:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+
+    # ------------------------------------------------------------------
     # Episode lifecycle helpers
     # ------------------------------------------------------------------
 
     def _kill_episode(self):
-        """Terminate the episode-layer process group (mission nodes only).
+        """Terminate episode-layer nodes via process-group kill.
 
-        PX4 SITL is persistent in infra.launch.py and is NOT killed here.
-
-        ROS2 launch spawns each node with start_new_session=True, so nodes get
-        their own session and are NOT killed by a process-group signal sent to
-        the ros2-launch parent. We therefore follow up with explicit pkill by
-        node executable name to reap any orphaned node processes.
+        Each node is launched in its own process group (preexec_fn=os.setsid),
+        so SIGTERM cascades to all children without affecting other instances.
+        No global pkill — safe for multi-instance parallel training.
         """
-        if self._episode_proc is not None and self._episode_proc.poll() is None:
-            try:
-                os.killpg(os.getpgid(self._episode_proc.pid), signal.SIGTERM)
-                self._episode_proc.wait(timeout=5)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
+        for proc in self._episode_procs:
+            if proc.poll() is None:
                 try:
-                    os.killpg(os.getpgid(self._episode_proc.pid), signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-
-        # Kill any orphaned node processes that ros2 launch left behind.
-        # These survive because ros2 launch uses start_new_session=True per node.
-        _episode_node_patterns = [
-            'mission_manager_node',
-            'drone_controller_node',
-            'drop_calculator',
-        ]
-        for pattern in _episode_node_patterns:
-            subprocess.run(['pkill', '-9', '-f', pattern], check=False,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    proc.wait(timeout=5)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+        self._episode_procs = []
 
         # Brief pause to let DDS participants deregister
         time.sleep(0.5)
 
     def _start_episode(self):
-        """Launch a fresh episode-layer process group (mission nodes only).
+        """Launch fresh episode-layer nodes (mission_manager, drone_controller,
+        drop_calculator) with instance-specific ROS_DOMAIN_ID.
 
-        PX4 SITL is persistent in infra.launch.py and is already running.
+        For PX4 instances > 0, drone_controller topics are remapped to the
+        PX4 UXRCE DDS namespace (px4_N).
         """
-        self._episode_proc = subprocess.Popen(
-            ['ros2', 'launch', 'mission_manager', 'episode.launch.py',
-             'rl_mode:=true'],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            preexec_fn=os.setsid,   # own process group → clean SIGTERM cascade
+        ep_env = os.environ.copy()
+        ep_env['ROS_DOMAIN_ID'] = str(self._instance_id)
+
+        self._episode_procs = []
+
+        # mission_manager (no PX4 topics — only /drone/cmd/* and /mission/state)
+        proc = subprocess.Popen(
+            ['ros2', 'run', 'mission_manager', 'mission_manager_node'],
+            env=ep_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid,
         )
+        self._episode_procs.append(proc)
+
+        # drone_controller (uses PX4 topics — remap for instances > 0)
+        ctrl_cmd = ['ros2', 'run', 'drone_controller', 'controller']
+        if self._instance_id > 0:
+            ns = self._px4_ns
+            ctrl_cmd.extend([
+                '--ros-args',
+                '-r', f'/fmu/in/offboard_control_mode:={ns}/fmu/in/offboard_control_mode',
+                '-r', f'/fmu/in/trajectory_setpoint:={ns}/fmu/in/trajectory_setpoint',
+                '-r', f'/fmu/in/vehicle_command:={ns}/fmu/in/vehicle_command',
+                '-r', f'/fmu/out/vehicle_status:={ns}/fmu/out/vehicle_status',
+            ])
+        proc = subprocess.Popen(
+            ctrl_cmd,
+            env=ep_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid,
+        )
+        self._episode_procs.append(proc)
+
+        # drop_calculator (no PX4 topics)
+        proc = subprocess.Popen(
+            ['ros2', 'run', 'drop_calculator', 'calculator',
+             '--ros-args', '-p', 'x_marker_x:=11.0', '-p', 'x_marker_y:=10.0'],
+            env=ep_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            preexec_fn=os.setsid,
+        )
+        self._episode_procs.append(proc)
 
     def _gz_world_reset(self):
         """model_only world reset — snaps all entities to SDF spawn positions.
@@ -719,6 +886,9 @@ class DroneDropEnv(gym.Env):
         DetachableJoint. Uses model_only (not all) to avoid dartsim crash when
         DetachableJoint payload has been previously detached.
         """
+        # Pass GZ_PARTITION so gz service reaches the correct Gazebo instance
+        gz_env = os.environ.copy()
+        gz_env['GZ_PARTITION'] = self._gz_partition
         try:
             subprocess.run(
                 [
@@ -729,6 +899,7 @@ class DroneDropEnv(gym.Env):
                     '--timeout', '3000',
                     '--req', 'reset: {model_only: true}',
                 ],
+                env=gz_env,
                 timeout=5.0,
                 check=False,
             )

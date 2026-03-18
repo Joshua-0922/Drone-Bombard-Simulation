@@ -59,6 +59,14 @@ log "Training PID: $TRAIN_PID"
 echo "$TRAIN_PID" > /workspace/ros2_ws/train_sac.pid
 
 # --- [4] Disk monitor loop ---
+#   Checkpoint disk budget (approximate):
+#     Rolling: 5 × ~3 MB = 15 MB
+#     Best model: 1 × ~3 MB = 3 MB
+#     Archive (1M steps / 50K freq): 20 × ~3 MB = 60 MB
+#     Preempt (model + replay): ~3 MB + ~15 MB = 18 MB
+#     Total: ~96 MB — well within budget.
+#   Only the preempt checkpoint includes the replay buffer.
+#   Best and archive saves are weights-only (~3 MB each).
 while kill -0 "$TRAIN_PID" 2>/dev/null; do
     DISK_PCT=$(df / | awk 'NR==2 {gsub(/%/, "", $5); print $5}')
     if [ "$DISK_PCT" -ge "$DISK_LIMIT" ]; then
@@ -73,7 +81,9 @@ while kill -0 "$TRAIN_PID" 2>/dev/null; do
         log "Training stopped due to disk limit."
         exit 2
     fi
-    log "Disk: ${DISK_PCT}%  Training PID $TRAIN_PID alive"
+    # Log checkpoint dir size breakdown
+    CKPT_SIZE=$(du -sh "$CKPT_DIR" 2>/dev/null | cut -f1)
+    log "Disk: ${DISK_PCT}%  Checkpoints: ${CKPT_SIZE}  Training PID $TRAIN_PID alive"
     sleep 60
 done
 

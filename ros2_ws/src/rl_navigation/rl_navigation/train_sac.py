@@ -64,10 +64,76 @@ class WandbMetricsCallback(BaseCallback):
             wandb.log(log_dict, step=self.num_timesteps)
 
 
+class BestModelCallback(BaseCallback):
+    """Save model when mean episode reward reaches a new best.
+
+    Checks every ``eval_freq`` steps using the rolling ``ep_rew_mean``
+    from the SB3 logger (same metric printed in the rollout table).
+    No separate eval env needed — uses training rollout stats.
+    """
+
+    def __init__(self, save_path, eval_freq=10_000, verbose=1):
+        super().__init__(verbose)
+        self._save_path = save_path
+        self._eval_freq = eval_freq
+        self._best_mean_reward = -float('inf')
+        os.makedirs(save_path, exist_ok=True)
+
+    def _on_step(self):
+        if self.num_timesteps % self._eval_freq != 0:
+            return True
+
+        ep_rew = self.logger.name_to_value.get('rollout/ep_rew_mean')
+        if ep_rew is None:
+            return True
+
+        if ep_rew > self._best_mean_reward:
+            self._best_mean_reward = ep_rew
+            path = os.path.join(self._save_path, 'best_model')
+            self.model.save(path)
+            if self.verbose:
+                print(f'[BestModel] New best mean reward: {ep_rew:.2f} '
+                      f'at {self.num_timesteps} steps → saved {path}.zip')
+            if wandb.run:
+                wandb.log({
+                    'eval/best_mean_reward': ep_rew,
+                    'eval/best_model_step': self.num_timesteps,
+                }, step=self.num_timesteps)
+        return True
+
+
+class MilestoneArchiveCallback(BaseCallback):
+    """Archive model weights (no replay buffer) at fixed step intervals.
+
+    Archived files are saved to a separate directory that is exempt from
+    the rolling checkpoint cleanup logic.
+    """
+
+    def __init__(self, archive_dir, archive_freq=50_000, verbose=1):
+        super().__init__(verbose)
+        self._archive_dir = archive_dir
+        self._archive_freq = archive_freq
+        os.makedirs(archive_dir, exist_ok=True)
+
+    def _on_step(self):
+        if self.num_timesteps % self._archive_freq != 0:
+            return True
+
+        name = f'sac_drop_milestone_{self.num_timesteps}_steps'
+        path = os.path.join(self._archive_dir, name)
+        # Save weights only (no replay buffer) to conserve disk
+        self.model.save(path)
+        if self.verbose:
+            size_mb = os.path.getsize(path + '.zip') / (1024 * 1024)
+            print(f'[Archive] Milestone at {self.num_timesteps} steps '
+                  f'→ {path}.zip ({size_mb:.1f} MB)')
+        return True
+
+
 class CleanupOldCheckpointsCallback(BaseCallback):
     """Keep only the N most-recent periodic checkpoints to cap disk usage."""
 
-    def __init__(self, checkpoint_dir, name_prefix, keep_last=3, verbose=0):
+    def __init__(self, checkpoint_dir, name_prefix, keep_last=5, verbose=0):
         super().__init__(verbose)
         self._dir = checkpoint_dir
         self._prefix = name_prefix
@@ -123,9 +189,11 @@ def main(args=None):
     checkpoint_dir = cli.checkpoint_dir or cfg_train.get(
         'checkpoint_dir', '/workspace/ros2_ws/rl_checkpoints')
     checkpoint_freq = cfg_train.get('checkpoint_freq', 5_000)
-    max_checkpoints_kept = cfg_train.get('max_checkpoints_kept', 3)
+    max_checkpoints_kept = cfg_train.get('max_checkpoints_kept', 5)
     _checkpoint_dir = checkpoint_dir
 
+    best_model_dir = os.path.join(checkpoint_dir, 'best_model')
+    archive_dir = os.path.join(checkpoint_dir, 'archive')
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # --- Prune stale WandB offline-run directories (older than 7 days) ---
@@ -152,6 +220,8 @@ def main(args=None):
     print(f'  Config     : {config_path}')
     print(f'  Timesteps  : {total_timesteps:,}')
     print(f'  Checkpoints: {checkpoint_dir}')
+    print(f'  Best model : {best_model_dir}')
+    print(f'  Archive    : {archive_dir}')
     print(f'  Device     : {cfg_sac.get("device", "cuda")}')
     print(f'  Num envs   : {num_envs}')
     print(f'  WandB run  : {wandb.run.name}')
@@ -161,12 +231,11 @@ def main(args=None):
     if num_envs > 1:
         def _make_env(rank, cfg_path):
             def _init():
-                os.environ['ROS_DOMAIN_ID'] = str(rank)
-                return DroneDropEnv(config_path=cfg_path)
+                return DroneDropEnv(config_path=cfg_path, instance_id=rank)
             return _init
         env = SubprocVecEnv([_make_env(i, config_path) for i in range(num_envs)])
     else:
-        env = DroneDropEnv(config_path=config_path)
+        env = DroneDropEnv(config_path=config_path, instance_id=0)
 
     # --- Callbacks ---
     checkpoint_callback = CheckpointCallback(
@@ -178,6 +247,10 @@ def main(args=None):
     )
     cleanup_callback = CleanupOldCheckpointsCallback(
         checkpoint_dir, 'sac_drop', keep_last=max_checkpoints_kept, verbose=1)
+    best_model_callback = BestModelCallback(
+        save_path=best_model_dir, eval_freq=10_000, verbose=1)
+    milestone_callback = MilestoneArchiveCallback(
+        archive_dir=archive_dir, archive_freq=50_000, verbose=1)
     wandb_callback = WandbCallback(
         gradient_save_freq=cfg_wandb.get('log_freq', 100),
         model_save_path=checkpoint_dir,
@@ -186,6 +259,7 @@ def main(args=None):
     wandb_metrics_callback = WandbMetricsCallback()
     callbacks = CallbackList([
         checkpoint_callback, cleanup_callback,
+        best_model_callback, milestone_callback,
         wandb_callback, wandb_metrics_callback])
 
     # --- Model ---
