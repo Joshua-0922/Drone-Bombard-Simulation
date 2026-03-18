@@ -7,25 +7,29 @@
 # 1. Current State
 
 ## Phase 1 Curriculum — Training (2026-03-18)
-Training actively running. WandB run: `dy97unuj` (L4-AutoDrop-v1).
+Training actively running. WandB run: `izf10080` (L4-AutoDrop-v1).
 
 | Metric | Value |
 |--------|-------|
-| Steps so far | ~97,849 (resumed from preempt checkpoint) |
-| Throughput | ~28 fps (RTF=1) |
+| Steps so far | ~568,554 (cumulative) |
+| Throughput | **28 fps** (RTF=1, stable) |
+| ep_len_mean | 397 (rising toward 500 truncation — expected) |
+| ep_rew_mean | -1,900 (see analysis below) |
 | Curriculum | **Phase 1: manual drop disabled** |
 | Action space | Box(5,) — action[4] ignored (dummy dim for ckpt compat) |
 | Drop mode | Auto-drop only (`d_impact <= 0.5m`) |
 | Checkpoint | `/workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip` |
-| WandB run | `dy97unuj` |
+| WandB run | `izf10080` |
 
-### Phase 1 Curriculum Fix (applied this session)
+### Phase 1 Curriculum Fix + Launch Bug Fix
 
-**Problem:** Policy learned degenerate local optimum — fires `action[4] > 0` at step ~429 to escape time penalty. Reward regressed +33 → -36 over 128K→456K steps.
+**Curriculum fix:** Disabled manual drop in `drone_drop_env.py` (line 411-412). `action[4]` kept as dummy for checkpoint compatibility. Episodes terminate only via auto-drop (`d_impact <= 0.5m`) or truncation at `max_steps=500`.
 
-**Fix:** Disabled manual drop in `drone_drop_env.py` (line 411-412). `action[4]` kept as dummy dimension for checkpoint compatibility. Episodes now terminate only via auto-drop (`d_impact <= 0.5m`) or truncation at `max_steps=500`.
+**Launch bug found & fixed:** Initial restart was done with manual `source install/setup.bash` which missed `/root/ros2_ws/install/setup.bash` (px4_msgs). This caused `mission_manager_node` and `drone_controller` to crash on import (`ModuleNotFoundError: No module named 'px4_msgs'`), leaving episodes stuck in IDLE state. Every episode waited 60s for CRUISE → fps dropped to 5. Fixed by restarting via `train_managed.sh` which sources all three setup files.
 
-**Expected behavior:** `ep_len_mean` should initially be ~500 (truncation) as policy can no longer shortcut. Over time, policy must learn to navigate to target to earn drop reward.
+**Reward analysis (-1,900):** This is expected-bad, not a bug. The replay buffer is polluted with ~456K steps of degenerate "drop at step 429" experience. The critic learned to value early-drop strategies. Now that drops are impossible (auto-drop only), every episode runs to truncation (~397-500 steps), accumulating Layer 2 time penalty (`-0.01 * 500 = -5.0`), plus the critic/actor are confused by the value function mismatch. The reward should bottom out then slowly recover as new on-policy experience overwrites stale buffer entries (`buffer_size=100K`, so ~2x buffer turnover needed = ~200K steps).
+
+**Expected recovery timeline:** ~200K new steps for buffer turnover → reward should start recovering. Watch for `ep_len_mean` approaching 500, then slowly decreasing as policy discovers approach → auto-drop.
 
 **Current infra config:**
 - RTF=1 (`x_marker_world.sdf`: `real_time_factor=1, real_time_update_rate=100`)
@@ -103,7 +107,8 @@ Training actively running. WandB run: `dy97unuj` (L4-AutoDrop-v1).
 | 2026-03-18 | 9nbwg71r | drone-bombard-sac / L4-AutoDrop-v1 | 53,428 | — | Phase 12: Fixed OFFBOARD retry race (2s→0.5s) + absolute TAKEOFF altitude check. fps jumped 4→23. 0 CRUISE timeouts. |
 | 2026-03-18 | 2h1cvmer | drone-bombard-sac / L4-AutoDrop-v1 | 78,200 | — | Phase 13 early: Fixed multi-instance (bin/px4 pattern), stale shm, NaN obs crash. fps=7 briefly. |
 | 2026-03-18 | 53xx3o8u | drone-bombard-sac / L4-AutoDrop-v1 | 80,292+ | — | Phase 13 final: Fixed PX4_GZ_MODEL_POSE (drone-payload gap), 5s EKF warmup in drone_controller, RTF=1, UXRCE_DDS_SYNCT=0. **fps=12 stable, 0 ODE crashes.** |
-| 2026-03-18 | dy97unuj | drone-bombard-sac / L4-AutoDrop-v1 | 97,849+ | — | **Phase 1 curriculum: manual drop disabled.** action[4] kept as dummy dim. Auto-drop only (d_impact≤0.5m). Resumed from preempt checkpoint. |
+| 2026-03-18 | dy97unuj | drone-bombard-sac / L4-AutoDrop-v1 | 546K–560K | — | **Broken run** — missing px4_msgs source caused episode nodes to crash. All episodes stuck in IDLE, 60s CRUISE timeout per reset, fps=5, reward spiraled to -1,560. Killed. |
+| 2026-03-18 | izf10080 | drone-bombard-sac / L4-AutoDrop-v1 | 564K+ | — | **Phase 1 curriculum (fixed restart).** Used train_managed.sh (sources px4_msgs). fps=28, 0 CRUISE timeouts. ep_rew=-1,900 expected (stale buffer). |
 
 ---
 
