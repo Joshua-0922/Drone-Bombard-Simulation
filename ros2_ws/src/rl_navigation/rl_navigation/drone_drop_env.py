@@ -408,8 +408,11 @@ class DroneDropEnv(gym.Env):
         info = {}
 
         # --- Drop decision: auto-drop by threshold OR manual policy trigger ---
-        manual_drop = float(action[4]) > 0.0
-        if (d_impact <= self._cfg_auto_drop_threshold or manual_drop) and not self.dropped:
+        # Phase 1 curriculum: manual drop disabled. action[4] is kept as a
+        # dummy dimension (always ignored) for checkpoint compatibility.
+        # Phase 2 will re-enable once policy navigates to target reliably.
+        # manual_drop = float(action[4]) > 0.0
+        if d_impact <= self._cfg_auto_drop_threshold and not self.dropped:
             # ============================================================
             # Layer 4: Terminal drop accuracy reward
             # ============================================================
