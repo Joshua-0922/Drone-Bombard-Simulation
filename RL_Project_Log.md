@@ -11,14 +11,36 @@ Training actively running. WandB run: `53xx3o8u` (L4-AutoDrop-v1).
 
 | Metric | Value |
 |--------|-------|
-| Steps so far | ~80,292 (at 193s elapsed) |
-| Throughput | **12 fps** (RTF=1, no ODE crashes) |
-| ep_len_mean | 58.9 |
-| ep_rew_mean | -93.9 |
-| Episodes | 1,468 (cumulative) |
+| Steps so far | ~456,814 |
+| Throughput | **28 fps** (RTF=1, stable) |
+| ep_len_mean | 429 (stuck — see bug below) |
+| ep_rew_mean | -36 (regressed from peak +33 at 128K steps) |
+| Episodes | 2,328 (cumulative) |
 | Gazebo | Alive (0 ODE crashes) |
 | PX4 | Armed + Offboard confirmed |
 | CRUISE timeouts | 0 |
+
+### Bug Diagnosed: Degenerate Drop Timing (Phase 14)
+
+**Symptom:** `ep_len_mean` locked at 429 across hundreds of episodes; `ep_rew_mean` regressed from +33 (peak at 128K steps) to -36 (at 456K steps).
+
+**Root cause:** The policy learned a **degenerate local optimum** — it fires the manual drop trigger (`action[4] > 0.0`) at a fixed step ~429 regardless of drone position, earning a small drop reward (`10 * exp(-0.3 * d_large)`) to escape the accumulating Layer 2 time penalty. This is structurally enabled by:
+1. `action[4] ∈ [-1, 1]` → drop fires whenever `action[4] > 0`, covering 50% of the action space
+2. `ent_coef` decayed 0.13 → 0.056, collapsing exploration and locking the policy into this local optimum
+3. `w_time=0.01/step` penalty makes hovering indefinitely costly, incentivising early drop-and-end
+
+**Evidence:** Episodes that end via `terminated=True` (not truncated — `max_steps=500`, but episodes end at 429, 71 steps early). `ep_len` frozen exactly at 429 for 280+ consecutive log entries.
+
+**Reward trajectory:**
+- 80K→111K steps: reward -94 → -20 (policy learning to approach)
+- 111K→128K steps: reward -20 → **+33** (peak — policy discovered approach + drop)
+- 128K→415K steps: +33 → -8 (plateau then decline as entropy collapsed)
+- 415K→456K steps: -8 → -36 (degenerate drop timing locked in)
+
+**Proposed fixes (not yet applied):**
+- [ ] **Option A — Remove manual drop** from action space; make drop auto-only (`d_impact <= 0.5m`). Cleanest fix — forces policy to navigate to target.
+- [ ] **Option B — Penalise imprecise drops** — add `reward -= w_bad_drop * d_impact` when drop fires with `d_impact > threshold (e.g. 5m)`, making early drops costly.
+- [ ] **Option C — Raise entropy floor** — set `ent_coef_min` in SAC config to prevent entropy collapse.
 
 **Root causes diagnosed and fixed in Phase 13 (this session):**
 1. **Multiple instance proliferation** — `start_infra_clean.sh` kill pattern `/px4 ` missed PX4 (no trailing space). Fix: `bin/px4`.
@@ -84,10 +106,11 @@ Training actively running. WandB run: `53xx3o8u` (L4-AutoDrop-v1).
 - [x] **Multiple instances fixed** — `start_infra_clean.sh` with correct `bin/px4` pattern
 - [x] **NaN crash fixed** — `nan_to_num` guard in `_get_obs()`
 - [x] **Airframe persisted to repo** — `drone_drop_system/docker/config/airframes/4015_gz_x500_bombard`
-- [ ] **Monitor fps stability** — watch for regressions; target: 7 fps sustained over 1000+ episodes
-- [ ] **Try RTF=3 or higher** — once fps=7 is confirmed stable for 30+ min; update `x_marker_world.sdf` + `PX4_SIM_SPEED_FACTOR`
-- [ ] **Evaluate first meaningful run** — check: episode_reward trend, d_impact trend, Layer 4 reward frequency
-- [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`
+- [x] **fps stability confirmed** — fps=28 sustained, 0 ODE crashes, 0 CRUISE timeouts
+- [x] **Reward trend evaluated** — peaked at +33 (128K steps), regressed to -36 (456K steps); root cause diagnosed (see Phase 14 bug above)
+- [ ] **Fix degenerate drop timing** — choose and apply one of: (A) remove manual drop from action space, (B) penalise imprecise drops, (C) raise entropy floor
+- [ ] **Try RTF=3 or higher** — only after drop bug is fixed and policy is healthy; update `x_marker_world.sdf` + `PX4_SIM_SPEED_FACTOR`
+- [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot` after drop fix
 - [ ] **Custom SB3 policy** — add PyTorch AMP (mixed precision) for faster L4 training
 - [ ] **Verify disk fix works** — after 15k steps: only 3 `.zip` files, no `rl_logs/`, json-file log config
 
