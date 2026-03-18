@@ -622,9 +622,9 @@ class DroneDropEnv(gym.Env):
             pix = self._node.pixel_coords.copy()
             attached = float(self._node.payload_attached)
 
-        pos_n = pos / POS_SCALE
-        vel_n = vel / VEL_SCALE
-        ang_n = ang / ANG_VEL_SCALE
+        pos_n = np.nan_to_num(pos / POS_SCALE, nan=0.0)
+        vel_n = np.nan_to_num(vel / VEL_SCALE, nan=0.0)
+        ang_n = np.nan_to_num(ang / ANG_VEL_SCALE, nan=0.0)
 
         # Pixel coordinates normalised to [-1, 1].
         # When use_vision=False (camera disabled), synthesise conf=1.0 so
@@ -661,6 +661,11 @@ class DroneDropEnv(gym.Env):
         """Terminate the episode-layer process group (mission nodes only).
 
         PX4 SITL is persistent in infra.launch.py and is NOT killed here.
+
+        ROS2 launch spawns each node with start_new_session=True, so nodes get
+        their own session and are NOT killed by a process-group signal sent to
+        the ros2-launch parent. We therefore follow up with explicit pkill by
+        node executable name to reap any orphaned node processes.
         """
         if self._episode_proc is not None and self._episode_proc.poll() is None:
             try:
@@ -671,7 +676,19 @@ class DroneDropEnv(gym.Env):
                     os.killpg(os.getpgid(self._episode_proc.pid), signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-        # Brief pause to let DDS participants deregister (reduced from 1.5 s)
+
+        # Kill any orphaned node processes that ros2 launch left behind.
+        # These survive because ros2 launch uses start_new_session=True per node.
+        _episode_node_patterns = [
+            'mission_manager_node',
+            'drone_controller_node',
+            'drop_calculator',
+        ]
+        for pattern in _episode_node_patterns:
+            subprocess.run(['pkill', '-9', '-f', pattern], check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Brief pause to let DDS participants deregister
         time.sleep(0.5)
 
     def _start_episode(self):
@@ -710,8 +727,12 @@ class DroneDropEnv(gym.Env):
         except subprocess.TimeoutExpired:
             if rclpy.ok():
                 self._node.get_logger().warning('gz world reset timed out')
-        # Brief settle so physics registers the joint re-attachment and PX4 EKF absorbs snap
-        time.sleep(0.5)
+        # Settle: physics registers joint re-attachment AND PX4 EKF absorbs the
+        # pose snap.  3 s here + 2 s arm delay (40 ticks × 20 Hz in drone_controller)
+        # = 5 s total before arming — sufficient for EKF to reconverge after the
+        # world-reset position discontinuity.  This was the proven working value
+        # in Phase 7-10 training.
+        time.sleep(3.0)
 
     def _wait_for_cruise(self):
         """Poll /mission/state until CRUISE or timeout."""

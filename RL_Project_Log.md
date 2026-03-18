@@ -6,24 +6,34 @@
 
 # 1. Current State
 
-## Training Phase 12 — Running (2026-03-18)
-Training actively running. WandB run: `9nbwg71r` (L4-AutoDrop-v1).
+## Training Phase 13 — Running (2026-03-18)
+Training actively running. WandB run: `2h1cvmer` (L4-AutoDrop-v1).
 
 | Metric | Value |
 |--------|-------|
-| Steps so far | ~53,428 (at 85s elapsed) |
-| Throughput | **23 fps** (up from 4 fps before Phase 12 fixes) |
-| ep_len_mean | 246 |
-| ep_rew_mean | -538 |
-| Episodes | 1,184 |
+| Steps so far | ~78,200 (at 45s elapsed from Phase 13 start) |
+| Throughput | **7 fps** (RTF=2 stable, single clean instance) |
+| ep_len_mean | 46.7 |
+| ep_rew_mean | -40.6 |
+| Episodes | 1,452 (cumulative) |
 | Gazebo | Alive |
 | PX4 | Armed + Offboard confirmed |
 | CRUISE timeouts | 0 |
 
-**Root causes identified and fixed this session:**
-- **Low FPS (4→23)**: Two compounding bugs:
-  1. **OFFBOARD retry race condition** — drone_controller retried OFFBOARD every 2s (40 ticks), same period as DDS time-sync disruptions → OFFBOARD mode repeatedly lost. **Fix**: OFFBOARD retry every 0.5s (10 ticks) in `drone_controller_node.py`.
-  2. **TAKEOFF altitude check broken for persistent PX4** — After Gz world reset, PX4 EKF still reports old altitude (e.g., NED z=-4.14m). Relative check `current_pos[2] ≤ arm_ned_z - target*0.95` required NED -8.89m while position command only sends drone to NED -5m → impossible → TAKEOFF always timed out (60s) in episodes 2+. **Fix**: Changed to absolute check `current_pos[2] ≤ -(target_altitude * 0.95)` in `mission_manager_node.py`.
+**Root causes diagnosed and fixed in Phase 13 (this session):**
+1. **Multiple instance proliferation (4 PX4, 3 Gazebo, 7 drone_controllers)** — Multiple `docker exec -d` calls each started a full new infra. Fix: `start_infra_clean.sh` kills all matching processes by PID before starting.
+2. **Stale FastRTPS shm** — 169 stale `/dev/shm/fastrtps_*` segments served stale DDS timestamps to new processes. Fix: `rm -f /dev/shm/fastrtps_*` in clean script.
+3. **`start_infra_clean.sh` kill pattern bug** — Pattern `/px4 ` (trailing space) didn't match PX4 processes with no arguments. Fix: changed to `bin/px4`.
+4. **Battery failsafe** — `SIM_BAT_DRAIN=60 mAh/s` drains battery over long persistent PX4 sessions. Fix: `param set SIM_BAT_DRAIN 0` in airframe.
+5. **Magnetometer arming denial** — RTF>1 DDS time sync disruptions cause mag spikes. Fix: `EKF2_MAG_CHECK=0`, `COM_ARM_MAG_STR=0`, `COM_ARM_MAG_ANG=180`.
+6. **OFFBOARD loss failsafe** — DDS time sync gaps trigger OFFBOARD loss. Fix: `COM_OF_LOSS_T=5.0s`.
+7. **NaN observation crash** — EKF velocity→NaN during DDS time sync reset → SB3 receives NaN obs → `ValueError: Expected loc to satisfy Real()` → exit code 134. Fix: `np.nan_to_num(..., nan=0.0)` in `drone_drop_env._get_obs()`.
+8. **`UXRCE_DDS_SYNCT=0` attempted but reverted** — Disabling DDS timestamp sync eliminated time jumps but broke OFFBOARD control (ROS2 sim-time setpoint timestamps mismatched PX4 POSIX clock at RTF=2). Reverted to default (1).
+
+**Current airframe params** (`4015_gz_x500_bombard` in container + persisted to repo):
+- `FD_FAIL_R=0`, `SIM_BAT_DRAIN=0`, `COM_ARM_WO_GPS=1`
+- `EKF2_MAG_CHECK=0`, `COM_ARM_MAG_STR=0`, `COM_ARM_MAG_ANG=180`
+- `COM_OF_LOSS_T=5.0`
 
 **Current config:**
 - `obs_wait_timeout: 0.02` (20ms)
@@ -31,152 +41,20 @@ Training actively running. WandB run: `9nbwg71r` (L4-AutoDrop-v1).
 - `use_vision: false`
 - `target_altitude: 5.0`
 - Checkpoint: `/workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip`
-- WandB run: `9nbwg71r`
-
-**Current config:**
-- `obs_wait_timeout: 0.02` (20ms)
-- `num_envs: 1`
-- `use_vision: false`
-- `target_altitude: 5.0`
-- Checkpoint: `/workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip`
-- WandB run: `27mbu6qk`
-
-## Training Speed Fix Phase 2 (2026-03-17)
-Reset time reduced from ~17s to ~10s per episode.
-
-| Change | Before | After | Savings |
-|--------|--------|-------|---------|
-| `target_altitude` | 10m (~10s climb) | 5m (~4s climb) | ~6s/episode |
-| EKF stabilize sleep | 3.0s | 1.5s | 1.5s/episode |
-| `obs_wait_timeout` | 100ms | 50ms | <1ms/step |
-
-Files changed:
-- `mission_manager_node.py`: `target_altitude = 10.0 → 5.0`
-- `drone_drop_env._gz_world_reset()`: `time.sleep(3.0) → time.sleep(1.5)`
-- `hyperparams.yaml`: `obs_wait_timeout: 0.10 → 0.05`
-
-Expected: ~10s reset → for 5K episodes (500K steps / 100 steps/ep) = 50K s overhead + 10K s step time = ~16.7 hrs ≈ **0.7–1.5 days**
-
-## Training Speed Fix Phase 1 (2026-03-17)
-Root cause of 35-day estimated training time identified and fixed.
-
-| Problem | Root Cause | Fix |
-|---------|-----------|-----|
-| 3.44 steps/episode | `num_envs=8` → 8 processes competing for 1 Gazebo/PX4 | `num_envs=1` |
-| 21s reset / episode | PX4 SITL relaunched on every reset (~10-12s boot cost) | PX4 moved to `infra.launch.py` (persistent) |
-| 0.163 ts/s (35 days for 500K) | Both above combined | Expected: ~3-5 ts/s |
-
-Architecture change:
-- `infra.launch.py`: now launches PX4 SITL at t=20s (persistent across all episodes)
-- `episode.launch.py`: now launches mission nodes ONLY (no PX4)
-- `drone_drop_env._gz_world_reset()`: +3s sleep so PX4 EKF stabilises after world reset pose snap
-- `hyperparams.yaml`: `num_envs: 8 → 1`
-
-
-
-## Disk Space Optimization (2026-03-16 → 2026-03-17)
-All disk-space fixes applied. Root cause of 92 GB overflow identified and resolved.
-
-| Fix | Status |
-|---|---|
-| TensorBoard disabled (`tensorboard_log=None`, `sync_tensorboard` removed) | ✅ |
-| `CheckpointCallback`: `save_replay_buffer=False` | ✅ |
-| `CleanupOldCheckpointsCallback`: keep last 3 `.zip` files | ✅ |
-| WandB offline-run directory pruning (>7 days) on startup | ✅ |
-| `hyperparams.yaml`: `max_checkpoints_kept: 3`, `log_dir` removed | ✅ |
-| `docker-compose.yml` at `/opt/drone-bombard/`: log driver `json-file` max 10 MB × 3 | ✅ |
-| **`px4_build.log` (92 GB) deleted** — PX4 SITL runtime flooded log via `pxh>` ANSI prompts | ✅ |
-| **`build_px4.sh` created** — enforces `DONT_RUN=1` so build exits immediately, no SITL runtime | ✅ |
-| **`start_training.sh` Fix 3** — truncates `px4_build.log` + kills stray PX4 SITL after build confirms | ✅ |
-| **Cron fixed** — removed `-a` from `docker system prune` (was deleting 50 GB image when container stopped) | ✅ |
-| **Cron added** — `docker exec drone-bombard-harmonic rm -rf /root/.ros/log/*` cleans container ROS logs | ✅ |
-| **`docker run` updated in CLAUDE.md** — added `--log-driver=json-file --log-opt max-size=10m --log-opt max-file=3` | ✅ |
-
-## Environment Setup (2026-03-16)
-| Component | Status |
-|---|---|
-| GPU | NVIDIA L4, driver 580.126.09, CUDA 13.0 — `nvidia-smi` ✅ |
-| DKMS modules | Built + installed for kernel `6.8.0-1048-gcp` |
-| NVIDIA Container Toolkit | 1.19.0 installed; Docker nvidia runtime configured ✅ |
-| Docker | 29.3.0, `--gpus all` working inside containers ✅ |
-| Old packages purged | `nvidia-settings` 510 fully purged |
-
-## Reward Formula — 4-Layer Hierarchical System
-
-Fully implemented in `drone_drop_env.py`. Active on every `step()` call.
-
-### Layer 1 — Safety (hard termination)
-| Trigger | Reward | `done` |
-|---|---|---|
-| altitude < `min_altitude` (2 m), after step 20 | −10 | True |
-| speed > 20 m/s | −8 | True |
-| vision confidence == 0 (target lost) | −10 | True |
-
-### Layer 2 — Efficiency/Stability (per step)
-```
-R2 = -w_time  -  w_ang_vel × ||ω||²  -  w_action_smooth × ||Δa||²
-```
-
-### Layer 3 — Approach (per step, gradient of predicted impact)
-```
-R3 = w_dist × (exp(-k1 × d_impact_now) - exp(-k1 × d_impact_prev))
-   + w_heading × cos(Δyaw_to_target)
-```
-`d_impact` comes from the kinematic predictor, not raw XY distance.
-
-### Layer 4 — Terminal (fires once at drop moment)
-```
-R4 = w_drop_base × exp(-k2 × d_error)
-   + r_success_jackpot  [if d_error ≤ success_threshold]
-   - penalty_instability [if ||ω|| > limit_ang_vel OR |roll|/|pitch| > limit_tilt]
-```
-
-**Auto-drop:** If `d_impact ≤ auto_drop_threshold` (0.5 m), drop is forced regardless of policy action[4].
-
-## Key Reward Hyperparameters (`config/hyperparams.yaml`)
-
-| Parameter | Value |
-|---|---|
-| `g` | 9.81 m/s² |
-| `auto_drop_threshold` | 0.5 m |
-| `k1_potential` | 1.0 |
-| `k2_precision` | 5.0 |
-| `w_dist` | 10.0 |
-| `w_heading` | 1.0 |
-| `w_time` | 0.01 |
-| `w_ang_vel` | 0.05 |
-| `w_action_smooth` | 0.05 |
-| `w_drop_base` | 50.0 |
-| `r_success_jackpot` | 100.0 |
-| `success_threshold` | 0.1 m |
-| `penalty_instability` | 50.0 |
-| `limit_ang_vel` | 2.0 rad/s |
-| `limit_tilt` | 0.26 rad (≈15°) |
-
-## Key SAC Hyperparameters
-
-| Parameter | Value |
-|---|---|
-| Algorithm | SAC (Stable-Baselines3) |
-| `total_timesteps` | 500,000 |
-| `learning_rate` | 3.0 × 10⁻⁴ |
-| `buffer_size` | 100,000 |
-| `batch_size` | 256 |
-| `gamma` | 0.99 |
-| `learning_starts` | 1,000 |
-| `net_arch` | [256, 256] |
-| `device` | cuda |
-
-## Best Checkpoint
-
-Preempt checkpoint (from Phase 7 Spot VM preemption):
-- Model: `/workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip`
-- Replay buffer: `/workspace/ros2_ws/rl_checkpoints/sac_drop_preempt_replay.pkl`
-- Periodic checkpoints: `/workspace/ros2_ws/rl_checkpoints/sac_drop_<N>_steps.zip`
+- WandB run: `2h1cvmer`
 
 ---
 
 # 2. Recent Progress
+
+- **Phase 13 — Stability Fixes (2026-03-18):**
+  - Diagnosed and fixed multiple instance proliferation via `start_infra_clean.sh` with correct `bin/px4` pattern
+  - Fixed stale FastRTPS shm causing IMU timestamp chaos
+  - Fixed NaN observation SB3 crash with `nan_to_num` in `_get_obs()`
+  - Investigated `UXRCE_DDS_SYNCT=0` to stop DDS time jumps — reverted (breaks OFFBOARD at RTF>1)
+  - Airframe file persisted to repo: `drone_drop_system/docker/config/airframes/4015_gz_x500_bombard`
+  - Dockerfile updated to COPY airframe into PX4 ROMFS during image build
+  - **fps=7 stable**, 0 CRUISE timeouts
 
 - **Phase 1–4:** Full Gazebo Harmonic simulation stack (PX4 SITL, ros_gz_bridge, DetachableJoint payload drop)
 - **Phase 5 base:** SAC Gymnasium environment (`drone_drop_env.py`) — 15-dim obs, 5-dim action space; `train_sac.py` with TensorBoard + WandB
@@ -184,61 +62,33 @@ Preempt checkpoint (from Phase 7 Spot VM preemption):
 - **Phase 5 enhancements:** `hyperparams.yaml` centralised config; WandB + CUDA + SIGTERM preemption checkpoint; `setup.py` registers yaml as package data
 - **Phase 6 — 4-Layer Hierarchical Reward:**
   - `_compute_reward()` fully implemented with Layers 1–4; AeroThrow kinematic predictor; auto-drop at 0.5 m; Layer 4 jackpot + instability penalty
+- **Phase 12 — OFFBOARD/TAKEOFF Fix (2026-03-18):**
+  - Fixed OFFBOARD retry race condition (2s→0.5s retry in drone_controller)
+  - Fixed absolute TAKEOFF altitude check (was relative to arm_ned_z, broken with persistent PX4 EKF lag)
+  - fps jumped 4→23 (before multiple instances broke it again)
 - **Phase 11 — Training Running (2026-03-17):**
   - Fixed Gazebo Harmonic dartsim crash: `reset: {all: true}` → `{model_only: true}` in `_gz_world_reset()`
-  - Fixed EKF yaw preflight failure: added `COM_ARM_WO_GPS=1` + `EKF2_MAG_TYPE=1` to `4015_gz_x500_bombard` airframe (container-only, not in repo)
-  - Removed `PX4_SIM_SPEED_FACTOR=10` from `infra.launch.py` (caused DDS time-sync jumps)
-  - Set `real_time_factor=1, real_time_update_rate=100` in `x_marker_world.sdf`
-  - Renamed incompatible replay buffer (saved with num_envs=8); model weights still loaded
-  - Training started: WandB run `apax52d7`, ~25 steps/sec, Gazebo+PX4 stable
+  - Fixed EKF yaw preflight failure: added `COM_ARM_WO_GPS=1` + `EKF2_MAG_TYPE=1` to airframe
+  - Training started: WandB run `apax52d7`, ~25 steps/sec
 - **Phase 10 — Disk Space Optimization (2026-03-16):**
-  - TensorBoard logging disabled (`tensorboard_log=None`, `sync_tensorboard` removed from `wandb.init`)
-  - `CheckpointCallback.save_replay_buffer=False` — only SIGTERM preempt handler saves replay buffer
-  - Added `CleanupOldCheckpointsCallback`: deletes oldest `.zip` files, keeping only last 3
-  - Added WandB offline-run directory pruning (entries older than 7 days) on training startup
-  - `hyperparams.yaml`: removed `log_dir`, added `max_checkpoints_kept: 3`
-  - Created `/opt/drone-bombard/docker-compose.yml` with `json-file` log driver (10 MB × 3 = 30 MB max)
-  - `nachoigpt` cron job: every 6 hours — clears ROS2 logs, `docker system prune -af`, `journalctl --vacuum-time=1d`
+  - TensorBoard disabled, checkpoints capped at 3, docker log limits, 6-hour cron cleanup
 - **Phase 9 — Env Setup + Reward Refactor (2026-03-16):**
-  - GPU driver 580 DKMS modules built for kernel `6.8.0-1048-gcp`; nvidia-smi working
-  - NVIDIA Container Toolkit 1.19.0 installed; Docker nvidia runtime configured
-  - Old `nvidia-settings` 510 package purged
-  - **Layer 1 reward refactored**: crash / overspeed / target-lost now apply configurable penalties (`penalty_crash`, `penalty_overspeed`, `penalty_target_lost`) instead of hard termination — episode continues
-  - **num_envs=8**: added to `hyperparams.yaml`; `train_sac.py` now wraps with `SubprocVecEnv` (each subprocess gets its own `ROS_DOMAIN_ID`)
-  - W&B API key configured
-- **Phase 8 — Training Resume (2026-03-13):**
-  - Spot VM preempted after 386 steps; container restarted, infra relaunched headless
-  - Resumed from `sac_drop_preempt.zip` + replay buffer; WandB run `vekkz83a` (L4-AutoDrop-v1) reattached via `WANDB_RUN_ID`
-  - All processes running detached (`docker exec -d`): survive Termius disconnection
-  - Fixed missing source: must source `/root/ros2_ws/install/setup.bash` for `ros_gz_bridge`
-- **Phase 7 — RL Speed Optimisations (2026-03-12):**
-  - **Diagnosis:** First run completed 386 steps / 188 episodes in ~3 hours (0 FPS); ~60 s/episode dominated by real-time TAKEOFF→CRUISE; conf==0 termination with camera off caused 1-step episodes
-  - **Gazebo physics unlocked** (`x_marker_world.sdf`): `real_time_factor=0`, `real_time_update_rate=0`, `max_step_size=0.01` (100 Hz). Simulation now runs at max CPU speed — expected 3–8× episode speedup
-  - **Camera sensor removed** (`x500_bombard/model.sdf`): eliminated 640×480@30 Hz ogre2 GPU rendering; `gz-sim-sensors-system` removed from world plugins
-  - **Bridge stripped** (`ros_gz_bridge.yaml`): removed camera image/info and IMU bridges; only clock, payload odometry, drop cmd remain
-  - **`use_vision=False` mode** (`drone_drop_env.py`): new `_cfg_use_vision` param; skips `conf==0` Layer 1 termination; synthesises `conf=1.0` in obs when camera absent. Prevents immediate 1-step-episode termination
-  - **Kill-episode sleep** reduced 1.5 s → 0.5 s; saves 1 s per reset
-  - **infra.launch.py**: vision default `false`; bridge start delay 16 s → 10 s
-  - **hyperparams.yaml**: `use_vision: false`, `obs_wait_timeout: 0.10`, `log_freq: 1000`
-  - **colcon build**: both `rl_navigation` and `mission_manager` build cleanly
+  - GPU driver 580 DKMS, NVIDIA Container Toolkit 1.19.0
+  - Layer 1 reward refactored; num_envs=8→1; W&B configured
 
 ---
 
 # 3. Remaining Tasks (Next Steps)
 
-- [x] **WandB login inside container** — API key set; entity `nayoonho0922-seoul-national-university` confirmed in hyperparams.yaml
-- [x] **Run optimised training session** — resumed 2026-03-13 from preempt checkpoint; WandB run vekkz83a reattached; replay buffer restored
-- [x] **Disk space fixes applied** — TB disabled, checkpoints capped at 3, docker log limits, 6-hour cron cleanup
-- [x] **Training speed Phase 2** — target_altitude 10→5m, EKF sleep 3→1.5s, obs_wait_timeout 100→50ms (2026-03-17)
-- [x] **Training speed Phase 3** — PX4_SIM_SPEED_FACTOR=10, obs_wait_timeout→20ms (2026-03-17)
-- [x] **Rebuild after speed fix** — run `colcon build --packages-select mission_manager rl_navigation && source install/setup.bash` inside container
-- [ ] **Verify disk fix works** — after 15k steps: only 3 `.zip` files in `rl_checkpoints/`, no `rl_logs/` dir, `docker inspect` shows json-file log config
-- [ ] **Verify RTF=0 speedup** — watch WandB `time/fps` metric; expect 3–8× vs. previous 0 FPS
-- [ ] **Evaluate first meaningful run** — check: episode_reward, d_impact trend, Layer 4 reward frequency, jackpot rate
-- [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`; adjust if approach gradient dominates or drops too early
-- [ ] **Verify auto-drop threshold** — log `d_impact` at each drop; confirm 0.5 m threshold yields meaningful Layer 4 rewards
-- [x] **Multi-env parallelism** — `SubprocVecEnv` with num_envs=8; each env isolated via `ROS_DOMAIN_ID`
+- [x] **Multiple instances fixed** — `start_infra_clean.sh` with correct `bin/px4` pattern
+- [x] **NaN crash fixed** — `nan_to_num` guard in `_get_obs()`
+- [x] **Airframe persisted to repo** — `drone_drop_system/docker/config/airframes/4015_gz_x500_bombard`
+- [ ] **Monitor fps stability** — watch for regressions; target: 7 fps sustained over 1000+ episodes
+- [ ] **Try RTF=3 or higher** — once fps=7 is confirmed stable for 30+ min; update `x_marker_world.sdf` + `PX4_SIM_SPEED_FACTOR`
+- [ ] **Evaluate first meaningful run** — check: episode_reward trend, d_impact trend, Layer 4 reward frequency
+- [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`
 - [ ] **Custom SB3 policy** — add PyTorch AMP (mixed precision) for faster L4 training
+- [ ] **Verify disk fix works** — after 15k steps: only 3 `.zip` files, no `rl_logs/`, json-file log config
 
 ---
 
@@ -249,8 +99,9 @@ Preempt checkpoint (from Phase 7 Spot VM preemption):
 | 2026-03-12 | vekkz83a | drone-bombard-sac / L4-AutoDrop-v1 | 386 | — | First run aborted; 0 FPS (60 s/episode real-time locked). Optimisations applied in Phase 7. |
 | 2026-03-13 | vekkz83a | drone-bombard-sac / L4-AutoDrop-v1 | resumed | — | Resumed from preempt checkpoint + replay buffer. RTF=0, headless, no camera. WANDB_RUN_ID set to reattach existing run. |
 | 2026-03-17 | apax52d7 | drone-bombard-sac / L4-AutoDrop-v1 | ~3K (started) | — | New session: fixed dartsim crash (model_only reset), EKF yaw fix (COM_ARM_WO_GPS=1), removed PX4_SIM_SPEED_FACTOR. ~25 steps/sec, ep_len=6 (early exploration). |
-| 2026-03-17 | 27mbu6qk | drone-bombard-sac / L4-AutoDrop-v1 | 49,242 | — | Resumed from preempt checkpoint after replay buffer incompatibility fix. TAKEOFF optimisations: min_armed_secs=0.3, altitude_hold_ticks≥2, world_reset_sleep=0.5s. fps improved 2→4. ep_len_mean=219, ep_rew_mean=-367. gz set_pose teleport abandoned (unreliable in Harmonic). |
-| 2026-03-18 | 9nbwg71r | drone-bombard-sac / L4-AutoDrop-v1 | 53,428 | — | Phase 12: Fixed OFFBOARD retry race condition (2s→0.5s retry in drone_controller) + absolute TAKEOFF altitude check (was relative to arm_ned_z, broken with persistent PX4 EKF lag). fps jumped 4→23. 0 CRUISE timeouts. |
+| 2026-03-17 | 27mbu6qk | drone-bombard-sac / L4-AutoDrop-v1 | 49,242 | — | Resumed from preempt checkpoint after replay buffer incompatibility fix. TAKEOFF optimisations: min_armed_secs=0.3, altitude_hold_ticks≥2, world_reset_sleep=0.5s. fps improved 2→4. ep_len_mean=219, ep_rew_mean=-367. |
+| 2026-03-18 | 9nbwg71r | drone-bombard-sac / L4-AutoDrop-v1 | 53,428 | — | Phase 12: Fixed OFFBOARD retry race (2s→0.5s) + absolute TAKEOFF altitude check. fps jumped 4→23. 0 CRUISE timeouts. |
+| 2026-03-18 | 2h1cvmer | drone-bombard-sac / L4-AutoDrop-v1 | 78,200+ | — | Phase 13: Fixed multi-instance bug (bin/px4 pattern), stale shm, NaN obs crash. fps=7 stable at RTF=2. 0 CRUISE timeouts. |
 
 ---
 
@@ -260,17 +111,14 @@ Preempt checkpoint (from Phase 7 Spot VM preemption):
 # 1. Reconnect to container
 xhost +local:docker && docker start -ai drone-bombard-harmonic
 
-# 2. Find latest checkpoint
-ls -lt /workspace/ros2_ws/rl_checkpoints/ | head -5
+# 2. Clean restart infra (kills stale processes, starts fresh PX4+Gazebo)
+docker exec -d drone-bombard-harmonic bash /workspace/ros2_ws/start_infra_clean.sh
+sleep 35  # wait for PX4 "Ready for takeoff!"
 
-# 3. Resume training (WandB run resumes automatically via resume="allow")
-cd /workspace/ros2_ws && source install/setup.bash
-ros2 launch mission_manager infra.launch.py &
-sleep 25
-ros2 run rl_navigation train_sac \
-  --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_XXXXXX_steps.zip
+# 3. Start training (finds latest checkpoint automatically)
+docker exec -d drone-bombard-harmonic bash -c "cd /workspace/ros2_ws && /workspace/ros2_ws/train_managed.sh > /tmp/train_managed.log 2>&1"
 
-# 4. If preempt checkpoint exists:
-ros2 run rl_navigation train_sac \
-  --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip
+# 4. Monitor
+docker exec drone-bombard-harmonic tail -20 /tmp/train_managed.log
+docker exec drone-bombard-harmonic tail -5 /tmp/infra_main.log
 ```

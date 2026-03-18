@@ -82,6 +82,10 @@ RUN git clone https://github.com/eProsima/Micro-XRCE-DDS-Agent.git && \
 WORKDIR /opt
 RUN git clone --recursive -b v1.15.4 https://github.com/PX4/PX4-Autopilot.git
 
+# Copy custom airframe (4015_gz_x500_bombard) into PX4 ROMFS so it is
+# available after 'make px4_sitl gz_x500_bombard' and in the build rootfs.
+COPY config/airframes/4015_gz_x500_bombard /opt/PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix/airframes/4015_gz_x500_bombard
+
 # --------------------------------------------------
 # 9. ⚡ ROS 2 <-> Gazebo Harmonic 브릿지 (🌟 캐시 마운트 적용)
 # --------------------------------------------------
