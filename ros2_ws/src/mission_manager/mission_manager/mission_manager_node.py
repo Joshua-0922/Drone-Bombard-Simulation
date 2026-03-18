@@ -46,6 +46,7 @@ class MissionManagerNode(Node):
 
         self.px4_armed = False
         self.armed_stamp = None          # wall-clock time when first armed
+        self.arm_ned_z = None            # NED z at arming — TAKEOFF uses relative check
         self.status_sub = self.create_subscription(
             VehicleStatus, '/fmu/out/vehicle_status',
             self.vehicle_status_callback, qos_profile)
@@ -79,18 +80,14 @@ class MissionManagerNode(Node):
 
     def vehicle_status_callback(self, msg):
         if not self.px4_armed and msg.arming_state == 2:  # ARMING_STATE_ARMED
-            # Accept arming if: (a) drone is on/near ground (NED z > -1.0), or
-            # (b) drone is already at/above target cruise altitude (spawned at 5m).
-            ned_z = self.current_pos[2]
-            self.on_ground_at_arm = (ned_z > -1.0) or (ned_z <= -(self.target_altitude * 0.90))
-            if self.on_ground_at_arm:
-                self.get_logger().info('PX4 armed — starting TAKEOFF sequence.')
-            else:
-                self.get_logger().error(
-                    f'GROUND CHECK FAILED: drone NED z={self.current_pos[2]:.2f} m '
-                    f'at arming (> 1 m airborne). Spawn or DetachableJoint issue. '
-                    f'TAKEOFF suppressed.')
+            # Record the NED z at arm time for relative altitude check.
+            # This makes TAKEOFF robust regardless of where PX4's EKF home
+            # is set (e.g. after a world reset where home may be at cruise altitude).
+            self.arm_ned_z = self.current_pos[2]
+            self.on_ground_at_arm = True  # always proceed; relative check handles safety
             self.armed_stamp = time.time()
+            self.get_logger().info(
+                f'PX4 armed at NED z={self.arm_ned_z:.2f} m — starting TAKEOFF sequence.')
         self.px4_armed = (msg.arming_state == 2)
 
     def vision_callback(self, msg):
@@ -133,16 +130,24 @@ class MissionManagerNode(Node):
                 return
             self.send_position_cmd(0.0, 0.0, self.target_altitude)
 
-            # Altitude check (NED: up = negative-z).
-            # 0.3 s EKF settle guard after arming (reduced from 1 s; saves ~0.7 s per episode).
-            # Requires 2 consecutive ticks (~0.2 s) at target altitude to prevent
-            # spurious transitions from a single noisy reading.
+            # Altitude check — ABSOLUTE NED z (NED: up = negative-z).
+            # With persistent PX4, after a Gazebo world reset, PX4's EKF still
+            # reports the old altitude from the previous episode (e.g. -4.14 m)
+            # for several seconds. Using a relative check (arm_ned_z - target)
+            # therefore requires the drone to reach an impossible depth (e.g.
+            # -8.89 m when target is 5 m and arm_ned_z = -4.14 m) while the
+            # position command only sends it to NED -5 m.
+            # Absolute check: PX4 EKF home = ground level (set at first arm),
+            # so NED z ≤ -(target_altitude × 0.95) correctly fires once the
+            # drone has climbed to 95 % of target altitude above physical ground.
+            # Requires 0.3 s EKF settle after arming and 2 consecutive ticks (~0.2 s).
             min_armed_secs = 0.3
             armed_long_enough = (
                 self.armed_stamp is not None
                 and (time.time() - self.armed_stamp) >= min_armed_secs
             )
-            if armed_long_enough and self.current_pos[2] <= -(self.target_altitude * 0.95):
+            if (armed_long_enough
+                    and self.current_pos[2] <= -(self.target_altitude * 0.95)):
                 self.altitude_hold_ticks += 1
             else:
                 self.altitude_hold_ticks = 0

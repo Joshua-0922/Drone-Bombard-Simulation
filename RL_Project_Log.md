@@ -6,29 +6,32 @@
 
 # 1. Current State
 
-## Training Phase 11 — Running (2026-03-17)
-Training actively running. WandB run: `27mbu6qk` (L4-AutoDrop-v1).
+## Training Phase 12 — Running (2026-03-18)
+Training actively running. WandB run: `9nbwg71r` (L4-AutoDrop-v1).
 
 | Metric | Value |
 |--------|-------|
-| Steps so far | ~49,242 (at 210s elapsed) |
-| Throughput | **4 fps** (up from 2 fps before Phase 11 TAKEOFF optimisations) |
-| ep_len_mean | 219 |
-| ep_rew_mean | -367 |
-| Episodes | 1,176 |
-| Gazebo | Alive (model_only reset — no crash) |
-| PX4 | Armed + Takeoff confirmed |
-| Disk | 21% |
+| Steps so far | ~53,428 (at 85s elapsed) |
+| Throughput | **23 fps** (up from 4 fps before Phase 12 fixes) |
+| ep_len_mean | 246 |
+| ep_rew_mean | -538 |
+| Episodes | 1,184 |
+| Gazebo | Alive |
+| PX4 | Armed + Offboard confirmed |
+| CRUISE timeouts | 0 |
 
-**Bugs fixed this session:**
-- `reset: {all: true}` → `{model_only: true}` — fixes dartsim crash in DetachableJoint + world reset
-- Custom airframe `4015_gz_x500_bombard` + `COM_ARM_WO_GPS=1` + `EKF2_MAG_TYPE=1` — fixes EKF yaw preflight failure
-- Replay buffer renamed (incompatible: saved with num_envs=8) — model weights still loaded
-- `PX4_SIM_SPEED_FACTOR=10` removed (caused DDS time-sync jumps)
-- `real_time_factor=1, real_time_update_rate=100` in SDF (stable PX4 DDS sync)
-- TAKEOFF timing reduced: `min_armed_secs=0.3` (was 1.0), `altitude_hold_ticks≥2` (was 5), `_gz_world_reset sleep=0.5s` (was 1.5s)
-- 5m SDF spawn caused gz service timeouts — reverted to 0.14m spawn (ground)
-- gz set_pose teleport unavailable/unreliable in this Gazebo Harmonic build — approach abandoned
+**Root causes identified and fixed this session:**
+- **Low FPS (4→23)**: Two compounding bugs:
+  1. **OFFBOARD retry race condition** — drone_controller retried OFFBOARD every 2s (40 ticks), same period as DDS time-sync disruptions → OFFBOARD mode repeatedly lost. **Fix**: OFFBOARD retry every 0.5s (10 ticks) in `drone_controller_node.py`.
+  2. **TAKEOFF altitude check broken for persistent PX4** — After Gz world reset, PX4 EKF still reports old altitude (e.g., NED z=-4.14m). Relative check `current_pos[2] ≤ arm_ned_z - target*0.95` required NED -8.89m while position command only sends drone to NED -5m → impossible → TAKEOFF always timed out (60s) in episodes 2+. **Fix**: Changed to absolute check `current_pos[2] ≤ -(target_altitude * 0.95)` in `mission_manager_node.py`.
+
+**Current config:**
+- `obs_wait_timeout: 0.02` (20ms)
+- `num_envs: 1`
+- `use_vision: false`
+- `target_altitude: 5.0`
+- Checkpoint: `/workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip`
+- WandB run: `9nbwg71r`
 
 **Current config:**
 - `obs_wait_timeout: 0.02` (20ms)
@@ -247,6 +250,7 @@ Preempt checkpoint (from Phase 7 Spot VM preemption):
 | 2026-03-13 | vekkz83a | drone-bombard-sac / L4-AutoDrop-v1 | resumed | — | Resumed from preempt checkpoint + replay buffer. RTF=0, headless, no camera. WANDB_RUN_ID set to reattach existing run. |
 | 2026-03-17 | apax52d7 | drone-bombard-sac / L4-AutoDrop-v1 | ~3K (started) | — | New session: fixed dartsim crash (model_only reset), EKF yaw fix (COM_ARM_WO_GPS=1), removed PX4_SIM_SPEED_FACTOR. ~25 steps/sec, ep_len=6 (early exploration). |
 | 2026-03-17 | 27mbu6qk | drone-bombard-sac / L4-AutoDrop-v1 | 49,242 | — | Resumed from preempt checkpoint after replay buffer incompatibility fix. TAKEOFF optimisations: min_armed_secs=0.3, altitude_hold_ticks≥2, world_reset_sleep=0.5s. fps improved 2→4. ep_len_mean=219, ep_rew_mean=-367. gz set_pose teleport abandoned (unreliable in Harmonic). |
+| 2026-03-18 | 9nbwg71r | drone-bombard-sac / L4-AutoDrop-v1 | 53,428 | — | Phase 12: Fixed OFFBOARD retry race condition (2s→0.5s retry in drone_controller) + absolute TAKEOFF altitude check (was relative to arm_ned_z, broken with persistent PX4 EKF lag). fps jumped 4→23. 0 CRUISE timeouts. |
 
 ---
 

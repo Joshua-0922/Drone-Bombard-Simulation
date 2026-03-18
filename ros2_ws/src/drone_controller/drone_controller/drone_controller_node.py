@@ -103,12 +103,16 @@ class DroneControllerNode(Node):
         if already_armed and in_offboard:
             return  # Nothing to do
 
-        # Retry arm + offboard every 2 s (40 ticks at 20 Hz) until confirmed
+        # Retry arm every 2 s (40 ticks at 20 Hz) until confirmed.
+        # Retry OFFBOARD mode every 0.5 s (10 ticks) — more aggressively than arm
+        # because DDS time-sync disruptions can cause brief OFFBOARD mode loss, and
+        # waiting 2 s between retries creates a race condition with the ~2 s sync cycle.
         if self.offboard_set_counter % 40 == 0:
-            if not in_offboard:
-                self.engage_offboard_mode()
             if not already_armed:
                 self.arm()
+        if self.offboard_set_counter % 10 == 0:
+            if not in_offboard:
+                self.engage_offboard_mode()
 
     def publish_offboard_control_mode(self):
         msg = OffboardControlMode()
