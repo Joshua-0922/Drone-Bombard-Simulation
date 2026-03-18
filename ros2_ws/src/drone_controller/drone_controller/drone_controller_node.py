@@ -103,11 +103,13 @@ class DroneControllerNode(Node):
         if already_armed and in_offboard:
             return  # Nothing to do
 
-        # Retry arm every 2 s (40 ticks at 20 Hz) until confirmed.
-        # Retry OFFBOARD mode every 0.5 s (10 ticks) — more aggressively than arm
-        # because DDS time-sync disruptions can cause brief OFFBOARD mode loss, and
-        # waiting 2 s between retries creates a race condition with the ~2 s sync cycle.
-        if self.offboard_set_counter % 40 == 0:
+        # Warmup: wait 5 s after connection before first arm attempt.
+        # EKF2 needs several seconds to initialise from GPS/IMU data. Arming
+        # before EKF converges causes NaN velocity → 'Failsafe: blind land' →
+        # NaN motor commands → Gazebo ODE AABB integer overflow → Gazebo crash.
+        # At 20 Hz, 100 ticks = 5 s.  Arm retry every 2 s (40 ticks) thereafter.
+        warmup_ticks = 100
+        if self.offboard_set_counter >= warmup_ticks and self.offboard_set_counter % 40 == 0:
             if not already_armed:
                 self.arm()
         if self.offboard_set_counter % 10 == 0:

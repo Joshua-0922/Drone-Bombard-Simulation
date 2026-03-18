@@ -131,22 +131,26 @@ class _RLBridgeNode(Node):
     # ------------------------------------------------------------------
 
     def _on_local_pos(self, msg):
-        """Convert NED to ENU and update shared state."""
+        """Convert NED to ENU and update shared state.
+
+        NaN guard: PX4 EKF can output NaN velocity during DDS time-sync resets
+        (RTF>1). Replace NaN with 0.0 to prevent observation/reward corruption.
+        """
         with self._lock:
             # NED→ENU: East=Y_ned, North=X_ned, Up=−Z_ned
-            self.pos_enu[0] = msg.y
-            self.pos_enu[1] = msg.x
-            self.pos_enu[2] = -msg.z
-            self.vel_enu[0] = msg.vy
-            self.vel_enu[1] = msg.vx
-            self.vel_enu[2] = -msg.vz
+            self.pos_enu[0] = msg.y if math.isfinite(msg.y) else self.pos_enu[0]
+            self.pos_enu[1] = msg.x if math.isfinite(msg.x) else self.pos_enu[1]
+            self.pos_enu[2] = -msg.z if math.isfinite(msg.z) else self.pos_enu[2]
+            self.vel_enu[0] = msg.vy if math.isfinite(msg.vy) else 0.0
+            self.vel_enu[1] = msg.vx if math.isfinite(msg.vx) else 0.0
+            self.vel_enu[2] = -msg.vz if math.isfinite(msg.vz) else 0.0
         self._obs_ready.set()
 
     def _on_ang_vel(self, msg):
         with self._lock:
-            self.ang_vel[0] = msg.xyz[0]
-            self.ang_vel[1] = msg.xyz[1]
-            self.ang_vel[2] = msg.xyz[2]
+            self.ang_vel[0] = msg.xyz[0] if math.isfinite(msg.xyz[0]) else 0.0
+            self.ang_vel[1] = msg.xyz[1] if math.isfinite(msg.xyz[1]) else 0.0
+            self.ang_vel[2] = msg.xyz[2] if math.isfinite(msg.xyz[2]) else 0.0
 
     def _on_attitude(self, msg):
         """Extract roll and pitch from PX4 quaternion (NED frame, FRD body).
@@ -639,8 +643,9 @@ class DroneDropEnv(gym.Env):
             v_norm = 0.0
             conf = 1.0   # synthetic: "target always visible" via kinematics
 
-        rel_dx = (pos[0] - self._cfg_target_x) / POS_SCALE
-        rel_dy = (pos[1] - self._cfg_target_y) / POS_SCALE
+        pos_clean = np.nan_to_num(pos, nan=0.0)
+        rel_dx = (pos_clean[0] - self._cfg_target_x) / POS_SCALE
+        rel_dy = (pos_clean[1] - self._cfg_target_y) / POS_SCALE
 
         obs = np.array([
             *np.clip(pos_n, -1.0, 1.0),    # 0-2  world position (ENU, normalised)

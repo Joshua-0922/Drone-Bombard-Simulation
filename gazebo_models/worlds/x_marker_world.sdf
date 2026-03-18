@@ -25,12 +25,16 @@
   <world name="x_marker_world">
 
     <!-- ============================================================
-         Physics: unlocked for RL training (max CPU, no wall-clock cap)
-         real_time_factor=0  → no real-time limit (runs as fast as CPU allows)
-         real_time_update_rate=0 → same effect (0 = unlimited)
-         max_step_size=0.01  → 100 Hz physics (was 250 Hz / 4 ms);
-                               coarser steps trade accuracy for speed;
-                               quadrotor control at 100 Hz is sufficient.
+         Physics: RTF 1 — simulation runs at real-time (wall-clock sync).
+         At RTF=1, PX4 uXRCE-DDS time sync stays converged (no periodic
+         'time jump detected' resets). This prevents EKF velocity from
+         becoming NaN, which caused 'Failsafe: blind land' at RTF=2 and
+         the resulting ODE AABB overflow crash in Gazebo dartsim.
+         real_time_factor=1       → Gazebo matches wall-clock
+         real_time_update_rate=100 → 100 Hz wall-clock = 100 Hz sim-time
+         max_step_size=0.01       → 10 ms per step (100 Hz sim-time)
+         To try RTF>1: change factor + rate + PX4_SIM_SPEED_FACTOR in
+         infra.launch.py together; verify DDS sync stays stable.
     ============================================================ -->
     <physics type="ode">
       <max_step_size>0.01</max_step_size>

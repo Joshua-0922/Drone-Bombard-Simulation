@@ -10,9 +10,9 @@ PX4 SITL is now persistent here — Gazebo world reset resyncs its pose each epi
 
 Launch order:
   t=0s  : MicroXRCEAgent  (PX4 <-> ROS2 DDS bridge)
-  t=0s  : Gazebo Harmonic  (simulation world)
+  t=0s  : Gazebo Harmonic  (simulation world, RTF=1)
   t=10s : ros_gz_bridge    (gz-transport <-> ROS2 topic bridge)
-  t=20s : PX4 SITL         (persistent; survives episode resets via gz world reset)
+  t=20s : PX4 SITL         (persistent; PX4_SIM_SPEED_FACTOR=1 to match RTF=1)
   t=22s : xmarker_detector (YOLO vision, optional)
 
 Launch arguments:
@@ -141,6 +141,8 @@ def generate_launch_description():
                  f"PX4_GZ_STANDALONE=1 "
                  f"PX4_GZ_WORLD=x_marker_world "
                  f"PX4_SIM_MODEL=gz_x500_bombard "
+                 f"PX4_SIM_SPEED_FACTOR=1 "
+                 f"PX4_GZ_MODEL_POSE='0,0,5,0,0,0' "
                  f"GZ_SIM_RESOURCE_PATH={gz_resource_path} "
                  f"{_px4_bin}"],
             name="px4_sitl",

@@ -7,54 +7,55 @@
 # 1. Current State
 
 ## Training Phase 13 — Running (2026-03-18)
-Training actively running. WandB run: `2h1cvmer` (L4-AutoDrop-v1).
+Training actively running. WandB run: `53xx3o8u` (L4-AutoDrop-v1).
 
 | Metric | Value |
 |--------|-------|
-| Steps so far | ~78,200 (at 45s elapsed from Phase 13 start) |
-| Throughput | **7 fps** (RTF=2 stable, single clean instance) |
-| ep_len_mean | 46.7 |
-| ep_rew_mean | -40.6 |
-| Episodes | 1,452 (cumulative) |
-| Gazebo | Alive |
+| Steps so far | ~80,292 (at 193s elapsed) |
+| Throughput | **12 fps** (RTF=1, no ODE crashes) |
+| ep_len_mean | 58.9 |
+| ep_rew_mean | -93.9 |
+| Episodes | 1,468 (cumulative) |
+| Gazebo | Alive (0 ODE crashes) |
 | PX4 | Armed + Offboard confirmed |
 | CRUISE timeouts | 0 |
 
 **Root causes diagnosed and fixed in Phase 13 (this session):**
-1. **Multiple instance proliferation (4 PX4, 3 Gazebo, 7 drone_controllers)** — Multiple `docker exec -d` calls each started a full new infra. Fix: `start_infra_clean.sh` kills all matching processes by PID before starting.
-2. **Stale FastRTPS shm** — 169 stale `/dev/shm/fastrtps_*` segments served stale DDS timestamps to new processes. Fix: `rm -f /dev/shm/fastrtps_*` in clean script.
-3. **`start_infra_clean.sh` kill pattern bug** — Pattern `/px4 ` (trailing space) didn't match PX4 processes with no arguments. Fix: changed to `bin/px4`.
-4. **Battery failsafe** — `SIM_BAT_DRAIN=60 mAh/s` drains battery over long persistent PX4 sessions. Fix: `param set SIM_BAT_DRAIN 0` in airframe.
-5. **Magnetometer arming denial** — RTF>1 DDS time sync disruptions cause mag spikes. Fix: `EKF2_MAG_CHECK=0`, `COM_ARM_MAG_STR=0`, `COM_ARM_MAG_ANG=180`.
-6. **OFFBOARD loss failsafe** — DDS time sync gaps trigger OFFBOARD loss. Fix: `COM_OF_LOSS_T=5.0s`.
-7. **NaN observation crash** — EKF velocity→NaN during DDS time sync reset → SB3 receives NaN obs → `ValueError: Expected loc to satisfy Real()` → exit code 134. Fix: `np.nan_to_num(..., nan=0.0)` in `drone_drop_env._get_obs()`.
-8. **`UXRCE_DDS_SYNCT=0` attempted but reverted** — Disabling DDS timestamp sync eliminated time jumps but broke OFFBOARD control (ROS2 sim-time setpoint timestamps mismatched PX4 POSIX clock at RTF=2). Reverted to default (1).
+1. **Multiple instance proliferation** — `start_infra_clean.sh` kill pattern `/px4 ` missed PX4 (no trailing space). Fix: `bin/px4`.
+2. **Stale FastRTPS shm** — 169 stale segments caused IMU timestamp chaos. Fix: `rm -f /dev/shm/fastrtps_*`.
+3. **NaN observation SB3 crash** — EKF velocity→NaN during DDS time sync → ValueError exit 134. Fix: `nan_to_num` guards in ROS2 callbacks (`_on_local_pos`, `_on_ang_vel`) and `_get_obs`.
+4. **`UXRCE_DDS_SYNCT=0` at RTF=2 broke OFFBOARD** — tried and reverted; breaks at RTF>1.
+5. **Gazebo ODE AABB overflow crash** — Root cause: drone arms before EKF2 converges → NaN motor commands → NaN forces → ODE integer overflow. Fix: 5s EKF warmup delay in `drone_controller` before first arm attempt (`warmup_ticks=100` at 20Hz).
+6. **`PX4_GZ_MODEL_POSE` missing** — Drone spawned at z=0.5 while payload at z=5.14 → DetachableJoint tries to bridge 4.5m gap → physics explosion. Fix: Added `PX4_GZ_MODEL_POSE='0,0,5,0,0,0'` to infra.launch.py.
+7. **RTF=2 time jumps → EKF NaN** — At RTF=2, uXRCE-DDS sync diverges periodically. Fix: RTF=1 (`world.sdf` + `PX4_SIM_SPEED_FACTOR=1`) + `UXRCE_DDS_SYNCT=0` (safe at RTF=1 since clocks are aligned).
 
-**Current airframe params** (`4015_gz_x500_bombard` in container + persisted to repo):
+**Current airframe params** (`4015_gz_x500_bombard`):
 - `FD_FAIL_R=0`, `SIM_BAT_DRAIN=0`, `COM_ARM_WO_GPS=1`
 - `EKF2_MAG_CHECK=0`, `COM_ARM_MAG_STR=0`, `COM_ARM_MAG_ANG=180`
-- `COM_OF_LOSS_T=5.0`
+- `COM_OF_LOSS_T=5.0`, `UXRCE_DDS_SYNCT=0`
 
-**Current config:**
-- `obs_wait_timeout: 0.02` (20ms)
-- `num_envs: 1`
-- `use_vision: false`
-- `target_altitude: 5.0`
-- Checkpoint: `/workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip`
-- WandB run: `2h1cvmer`
+**Current infra config:**
+- RTF=1 (`x_marker_world.sdf`: `real_time_factor=1, real_time_update_rate=100`)
+- `PX4_SIM_SPEED_FACTOR=1`, `PX4_GZ_MODEL_POSE=0,0,5,0,0,0` (infra.launch.py)
+- `obs_wait_timeout: 0.02` (20ms), `num_envs: 1`, `use_vision: false`
+- `target_altitude: 5.0`, Checkpoint: `/workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip`
+- WandB run: `53xx3o8u`
 
 ---
 
 # 2. Recent Progress
 
 - **Phase 13 — Stability Fixes (2026-03-18):**
-  - Diagnosed and fixed multiple instance proliferation via `start_infra_clean.sh` with correct `bin/px4` pattern
+  - Fixed `start_infra_clean.sh` kill pattern (`bin/px4` not `/px4 `)
   - Fixed stale FastRTPS shm causing IMU timestamp chaos
-  - Fixed NaN observation SB3 crash with `nan_to_num` in `_get_obs()`
-  - Investigated `UXRCE_DDS_SYNCT=0` to stop DDS time jumps — reverted (breaks OFFBOARD at RTF>1)
+  - Fixed NaN observation SB3 crash: `nan_to_num` guards in ROS2 callbacks + `_get_obs()`
+  - Fixed `PX4_GZ_MODEL_POSE` missing from infra.launch.py (drone spawned at z=0.5, payload at z=5.14 → 4.5m DetachableJoint gap → physics explosion → Gazebo ODE crash)
+  - Added 5s EKF warmup in `drone_controller_node.py` (wait 100 ticks before first arm to let EKF2 converge)
+  - Set RTF=1 in world.sdf + `PX4_SIM_SPEED_FACTOR=1` in infra.launch.py
+  - Set `UXRCE_DDS_SYNCT=0` in airframe (safe at RTF=1, eliminates startup time jump → EKF NaN chain)
   - Airframe file persisted to repo: `drone_drop_system/docker/config/airframes/4015_gz_x500_bombard`
   - Dockerfile updated to COPY airframe into PX4 ROMFS during image build
-  - **fps=7 stable**, 0 CRUISE timeouts
+  - **fps=12 stable**, 0 CRUISE timeouts, 0 ODE crashes, Gazebo alive
 
 - **Phase 1–4:** Full Gazebo Harmonic simulation stack (PX4 SITL, ros_gz_bridge, DetachableJoint payload drop)
 - **Phase 5 base:** SAC Gymnasium environment (`drone_drop_env.py`) — 15-dim obs, 5-dim action space; `train_sac.py` with TensorBoard + WandB
@@ -101,7 +102,8 @@ Training actively running. WandB run: `2h1cvmer` (L4-AutoDrop-v1).
 | 2026-03-17 | apax52d7 | drone-bombard-sac / L4-AutoDrop-v1 | ~3K (started) | — | New session: fixed dartsim crash (model_only reset), EKF yaw fix (COM_ARM_WO_GPS=1), removed PX4_SIM_SPEED_FACTOR. ~25 steps/sec, ep_len=6 (early exploration). |
 | 2026-03-17 | 27mbu6qk | drone-bombard-sac / L4-AutoDrop-v1 | 49,242 | — | Resumed from preempt checkpoint after replay buffer incompatibility fix. TAKEOFF optimisations: min_armed_secs=0.3, altitude_hold_ticks≥2, world_reset_sleep=0.5s. fps improved 2→4. ep_len_mean=219, ep_rew_mean=-367. |
 | 2026-03-18 | 9nbwg71r | drone-bombard-sac / L4-AutoDrop-v1 | 53,428 | — | Phase 12: Fixed OFFBOARD retry race (2s→0.5s) + absolute TAKEOFF altitude check. fps jumped 4→23. 0 CRUISE timeouts. |
-| 2026-03-18 | 2h1cvmer | drone-bombard-sac / L4-AutoDrop-v1 | 78,200+ | — | Phase 13: Fixed multi-instance bug (bin/px4 pattern), stale shm, NaN obs crash. fps=7 stable at RTF=2. 0 CRUISE timeouts. |
+| 2026-03-18 | 2h1cvmer | drone-bombard-sac / L4-AutoDrop-v1 | 78,200 | — | Phase 13 early: Fixed multi-instance (bin/px4 pattern), stale shm, NaN obs crash. fps=7 briefly. |
+| 2026-03-18 | 53xx3o8u | drone-bombard-sac / L4-AutoDrop-v1 | 80,292+ | — | Phase 13 final: Fixed PX4_GZ_MODEL_POSE (drone-payload gap), 5s EKF warmup in drone_controller, RTF=1, UXRCE_DDS_SYNCT=0. **fps=12 stable, 0 ODE crashes.** |
 
 ---
 

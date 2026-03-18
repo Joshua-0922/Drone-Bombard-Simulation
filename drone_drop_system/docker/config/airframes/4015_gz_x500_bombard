@@ -81,3 +81,11 @@ param set COM_ARM_MAG_ANG 180
 # cause brief gaps in offboard setpoints, triggering failsafe during flight.
 # 5.0s gives enough time for DDS to recover without failsafe firing.
 param set COM_OF_LOSS_T 5.0
+
+# SITL-only: disable uXRCE-DDS timestamp synchronization.
+# UXRCE_DDS_SYNCT=0 prevents PX4 from syncing its internal clock to the agent,
+# eliminating 'time jump detected' events that cause EKF velocity to become NaN
+# (→ 'Failsafe: blind land' → NaN motor commands → Gazebo ODE AABB crash).
+# At RTF=1, ROS2 sim-time ≈ PX4 POSIX clock, so OFFBOARD setpoints work correctly
+# without sync. Do NOT use with RTF>1 (ROS2 sim-time diverges from PX4 clock).
+param set UXRCE_DDS_SYNCT 0
