@@ -7,29 +7,27 @@
 # 1. Current State
 
 ## Phase 1 Curriculum — Training (2026-03-18)
-Training actively running. WandB run: `izf10080` (L4-AutoDrop-v1).
+**Fresh training started** (no resume — old replay buffer discarded). WandB run: `pbpqa0rp` (L4-AutoDrop-v1).
 
 | Metric | Value |
 |--------|-------|
-| Steps so far | ~568,554 (cumulative) |
-| Throughput | **28 fps** (RTF=1, stable) |
-| ep_len_mean | 397 (rising toward 500 truncation — expected) |
-| ep_rew_mean | -1,900 (see analysis below) |
+| Steps so far | ~6,000 (fresh start) |
+| Throughput | **28-30 fps** (RTF=1, stable) |
+| ep_len_mean | 500 (all episodes truncated — expected) |
+| ep_rew_mean | -91 → improving (was -131 at 2K steps) |
+| ent_coef | 0.741 (high — fresh exploration) |
 | Curriculum | **Phase 1: manual drop disabled** |
 | Action space | Box(5,) — action[4] ignored (dummy dim for ckpt compat) |
 | Drop mode | Auto-drop only (`d_impact <= 0.5m`) |
-| Checkpoint | `/workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip` |
-| WandB run | `izf10080` |
+| total_timesteps | 1,000,000 |
+| WandB run | `pbpqa0rp` |
 
-### Phase 1 Curriculum Fix + Launch Bug Fix
+### Changes This Session
 
-**Curriculum fix:** Disabled manual drop in `drone_drop_env.py` (line 411-412). `action[4]` kept as dummy for checkpoint compatibility. Episodes terminate only via auto-drop (`d_impact <= 0.5m`) or truncation at `max_steps=500`.
-
-**Launch bug found & fixed:** Initial restart was done with manual `source install/setup.bash` which missed `/root/ros2_ws/install/setup.bash` (px4_msgs). This caused `mission_manager_node` and `drone_controller` to crash on import (`ModuleNotFoundError: No module named 'px4_msgs'`), leaving episodes stuck in IDLE state. Every episode waited 60s for CRUISE → fps dropped to 5. Fixed by restarting via `train_managed.sh` which sources all three setup files.
-
-**Reward analysis (-1,900):** This is expected-bad, not a bug. The replay buffer is polluted with ~456K steps of degenerate "drop at step 429" experience. The critic learned to value early-drop strategies. Now that drops are impossible (auto-drop only), every episode runs to truncation (~397-500 steps), accumulating Layer 2 time penalty (`-0.01 * 500 = -5.0`), plus the critic/actor are confused by the value function mismatch. The reward should bottom out then slowly recover as new on-policy experience overwrites stale buffer entries (`buffer_size=100K`, so ~2x buffer turnover needed = ~200K steps).
-
-**Expected recovery timeline:** ~200K new steps for buffer turnover → reward should start recovering. Watch for `ep_len_mean` approaching 500, then slowly decreasing as policy discovers approach → auto-drop.
+1. **Phase 1 curriculum:** Disabled manual drop in `drone_drop_env.py`. Auto-drop only.
+2. **WandB metrics fix:** Added `WandbMetricsCallback` to `train_sac.py` — forwards `ep_rew_mean`, `ep_len_mean`, losses, fps to WandB via `wandb.log()` on each rollout end. Previously only system metrics (CPU/GPU) were logged.
+3. **Fresh training:** Discarded old replay buffer (456K steps of degenerate drop-at-429 experience). Clean start with high entropy (0.741 vs 0.05).
+4. **train_managed.sh updated:** Supports `--fresh` flag for starting without checkpoint. `total_timesteps` bumped to 1M.
 
 **Current infra config:**
 - RTF=1 (`x_marker_world.sdf`: `real_time_factor=1, real_time_update_rate=100`)
@@ -41,11 +39,12 @@ Training actively running. WandB run: `izf10080` (L4-AutoDrop-v1).
 
 # 2. Recent Progress
 
-- **Phase 1 Curriculum — Disable Manual Drop (2026-03-18):**
-  - Disabled `manual_drop = float(action[4]) > 0.0` in `drone_drop_env.py`
-  - Removed `or manual_drop` from drop condition — auto-drop only (`d_impact <= 0.5m`)
-  - Action space stays Box(5,) for checkpoint compatibility (action[4] is dummy)
-  - Training resumed from `sac_drop_preempt.zip` (~97K steps), WandB run `dy97unuj`
+- **Phase 1 Curriculum — Fresh Start (2026-03-18):**
+  - Disabled manual drop in `drone_drop_env.py` — auto-drop only (`d_impact <= 0.5m`)
+  - Added `WandbMetricsCallback` to `train_sac.py` — logs `ep_rew_mean`, `ep_len_mean`, losses to WandB
+  - Discarded old replay buffer, started fresh training (1M timesteps), WandB run `pbpqa0rp`
+  - Updated `train_managed.sh` to support `--fresh` flag; bumped `total_timesteps` to 1M
+  - Fixed launch bug: manual restart missed px4_msgs source → episode nodes crashed
 
 - **Phase 13 — Stability Fixes (2026-03-18):**
   - Fixed `start_infra_clean.sh` kill pattern (`bin/px4` not `/px4 `)
@@ -108,7 +107,8 @@ Training actively running. WandB run: `izf10080` (L4-AutoDrop-v1).
 | 2026-03-18 | 2h1cvmer | drone-bombard-sac / L4-AutoDrop-v1 | 78,200 | — | Phase 13 early: Fixed multi-instance (bin/px4 pattern), stale shm, NaN obs crash. fps=7 briefly. |
 | 2026-03-18 | 53xx3o8u | drone-bombard-sac / L4-AutoDrop-v1 | 80,292+ | — | Phase 13 final: Fixed PX4_GZ_MODEL_POSE (drone-payload gap), 5s EKF warmup in drone_controller, RTF=1, UXRCE_DDS_SYNCT=0. **fps=12 stable, 0 ODE crashes.** |
 | 2026-03-18 | dy97unuj | drone-bombard-sac / L4-AutoDrop-v1 | 546K–560K | — | **Broken run** — missing px4_msgs source caused episode nodes to crash. All episodes stuck in IDLE, 60s CRUISE timeout per reset, fps=5, reward spiraled to -1,560. Killed. |
-| 2026-03-18 | izf10080 | drone-bombard-sac / L4-AutoDrop-v1 | 564K+ | — | **Phase 1 curriculum (fixed restart).** Used train_managed.sh (sources px4_msgs). fps=28, 0 CRUISE timeouts. ep_rew=-1,900 expected (stale buffer). |
+| 2026-03-18 | izf10080 | drone-bombard-sac / L4-AutoDrop-v1 | 564K–568K | — | **Stale buffer run** — resumed from polluted checkpoint. ep_rew=-1,900, killed in favor of fresh start. |
+| 2026-03-18 | pbpqa0rp | drone-bombard-sac / L4-AutoDrop-v1 | 0 (fresh) | — | **Fresh Phase 1 training.** Manual drop disabled, WandB metrics callback added. ep_rew=-91 at 6K steps, ent_coef=0.74, fps=28-30. 1M timesteps target. |
 
 ---
 

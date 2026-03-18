@@ -41,6 +41,29 @@ def _emergency_save(signum, frame):
     sys.exit(0)
 
 
+class WandbMetricsCallback(BaseCallback):
+    """Forward SB3 rollout/train metrics to WandB on each rollout end."""
+
+    def _on_step(self):
+        return True
+
+    def _on_rollout_end(self):
+        if not wandb.run:
+            return
+        log_dict = {}
+        for key in ('rollout/ep_rew_mean', 'rollout/ep_len_mean',
+                     'train/actor_loss', 'train/critic_loss',
+                     'train/ent_coef', 'train/ent_coef_loss',
+                     'train/learning_rate', 'train/n_updates',
+                     'time/fps', 'time/episodes', 'time/total_timesteps'):
+            val = self.logger.name_to_value.get(key)
+            if val is not None:
+                log_dict[key] = val
+        if log_dict:
+            log_dict['time/total_timesteps'] = self.num_timesteps
+            wandb.log(log_dict, step=self.num_timesteps)
+
+
 class CleanupOldCheckpointsCallback(BaseCallback):
     """Keep only the N most-recent periodic checkpoints to cap disk usage."""
 
@@ -160,7 +183,10 @@ def main(args=None):
         model_save_path=checkpoint_dir,
         verbose=2,
     )
-    callbacks = CallbackList([checkpoint_callback, cleanup_callback, wandb_callback])
+    wandb_metrics_callback = WandbMetricsCallback()
+    callbacks = CallbackList([
+        checkpoint_callback, cleanup_callback,
+        wandb_callback, wandb_metrics_callback])
 
     # --- Model ---
     if cli.resume:

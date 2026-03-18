@@ -21,20 +21,24 @@ if ! flock -n 9; then
 fi
 
 # --- [1] Find latest valid checkpoint (skip corrupt files) ---
-LATEST_CKPT=""
-for f in $(ls -t "$CKPT_DIR"/*.zip 2>/dev/null); do
-    if python3 -c "import sys; from stable_baselines3 import SAC; SAC.load(sys.argv[1], device='cpu')" "$f" 2>/dev/null; then
-        LATEST_CKPT="$f"
-        break
-    else
-        log "WARNING: Checkpoint $f failed zip test — skipping"
-    fi
-done
-if [ -z "$LATEST_CKPT" ]; then
-    log "ERROR: No valid checkpoint found in $CKPT_DIR — aborting."
-    exit 1
+# Pass --fresh as first arg to skip checkpoint search and start from scratch
+FRESH=false
+if [ "${1:-}" = "--fresh" ]; then
+    FRESH=true
+    shift
 fi
-log "Latest valid checkpoint: $LATEST_CKPT"
+
+LATEST_CKPT=""
+if [ "$FRESH" = false ]; then
+    for f in $(ls -t "$CKPT_DIR"/*.zip 2>/dev/null); do
+        if python3 -c "import sys; from stable_baselines3 import SAC; SAC.load(sys.argv[1], device='cpu')" "$f" 2>/dev/null; then
+            LATEST_CKPT="$f"
+            break
+        else
+            log "WARNING: Checkpoint $f failed zip test — skipping"
+        fi
+    done
+fi
 
 # --- [2] Source ROS ---
 source /opt/ros/humble/setup.bash
@@ -42,9 +46,14 @@ source /root/ros2_ws/install/setup.bash
 source /workspace/ros2_ws/install/setup.bash
 
 # --- [3] Start training in background ---
-log "Starting training from: $LATEST_CKPT"
 cd /workspace/ros2_ws
-python3 -m rl_navigation.train_sac --resume "$LATEST_CKPT" >> "$LOG" 2>&1 &
+if [ -n "$LATEST_CKPT" ]; then
+    log "Resuming training from: $LATEST_CKPT"
+    python3 -m rl_navigation.train_sac --resume "$LATEST_CKPT" "$@" >> "$LOG" 2>&1 &
+else
+    log "Starting fresh training (no checkpoint)"
+    python3 -m rl_navigation.train_sac "$@" >> "$LOG" 2>&1 &
+fi
 TRAIN_PID=$!
 log "Training PID: $TRAIN_PID"
 echo "$TRAIN_PID" > /workspace/ros2_ws/train_sac.pid
