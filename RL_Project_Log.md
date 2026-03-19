@@ -6,54 +6,55 @@
 
 # 1. Current State
 
-## Phase 1.5 — Multi-Instance Parallel Training (2026-03-18)
-**Implemented self-managed infra** — each `DroneDropEnv` instance launches its own Gazebo + PX4 + MicroXRCEAgent + ros_gz_bridge. No more external `infra.launch.py` required.
+## Phase 1.5 — Self-Managed Infra, Single-Env Stable (2026-03-19)
+**Self-managed infra is working** — `DroneDropEnv._start_infra()` launches Gazebo + PX4 + MicroXRCEAgent + ros_gz_bridge without external `infra.launch.py`. Single-env training is stable at **fps=30-31**.
 
 | Metric | Value |
 |--------|-------|
-| num_envs | **4** (via `SubprocVecEnv`) |
-| Isolation | `ROS_DOMAIN_ID` per instance + `GZ_PARTITION` per Gazebo |
+| num_envs | **1** (single-env, verified stable; scale to 4 next) |
+| Isolation | `ROS_DOMAIN_ID` per instance |
 | PX4 port | `PX4_UXRCE_DDS_PORT=8888+instance_id` |
-| PX4 lock | `-i instance_id` → `/tmp/px4_lock-{id}` |
 | PX4 namespace | Instance 0: none; Instance N>0: `/px4_N/` (remapped for drone_controller) |
 | Episode launch | Direct `ros2 run` per node (no launch file) — enables per-node remapping |
 | Episode kill | Process-group SIGTERM only — no global `pkill` (multi-instance safe) |
 | Infra startup | Sequential: UXRCE(t=0) → Gazebo(t=0) → bridge(t=10s) → PX4(t=20s) |
+| PX4 spawn height | `PX4_GZ_MODEL_POSE=0,y,0,0,0,0` — drone spawns sitting on ground (no free-fall) |
+| Gz world reset | **Disabled** — model_only reset doesn't reposition PX4-spawned models; drone_controller TAKEOFF handles repositioning |
+| COM_OF_LOSS_T | **10.0s** — gives new drone_controller 5s margin to establish OFFBOARD before PX4 AUTO.LAND |
 | PX4 readiness | Poll `_obs_ready` (set by `_on_local_pos` callback), 90s timeout |
 | Curriculum | **Phase 1: manual drop disabled** (auto-drop at d_impact ≤ 0.5m) |
-| Best model | `BestModelCallback` saves to `checkpoints/best_model/` on new ep_rew_mean high |
 | total_timesteps | 1,000,000 |
+| WandB run | `nynxn6b5` |
 
-### Key Changes (Phase 1.5)
+### Key Fixes (Phase 1.5 Debugging, 2026-03-19)
 
-1. **`drone_drop_env.py`:**
-   - `instance_id` parameter in `__init__` — drives all isolation
-   - `_start_infra()` / `_kill_infra()` — self-managed Gazebo+PX4+bridge+agent per env
-   - `_RLBridgeNode` accepts `px4_topic_prefix` for namespaced PX4 topics
-   - `_start_episode()` launches nodes via `ros2 run` with PX4 topic remapping
-   - `_kill_episode()` uses process-group kill only (removed global pkill)
-   - `_gz_world_reset()` passes `GZ_PARTITION` to `gz service`
-   - `close()` calls `_kill_infra()`
-2. **`train_sac.py`:** Updated `_make_env` factory to pass `instance_id`
-3. **`hyperparams.yaml`:** `num_envs: 4`
-4. **`start_infra_clean.sh`:** Cleanup-only (cleans instances 0-3 lock files)
+1. **ODE AABB crash fix**: `PX4_GZ_MODEL_POSE` changed from `0,0,5` to `0,y,0`. Drone spawned at z=5 fell 5m during 5s EKF warmup, hitting ground at ~10 m/s → extreme contact + motor forces on spin-up → ODE integer overflow. Spawning at z=0 (sitting on ground) eliminates free-fall.
+2. **Gz world reset removed from episode cycle**: `model_only` reset does NOT reposition PX4-spawned models (they keep their current position). Calling reset during flight caused DetachableJoint inconsistency. Episode reset now just restarts drone_controller + mission_manager; drone takes off from wherever it is.
+3. **COM_OF_LOSS_T 5.0→10.0s**: Race condition — episode kill stops OFFBOARD, PX4 AUTO.LAND fired at t=5s exactly when new drone_controller (5s EKF warmup) tried to re-enter OFFBOARD. Increasing timeout eliminates the race.
+4. **PX4 namespace fix**: Instances 1-3 use `/px4_N/fmu/*` topics (PX4 `-i N` flag). `_RLBridgeNode` and drone_controller now use `px4_topic_prefix` to correctly address namespaced topics.
 
 **Current infra config:**
 - RTF=1 (`x_marker_world.sdf`: `real_time_factor=1, real_time_update_rate=100`)
-- `PX4_SIM_SPEED_FACTOR=1`, `PX4_GZ_MODEL_POSE=0,0,5,0,0,0`
+- `PX4_SIM_SPEED_FACTOR=1`, `PX4_GZ_MODEL_POSE=0,{model_y},0,0,0,0`
 - `obs_wait_timeout: 0.02` (20ms), `use_vision: false`
 
 ---
 
 # 2. Recent Progress
 
+- **Phase 1.5 Debugging (2026-03-19):**
+  - Diagnosed ODE AABB crash: drone spawning at z=5 falls 5m during EKF warmup → high-speed ground impact → crash on motor spin-up. Fixed by `PX4_GZ_MODEL_POSE=0,y,0` (spawn on ground).
+  - Removed gz world reset from episode cycle: model_only reset doesn't work for PX4-spawned models. Episode reset now just kills/restarts episode nodes (no Gazebo service call).
+  - Fixed COM_OF_LOSS_T race: 5s timeout matched EKF warmup exactly → AUTO.LAND preempted new OFFBOARD. Increased to 10s.
+  - Single-env self-managed training stable at fps=30-31. WandB run `nynxn6b5`.
+
 - **Phase 1.5 — Multi-Instance Parallel Training (2026-03-18):**
   - Implemented self-managed infra in `DroneDropEnv` — each instance launches its own Gazebo+PX4+bridge+agent
-  - Added `instance_id` parameter, `GZ_PARTITION` isolation, `PX4_UXRCE_DDS_PORT` per-instance agent port
+  - Added `instance_id` parameter, per-instance MicroXRCEAgent port, ROS_DOMAIN_ID isolation
+  - PX4 namespace fix: `px4_topic_prefix` for `/px4_N/fmu/*` topics (instances > 0)
+  - drone_controller topic remapping via `--ros-args -r` for instances > 0
   - Replaced global `pkill` in `_kill_episode()` with process-group-only kill
-  - Episode nodes launched via direct `ros2 run` with PX4 topic remapping for instances > 0
   - Updated `train_sac.py` factory to pass `instance_id` to `DroneDropEnv`
-  - `hyperparams.yaml` set to `num_envs: 4`
   - `start_infra_clean.sh` updated for multi-instance lock file cleanup
 
 - **Phase 1 Curriculum — Fresh Start (2026-03-18):**
@@ -77,34 +78,21 @@
 
 - **Phase 1–4:** Full Gazebo Harmonic simulation stack (PX4 SITL, ros_gz_bridge, DetachableJoint payload drop)
 - **Phase 5 base:** SAC Gymnasium environment (`drone_drop_env.py`) — 15-dim obs, 5-dim action space; `train_sac.py` with TensorBoard + WandB
-- **2-layer launch architecture:** `infra.launch.py` + `episode.launch.py` → episode cycle ~12 s
-- **Phase 5 enhancements:** `hyperparams.yaml` centralised config; WandB + CUDA + SIGTERM preemption checkpoint; `setup.py` registers yaml as package data
-- **Phase 6 — 4-Layer Hierarchical Reward:**
-  - `_compute_reward()` fully implemented with Layers 1–4; AeroThrow kinematic predictor; auto-drop at 0.5 m; Layer 4 jackpot + instability penalty
-- **Phase 12 — OFFBOARD/TAKEOFF Fix (2026-03-18):**
-  - Fixed OFFBOARD retry race condition (2s→0.5s retry in drone_controller)
-  - Fixed absolute TAKEOFF altitude check (was relative to arm_ned_z, broken with persistent PX4 EKF lag)
-  - fps jumped 4→23 (before multiple instances broke it again)
-- **Phase 11 — Training Running (2026-03-17):**
-  - Fixed Gazebo Harmonic dartsim crash: `reset: {all: true}` → `{model_only: true}` in `_gz_world_reset()`
-  - Fixed EKF yaw preflight failure: added `COM_ARM_WO_GPS=1` + `EKF2_MAG_TYPE=1` to airframe
-  - Training started: WandB run `apax52d7`, ~25 steps/sec
-- **Phase 10 — Disk Space Optimization (2026-03-16):**
-  - TensorBoard disabled, checkpoints capped at 3, docker log limits, 6-hour cron cleanup
-- **Phase 9 — Env Setup + Reward Refactor (2026-03-16):**
-  - GPU driver 580 DKMS, NVIDIA Container Toolkit 1.19.0
-  - Layer 1 reward refactored; num_envs=8→1; W&B configured
+- **Phase 6 — 4-Layer Hierarchical Reward:** `_compute_reward()` with Layers 1–4; AeroThrow kinematic predictor; auto-drop at 0.5m; Layer 4 jackpot + instability penalty
+- **Phase 12 — OFFBOARD/TAKEOFF Fix (2026-03-18):** Fixed OFFBOARD retry race condition, absolute TAKEOFF altitude check; fps 4→23.
 
 ---
 
 # 3. Remaining Tasks (Next Steps)
 
-- [x] **Multi-instance parallel training** — Phase 1.5: self-managed infra, 4 parallel envs via SubprocVecEnv
-- [ ] **Verify 4-env training** — Set `num_envs: 1` first to test self-managed infra, then scale to 4
+- [x] **Multi-instance self-managed infra** — Phase 1.5: DroneDropEnv._start_infra() implemented
+- [x] **Verify single-env training** — stable at fps=30-31 with self-managed infra
+- [ ] **Scale to 4 envs** — Set `num_envs: 4` in hyperparams.yaml and verify all 4 instances arm + reach CRUISE. Each instance spawns at `y = instance_id * 100m`.
 - [ ] **Try RTF=3 or higher** — only after multi-env is stable; update `x_marker_world.sdf` + `PX4_SIM_SPEED_FACTOR`
 - [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`
 - [ ] **Custom SB3 policy** — add PyTorch AMP (mixed precision) for faster L4 training
 - [ ] **Phase 2 curriculum** — re-enable manual drop once policy navigates to target reliably
+- [ ] **Redirect PX4 logs to /dev/null** — `/tmp/px4_{i}.log` files grow to 100+ MB per session (pxh prompt spam)
 
 ---
 
@@ -122,6 +110,9 @@
 | 2026-03-18 | dy97unuj | drone-bombard-sac / L4-AutoDrop-v1 | 546K–560K | — | **Broken run** — missing px4_msgs source caused episode nodes to crash. All episodes stuck in IDLE, 60s CRUISE timeout per reset, fps=5, reward spiraled to -1,560. Killed. |
 | 2026-03-18 | izf10080 | drone-bombard-sac / L4-AutoDrop-v1 | 564K–568K | — | **Stale buffer run** — resumed from polluted checkpoint. ep_rew=-1,900, killed in favor of fresh start. |
 | 2026-03-18 | pbpqa0rp | drone-bombard-sac / L4-AutoDrop-v1 | 0 (fresh) | — | **Fresh Phase 1 training.** Manual drop disabled, WandB metrics callback added. ep_rew=-91 at 6K steps, ent_coef=0.74, fps=28-30. 1M timesteps target. |
+| 2026-03-19 | a9f6lk57 | drone-bombard-sac / L4-AutoDrop-v1 | — | — | **Debug run** — first attempt at self-managed infra (_start_infra). ODE crash immediately (z=5 spawn → free-fall → ground impact → motor spin-up crash). Killed. |
+| 2026-03-19 | 6dopfyjn | drone-bombard-sac / L4-AutoDrop-v1 | ~96K–102K | — | **Debug run** — second attempt (world reset removed). Still crashed until spawn height fixed. Then CRUISE timeouts from COM_OF_LOSS_T race. Killed. |
+| 2026-03-19 | nynxn6b5 | drone-bombard-sac / L4-AutoDrop-v1 | 102K+ (running) | — | **Self-managed infra stable.** Spawn at z=0 (no free-fall), world reset removed, COM_OF_LOSS_T=10s. **fps=30-31 stable**, 0 ODE crashes, 0 CRUISE timeouts. 1M timesteps target. |
 
 ---
 
@@ -138,7 +129,7 @@ docker exec drone-bombard-harmonic bash /workspace/ros2_ws/start_infra_clean.sh
 docker exec drone-bombard-harmonic bash -c "cd /workspace/ros2_ws && source /opt/ros/humble/setup.bash && source /root/ros2_ws/install/setup.bash && colcon build --packages-select rl_navigation && source install/setup.bash"
 
 # 4. Start training (self-manages all infra internally)
-docker exec -d drone-bombard-harmonic bash -c "cd /workspace/ros2_ws && /workspace/ros2_ws/train_managed.sh --fresh > /tmp/train_managed.log 2>&1"
+docker exec -d drone-bombard-harmonic bash -c "cd /workspace/ros2_ws && /workspace/ros2_ws/train_managed.sh > /tmp/train_managed.log 2>&1"
 
 # 5. Monitor
 docker exec drone-bombard-harmonic tail -20 /tmp/train_managed.log

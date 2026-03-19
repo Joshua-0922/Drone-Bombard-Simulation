@@ -10,6 +10,7 @@ Reward structure — 4-Layer Hierarchical:
 import math
 import queue
 import os
+import shutil
 import signal
 import subprocess
 import threading
@@ -76,9 +77,9 @@ class _RLBridgeNode(Node):
         self.mission_state = 'IDLE'
         self.payload_attached = True
 
-        # PX4 topic prefix: empty for instance 0, '/px4_N' for instance N > 0
-        # (PX4 SITL -i N adds namespace px4_N to all UXRCE DDS topics)
-        pfx = px4_topic_prefix
+        # PX4 -i N publishes to /px4_N/fmu/out/* topics on the same
+        # ROS_DOMAIN_ID.  Instance 0 (no -i flag) uses /fmu/out/*.
+        pfx = px4_topic_prefix   # e.g. '' or '/px4_1'
 
         # --- QoS for PX4 topics ---
         px4_qos = QoSProfile(
@@ -256,9 +257,9 @@ class DroneDropEnv(gym.Env):
 
         # --- Instance isolation ---
         self._instance_id = instance_id
-        self._gz_partition = f'drone_env_{instance_id}'
+        # GZ_PARTITION removed — breaks PX4 lockstep; shared Gazebo instead
         self._uxrce_port = 8888 + instance_id
-        # PX4 -i N adds namespace /px4_N for N > 0; instance 0 has no namespace
+        # PX4 -i N publishes to /px4_N/fmu/* topics; instance 0 uses /fmu/*
         self._px4_ns = f'/px4_{instance_id}' if instance_id > 0 else ''
 
         # Set ROS_DOMAIN_ID before rclpy.init() so DDS uses the right domain
@@ -381,8 +382,12 @@ class DroneDropEnv(gym.Env):
         # 2. Kill previous episode processes
         self._kill_episode()
 
-        # 3. Reset Gazebo world (restores all poses + DetachableJoint)
-        self._gz_world_reset()
+        # 3. Skip gz world reset — model_only reset does not reposition
+        #    dynamically-spawned PX4 models, and the DetachableJoint in an
+        #    inconsistent state (payload on ground, drone at altitude) causes
+        #    ODE AABB crashes.  drone_controller TAKEOFF re-positions the drone
+        #    to (0,0,10) each episode regardless of starting pose.
+        # (gz world reset intentionally skipped for Phase 1 curriculum)
 
         # 4. Start fresh episode processes
         self._start_episode()
@@ -689,18 +694,23 @@ class DroneDropEnv(gym.Env):
     # Infrastructure lifecycle (self-managed per instance)
     # ------------------------------------------------------------------
 
-    def _start_infra(self):
-        """Launch Gazebo, MicroXRCEAgent, ros_gz_bridge, and PX4 SITL.
+    # Shared Gazebo flag file — instance 0 creates it after Gazebo is ready;
+    # instances > 0 wait for it before starting PX4.
+    _GZ_READY_FLAG = '/tmp/drone_env_gz_ready'
 
-        Each instance gets isolated infra via GZ_PARTITION + ROS_DOMAIN_ID.
-        PX4 uses -i <instance_id> for unique lock files and
-        PX4_UXRCE_DDS_PORT for the per-instance agent port.
+    def _start_infra(self):
+        """Launch shared Gazebo (instance 0 only), per-instance MicroXRCEAgent
+        and PX4 SITL.
+
+        All instances share ONE Gazebo process (no GZ_PARTITION — it breaks
+        PX4 lockstep with Gazebo Harmonic). Each PX4 spawns its own model
+        at a unique Y-offset position. ROS_DOMAIN_ID isolates ROS2 topics.
         """
         iid = self._instance_id
         infra_env = os.environ.copy()
         infra_env['ROS_DOMAIN_ID'] = str(iid)
-        infra_env['GZ_PARTITION'] = self._gz_partition
         infra_env['XDG_RUNTIME_DIR'] = '/tmp/runtime-root'
+        # No GZ_PARTITION — shared Gazebo for all instances
 
         models_dir = '/workspace/gazebo_models'
         px4_dir = '/opt/PX4-Autopilot'
@@ -713,10 +723,9 @@ class DroneDropEnv(gym.Env):
         os.makedirs('/tmp/runtime-root', exist_ok=True)
 
         self._node.get_logger().info(
-            f'[Instance {iid}] Starting infra (port={self._uxrce_port}, '
-            f'partition={self._gz_partition})...')
+            f'[Instance {iid}] Starting infra (port={self._uxrce_port})...')
 
-        # 1. MicroXRCEAgent
+        # 1. MicroXRCEAgent (per-instance, unique port)
         uxrce = subprocess.Popen(
             ['MicroXRCEAgent', 'udp4', '-p', str(self._uxrce_port)],
             env=infra_env,
@@ -724,52 +733,92 @@ class DroneDropEnv(gym.Env):
             preexec_fn=os.setsid,
         )
 
-        # 2. Gazebo Harmonic (headless, server-only)
-        worlds_dir = os.path.join(models_dir, 'worlds')
-        gz = subprocess.Popen(
-            ['gz', 'sim', '-r', '-s',
-             os.path.join(worlds_dir, 'x_marker_world.sdf')],
-            env=infra_env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            preexec_fn=os.setsid,
-        )
+        # 2. Shared Gazebo + ros_gz_bridge — only instance 0 starts these
+        gz = None
+        bridge = None
+        if iid == 0:
+            # Remove stale ready flag
+            try:
+                os.remove(self._GZ_READY_FLAG)
+            except FileNotFoundError:
+                pass
 
-        # 3. ros_gz_bridge (wait 10s for Gazebo to load world)
-        time.sleep(10)
-        bridge_config = os.path.join(
-            get_package_share_directory('mission_manager'),
-            'config', 'ros_gz_bridge.yaml')
-        bridge = subprocess.Popen(
-            ['ros2', 'run', 'ros_gz_bridge', 'parameter_bridge',
-             '--ros-args', '-p', f'config_file:={bridge_config}'],
-            env=infra_env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            preexec_fn=os.setsid,
-        )
+            worlds_dir = os.path.join(models_dir, 'worlds')
+            gz_log = open(f'/tmp/gz_{iid}.log', 'w')
+            gz = subprocess.Popen(
+                ['gz', 'sim', '-r', '-s',
+                 os.path.join(worlds_dir, 'x_marker_world.sdf')],
+                env=infra_env,
+                stdout=gz_log, stderr=subprocess.STDOUT,
+                preexec_fn=os.setsid,
+            )
+            time.sleep(10)
 
-        # 4. PX4 SITL (wait 10s more for bridge to be ready)
-        time.sleep(10)
+            bridge_config = os.path.join(
+                get_package_share_directory('mission_manager'),
+                'config', 'ros_gz_bridge.yaml')
+            bridge = subprocess.Popen(
+                ['ros2', 'run', 'ros_gz_bridge', 'parameter_bridge',
+                 '--ros-args', '-p', f'config_file:={bridge_config}'],
+                env=infra_env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                preexec_fn=os.setsid,
+            )
+            time.sleep(10)
+
+            # Signal other instances that Gazebo is ready
+            with open(self._GZ_READY_FLAG, 'w') as f:
+                f.write('ready')
+        else:
+            # Wait for instance 0 to start Gazebo
+            deadline = time.time() + 120.0
+            while not os.path.exists(self._GZ_READY_FLAG):
+                if time.time() > deadline:
+                    raise RuntimeError(
+                        f'Instance {iid}: Gazebo ready flag not found after 120s')
+                time.sleep(1.0)
+            # Brief extra wait for Gazebo services to stabilize
+            time.sleep(2)
+
+        # 3. PX4 SITL — each instance spawns its own model at unique position
+        #    Models spread 100m apart on Y axis to avoid collision.
+        model_y = iid * 100
         px4_env = infra_env.copy()
         px4_env.update({
             'PX4_GZ_STANDALONE': '1',
             'PX4_GZ_WORLD': 'x_marker_world',
             'PX4_SIM_MODEL': 'gz_x500_bombard',
             'PX4_SIM_SPEED_FACTOR': '1',
-            'PX4_GZ_MODEL_POSE': '0,0,5,0,0,0',
+            # Spawn with model origin at z=0 → base_link at z=0.24 →
+            # landing gear exactly on the ground.  z=5 caused drone to fall
+            # 5m during EKF warmup (5s), hitting ground at ~10 m/s → extreme
+            # ODE contact forces on motor spin-up → AABB integer overflow crash.
+            'PX4_GZ_MODEL_POSE': f'0,{model_y},0,0,0,0',
             'PX4_UXRCE_DDS_PORT': str(self._uxrce_port),
         })
         px4_bridge_dir = (
             f'{px4_dir}/build/px4_sitl_default/src/modules/simulation/gz_bridge')
         px4_bin = f'{px4_dir}/build/px4_sitl_default/bin/px4'
+        px4_log = open(f'/tmp/px4_{iid}.log', 'w')
+        # Only pass -i for instances > 0; instance 0 uses default.
+        # Copy calibrated parameters.bson to instance rootfs so instance > 0
+        # gets COM_ARM_WO_GPS, EKF2_MAG_TYPE etc. from the airframe.
+        px4_cmd = [px4_bin]
+        if iid > 0:
+            px4_cmd.extend(['-i', str(iid)])
+            rootfs = f'{px4_dir}/build/px4_sitl_default/rootfs'
+            inst_dir = os.path.join(rootfs, str(iid))
+            os.makedirs(inst_dir, exist_ok=True)
+            shutil.copy2(os.path.join(rootfs, 'parameters.bson'), inst_dir)
         px4 = subprocess.Popen(
-            [px4_bin, '-i', str(iid)],
+            px4_cmd,
             cwd=px4_bridge_dir,
             env=px4_env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=px4_log, stderr=subprocess.STDOUT,
             preexec_fn=os.setsid,
         )
 
-        self._infra_procs = [uxrce, gz, bridge, px4]
+        self._infra_procs = [p for p in [uxrce, gz, bridge, px4] if p is not None]
 
         # Wait for PX4 readiness (obs_ready set by _on_local_pos callback)
         self._node.get_logger().info(
@@ -844,18 +893,23 @@ class DroneDropEnv(gym.Env):
 
         self._episode_procs = []
 
+        # Log file for episode node output (debug)
+        iid = self._instance_id
+        ep_log = open(f'/tmp/episode_{iid}.log', 'w')
+
         # mission_manager (no PX4 topics — only /drone/cmd/* and /mission/state)
         proc = subprocess.Popen(
             ['ros2', 'run', 'mission_manager', 'mission_manager_node'],
-            env=ep_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=ep_env, stdout=ep_log, stderr=subprocess.STDOUT,
             preexec_fn=os.setsid,
         )
         self._episode_procs.append(proc)
 
-        # drone_controller (uses PX4 topics — remap for instances > 0)
+        # drone_controller — PX4 -i N publishes to /px4_N/fmu/* topics,
+        # so controller needs topic remapping for instances > 0
         ctrl_cmd = ['ros2', 'run', 'drone_controller', 'controller']
-        if self._instance_id > 0:
-            ns = self._px4_ns
+        if iid > 0:
+            ns = self._px4_ns   # e.g. '/px4_1'
             ctrl_cmd.extend([
                 '--ros-args',
                 '-r', f'/fmu/in/offboard_control_mode:={ns}/fmu/in/offboard_control_mode',
@@ -863,9 +917,10 @@ class DroneDropEnv(gym.Env):
                 '-r', f'/fmu/in/vehicle_command:={ns}/fmu/in/vehicle_command',
                 '-r', f'/fmu/out/vehicle_status:={ns}/fmu/out/vehicle_status',
             ])
+        ctrl_log = open(f'/tmp/ctrl_{iid}.log', 'w')
         proc = subprocess.Popen(
             ctrl_cmd,
-            env=ep_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            env=ep_env, stdout=ctrl_log, stderr=subprocess.STDOUT,
             preexec_fn=os.setsid,
         )
         self._episode_procs.append(proc)
@@ -886,9 +941,6 @@ class DroneDropEnv(gym.Env):
         DetachableJoint. Uses model_only (not all) to avoid dartsim crash when
         DetachableJoint payload has been previously detached.
         """
-        # Pass GZ_PARTITION so gz service reaches the correct Gazebo instance
-        gz_env = os.environ.copy()
-        gz_env['GZ_PARTITION'] = self._gz_partition
         try:
             subprocess.run(
                 [
@@ -899,7 +951,6 @@ class DroneDropEnv(gym.Env):
                     '--timeout', '3000',
                     '--req', 'reset: {model_only: true}',
                 ],
-                env=gz_env,
                 timeout=5.0,
                 check=False,
             )
@@ -907,10 +958,9 @@ class DroneDropEnv(gym.Env):
             if rclpy.ok():
                 self._node.get_logger().warning('gz world reset timed out')
         # Settle: physics registers joint re-attachment AND PX4 EKF absorbs the
-        # pose snap.  3 s here + 2 s arm delay (40 ticks × 20 Hz in drone_controller)
+        # pose snap.  3 s here + 2 s arm delay (40 ticks x 20 Hz in drone_controller)
         # = 5 s total before arming — sufficient for EKF to reconverge after the
-        # world-reset position discontinuity.  This was the proven working value
-        # in Phase 7-10 training.
+        # world-reset position discontinuity.
         time.sleep(3.0)
 
     def _wait_for_cruise(self):

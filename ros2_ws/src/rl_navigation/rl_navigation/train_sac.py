@@ -271,11 +271,15 @@ def main(args=None):
             device=cfg_sac.get('device', 'cuda'),
             tensorboard_log=None,
         )
-        # Reload replay buffer if preempt checkpoint exists
+        # Reload replay buffer if preempt checkpoint exists.
+        # Skip if num_envs changed — buffer n_envs must match current env.
         replay_path = cli.resume.replace('.zip', '_replay.pkl')
-        if os.path.exists(replay_path):
+        if os.path.exists(replay_path) and num_envs <= 1:
             print(f'Loading replay buffer from {replay_path} ...')
             _model.load_replay_buffer(replay_path)
+        elif os.path.exists(replay_path):
+            print(f'Skipping replay buffer (num_envs={num_envs}, '
+                  f'buffer was single-env — shape mismatch)')
     else:
         _model = SAC(
             'MlpPolicy',
