@@ -3,7 +3,7 @@ training:
   checkpoint_freq: 5000
   max_checkpoints_kept: 5        # keep only last 5 rolling checkpoints
   checkpoint_dir: "/workspace/ros2_ws/rl_checkpoints"
-  num_envs: 1              # DRYRUN: set to 4 after single-env validation
+  num_envs: 1              # Stable single-env (multi-env Gazebo lockstep overhead > benefit)
   env_stagger_secs: 10    # 10s stagger between SubprocVecEnv instance inits
 
 sac:
