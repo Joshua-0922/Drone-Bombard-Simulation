@@ -543,6 +543,12 @@ class DroneDropEnv(gym.Env):
             info['drop_error_actual_m'] = d_error
             info['is_success'] = bool(d_error <= 0.5)
             info['layer4_reward'] = reward
+            # Reward component keys (consistent schema with non-terminal steps)
+            info['rew_drop'] = reward      # full Layer 4 reward
+            info['rew_ctrl'] = 0.0
+            info['rew_dist'] = 0.0
+            info['rew_orient'] = 0.0
+            info['d_xy'] = d_xy            # drone was at this distance when dropped
             terminated = True
 
         else:
@@ -737,6 +743,11 @@ class DroneDropEnv(gym.Env):
         info['r3'] = r3
         info['d_xy'] = d_xy
         info['cos_heading'] = cos_heading
+        # Split reward components for per-rollout WandB monitoring
+        info['rew_ctrl'] = r2
+        info['rew_dist'] = r3_dist
+        info['rew_orient'] = self._cfg_w_heading * cos_heading
+        info['rew_drop'] = 0.0
 
         return reward, False, info
 

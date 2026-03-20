@@ -7,7 +7,7 @@
 # 1. Current State
 
 ## Method A — 1-World-4-Payload Architecture (2026-03-20)
-**Production training RUNNING** — fresh start, 20K steps, 33 fps stable.
+**Production training RUNNING** — resumed from preempt checkpoint (`sac_drop_preempt.zip`, ~52K steps), WandB run `mjfet61f`. WandB now logs full reward component breakdown and drop accuracy metrics.
 
 ### Training Environment Summary
 
@@ -128,6 +128,7 @@
 - [x] **Single-env dry-run** — 31 fps, 16 episodes, 0 ODE crashes (run `ljbn3wfg`)
 - [x] **Multi-env testing** — 4-env: PX4 lockstep crash (2 of 4 PX4s die); 2-env: 10 fps total vs 31 fps single (lockstep overhead). Fallback to num_envs=1.
 - [x] **Production training started** — num_envs=1, 31 fps, actual physics reward (d_xy + drop_calculator)
+- [x] **WandB reward component monitoring** — `WandbMetricsCallback` now logs `env/mean_d_xy`, `env/mean_rew_ctrl`, `env/mean_rew_dist`, `env/mean_rew_orient`, `env/mean_rew_drop`, `env/drop_error_actual_m`, `env/success_rate`, `env/drop_count`; `drone_drop_env.py` exposes split `rew_*` keys in info dict for both terminal and non-terminal steps
 - [ ] **Investigate RTF>1** — try PX4_SIM_SPEED_FACTOR>1 to increase training speed for single-env
 - [ ] **Try RTF=3 or higher** — update `x_marker_world.sdf` + PX4_SIM_SPEED_FACTOR together
 - [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`
@@ -160,6 +161,7 @@
 | 2026-03-19 | nynxn6b5 | drone-bombard-sac / L4-AutoDrop-v1 | 102K+ (running) | — | **Self-managed infra stable.** Spawn at z=0 (no free-fall), world reset removed, COM_OF_LOSS_T=10s. **fps=30-31 stable**, 0 ODE crashes, 0 CRUISE timeouts. 1M timesteps target. |
 | 2026-03-20 | ljbn3wfg | drone-bombard-sac / L4-AutoDrop-v1 | 8K (dry-run) | — | **Method A dry-run.** Dynamic PX4 spawn (PX4_SIM_MODEL=gz_x500_bombard_r0), px4_msgs fix (source /root/ros2_ws). **31 fps, 16 episodes, 0 ODE crashes.** Infra stable — proceeding to 4-env test. |
 | 2026-03-20 | cj3ytvq2 | drone-bombard-sac / L4-AutoDrop-v1 | 20K (running) | — | **Production Method A training — FRESH START.** num_envs=1, RTF=1, 33 fps, actual physics reward (d_xy + drop_calculator). ep_rew_mean=−545 at 20K. Multi-env failed (see table above). 1M timesteps. |
+| 2026-03-20 | mjfet61f | drone-bombard-sac / L4-AutoDrop-v1 | 52K (resumed) | — | **WandB reward monitoring added.** Resumed from preempt (~52K steps). New metrics: `env/mean_d_xy`, `env/mean_rew_ctrl`, `env/mean_rew_dist`, `env/mean_rew_orient`, `env/drop_error_actual_m`, `env/success_rate`. |
 
 ---
 

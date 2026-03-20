@@ -42,9 +42,35 @@ def _emergency_save(signum, frame):
 
 
 class WandbMetricsCallback(BaseCallback):
-    """Forward SB3 rollout/train metrics to WandB on each rollout end."""
+    """Forward SB3 rollout/train metrics + env custom metrics to WandB."""
+
+    def __init__(self):
+        super().__init__()
+        self._ep_drop_errors: list = []
+        self._ep_success_flags: list = []
+        self._step_d_xy: list = []
+        self._step_rew_ctrl: list = []
+        self._step_rew_dist: list = []
+        self._step_rew_orient: list = []
+        self._step_rew_drop: list = []
 
     def _on_step(self):
+        infos = self.locals.get('infos', [])
+        dones = self.locals.get('dones', [])
+        for info, done in zip(infos, dones):
+            if 'd_xy' in info:
+                self._step_d_xy.append(info['d_xy'])
+            if 'rew_ctrl' in info:
+                self._step_rew_ctrl.append(info['rew_ctrl'])
+            if 'rew_dist' in info:
+                self._step_rew_dist.append(info['rew_dist'])
+            if 'rew_orient' in info:
+                self._step_rew_orient.append(info['rew_orient'])
+            if 'rew_drop' in info:
+                self._step_rew_drop.append(info['rew_drop'])
+            if done and 'drop_error_actual_m' in info:
+                self._ep_drop_errors.append(info['drop_error_actual_m'])
+                self._ep_success_flags.append(float(info['is_success']))
         return True
 
     def _on_rollout_end(self):
@@ -59,6 +85,29 @@ class WandbMetricsCallback(BaseCallback):
             val = self.logger.name_to_value.get(key)
             if val is not None:
                 log_dict[key] = val
+
+        def _mean(lst):
+            return sum(lst) / len(lst) if lst else None
+
+        for attr, key in (
+            ('_step_d_xy',       'env/mean_d_xy'),
+            ('_step_rew_ctrl',   'env/mean_rew_ctrl'),
+            ('_step_rew_dist',   'env/mean_rew_dist'),
+            ('_step_rew_orient', 'env/mean_rew_orient'),
+            ('_step_rew_drop',   'env/mean_rew_drop'),
+        ):
+            lst = getattr(self, attr)
+            if lst:
+                log_dict[key] = _mean(lst)
+                lst.clear()
+
+        if self._ep_drop_errors:
+            log_dict['env/drop_error_actual_m'] = _mean(self._ep_drop_errors)
+            log_dict['env/success_rate'] = _mean(self._ep_success_flags)
+            log_dict['env/drop_count'] = len(self._ep_drop_errors)
+            self._ep_drop_errors.clear()
+            self._ep_success_flags.clear()
+
         if log_dict:
             log_dict['time/total_timesteps'] = self.num_timesteps
             wandb.log(log_dict, step=self.num_timesteps)
