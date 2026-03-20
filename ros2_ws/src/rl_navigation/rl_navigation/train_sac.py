@@ -123,6 +123,21 @@ class WandbMetricsCallback(BaseCallback):
             wandb.log(log_dict, step=self.num_timesteps)
 
 
+class CurriculumCallback(BaseCallback):
+    """Log curriculum stage transitions to WandB."""
+
+    def _on_step(self):
+        infos = self.locals.get('infos', [])
+        for info in infos:
+            if 'curriculum_stage' in info:
+                if wandb.run:
+                    wandb.log({
+                        'curriculum/stage': info['curriculum_stage'],
+                        'curriculum/name': info.get('curriculum_name', 'unknown'),
+                    }, step=self.num_timesteps)
+        return True
+
+
 class BestModelCallback(BaseCallback):
     """Save model when mean episode reward reaches a new best.
 
@@ -320,10 +335,12 @@ def main(args=None):
         verbose=2,
     )
     wandb_metrics_callback = WandbMetricsCallback()
+    curriculum_callback = CurriculumCallback()
     callbacks = CallbackList([
         checkpoint_callback, cleanup_callback,
         best_model_callback, milestone_callback,
-        wandb_callback, wandb_metrics_callback])
+        wandb_callback, wandb_metrics_callback,
+        curriculum_callback])
 
     # --- Model ---
     if cli.resume:

@@ -30,7 +30,8 @@ environment:
   min_altitude: 2.0
   min_altitude_start_step: 20
   obs_wait_timeout: 0.02     # 20 ms — 10x safety margin at 500 Hz wall-clock (PX4_SIM_SPEED_FACTOR=10)
-  cruise_poll_timeout: 60.0
+  cruise_altitude: 5.0        # teleport drone to this altitude on reset (skip TAKEOFF)
+  cruise_poll_timeout: 20.0   # reduced from 60s: TAKEOFF skipped, CRUISE reached in <10s
   use_vision: false          # disable camera-based obs/termination for RL training
 
 reward:
@@ -65,6 +66,47 @@ reward:
   penalty_crash: -10.0      # altitude below min_altitude after step 20
   penalty_overspeed: -8.0   # speed > 20 m/s
   penalty_target_lost: -10.0 # vision confidence == 0 (only if use_vision: true)
+
+curriculum:
+  enabled: true
+  stages:
+    - name: "close"
+      spawn_distance_min: 3.0
+      spawn_distance_max: 8.0
+      max_steps: 150
+      use_vision: false
+      mask_ground_truth: false
+      advance_threshold: 0.6      # success_rate to advance
+      advance_window: 50          # episodes to evaluate
+    - name: "medium"
+      spawn_distance_min: 8.0
+      spawn_distance_max: 20.0
+      max_steps: 300
+      use_vision: false
+      mask_ground_truth: false
+      advance_threshold: 0.5
+      advance_window: 50
+    - name: "full"
+      spawn_distance_min: 20.0
+      spawn_distance_max: 50.0
+      max_steps: 500
+      use_vision: false
+      mask_ground_truth: false
+      advance_threshold: 0.4
+      advance_window: 50
+    - name: "vision"
+      spawn_distance_min: 20.0
+      spawn_distance_max: 50.0
+      max_steps: 500
+      use_vision: true
+      mask_ground_truth: true     # rel_x, rel_y → 0 (pure vision-based navigation)
+
+optuna:
+  trial_budget: 50000             # training steps per trial
+  n_trials: 50                    # total Optuna trials
+  eval_freq: 5000                 # evaluate every N steps within a trial
+  storage: "sqlite:///optuna_drone.db"  # persistent storage for Spot VM resilience
+  restart_infra_every: 10         # restart Gazebo every N trials (memory leak defence)
 
 wandb:
   project: "drone-bombard-sac"

@@ -11,6 +11,7 @@ Method A (1-World-4-Payload): 4 drones/payloads pre-spawned in shared Gazebo wor
 ros_gz_bridge. Drop accuracy based on real Gazebo physics, NOT kinematic prediction.
 """
 
+import collections
 import math
 import queue
 import os
@@ -40,6 +41,12 @@ try:
     _PX4_AVAILABLE = True
 except ImportError:
     _PX4_AVAILABLE = False
+
+try:
+    from vision_detection.msg import DetectionResult
+    _VISION_MSG_AVAILABLE = True
+except ImportError:
+    _VISION_MSG_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Module-level scaling constants (used in _get_obs; also mirrored in yaml)
@@ -78,6 +85,9 @@ class _RLBridgeNode(Node):
         self.roll = 0.0
         self.pitch = 0.0
         self.pixel_coords = np.zeros(3, dtype=np.float32)   # u, v, conf
+        # DetectionResult fields for expanded obs (bbox size)
+        self.bbox_width = 0.0
+        self.bbox_height = 0.0
         self.mission_state = 'IDLE'
         self.payload_attached = True
 
@@ -124,6 +134,12 @@ class _RLBridgeNode(Node):
             Odometry, '/drone/payload/position', self._on_payload_pos, 10)
         self.create_subscription(
             Bool, '/drone/payload/drop_cmd_raw', self._on_drop_cmd_raw, 10)
+
+        # Vision DetectionResult (bbox size for distance estimation)
+        if _VISION_MSG_AVAILABLE:
+            self.create_subscription(
+                DetectionResult, '/vision/detections',
+                self._on_detection, 10)
 
         # Drop error (published by drop_calculator after impact; used for logging)
         from std_msgs.msg import Float32
@@ -217,6 +233,16 @@ class _RLBridgeNode(Node):
             self.pixel_coords[1] = msg.y   # v
             self.pixel_coords[2] = msg.z   # confidence
 
+    def _on_detection(self, msg):
+        """Update bbox dimensions from DetectionResult."""
+        with self._lock:
+            if msg.detected:
+                self.bbox_width = msg.bbox_width
+                self.bbox_height = msg.bbox_height
+            else:
+                self.bbox_width = 0.0
+                self.bbox_height = 0.0
+
     def _on_mission_state(self, msg):
         with self._lock:
             self.mission_state = msg.data
@@ -295,7 +321,10 @@ class _RLBridgeNode(Node):
 class DroneDropEnv(gym.Env):
     """Gymnasium env: SAC trains a fly-by precision-drop policy.
 
-    Observation: Box(15,) float32
+    Observation: Box(17,) float32
+      [0-2]  position ENU, [3-5] velocity ENU, [6-8] angular velocity,
+      [9-11] pixel u/v/confidence, [12] payload attached,
+      [13-14] relative x/y to target, [15-16] bbox width/height (vision)
     Action:      Box(5,)  float32 in [-1, 1]
       [0] vx command (scaled by action_vx_scale)
       [1] vy command (scaled by action_vy_scale)
@@ -355,7 +384,8 @@ class DroneDropEnv(gym.Env):
         self._cfg_min_altitude = cfg_env.get('min_altitude', 2.0)
         self._cfg_min_alt_start = cfg_env.get('min_altitude_start_step', 20)
         self._cfg_obs_wait = cfg_env.get('obs_wait_timeout', 0.15)
-        self._cfg_cruise_timeout = cfg_env.get('cruise_poll_timeout', 60.0)
+        self._cfg_cruise_altitude = cfg_env.get('cruise_altitude', 5.0)
+        self._cfg_cruise_timeout = cfg_env.get('cruise_poll_timeout', 20.0)
         # use_vision=False: skip camera termination + synthesise conf=1.0 in obs
         self._cfg_use_vision = cfg_env.get('use_vision', True)
 
@@ -383,8 +413,23 @@ class DroneDropEnv(gym.Env):
         # Layer 4: time to wait for actual physics landing result from drop_calculator
         self._cfg_drop_wait_timeout = r.get('drop_wait_timeout', 10.0)
 
+        # --- Curriculum learning ---
+        cfg_curriculum = {}
+        if config_path is not None:
+            cfg_curriculum = cfg.get('curriculum', {})
+        self._curriculum_enabled = cfg_curriculum.get('enabled', False)
+        self._curriculum_stages = cfg_curriculum.get('stages', [])
+        self._curriculum_idx = 0
+        max_window = max(
+            (s.get('advance_window', 50) for s in self._curriculum_stages),
+            default=50,
+        )
+        self._curriculum_successes = collections.deque(maxlen=max_window)
+        # Cache current stage settings
+        self._update_curriculum_settings()
+
         self.observation_space = gym.spaces.Box(
-            low=-1.0, high=1.0, shape=(15,), dtype=np.float32)
+            low=-1.0, high=1.0, shape=(17,), dtype=np.float32)
         self.action_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(5,), dtype=np.float32)
 
@@ -448,6 +493,9 @@ class DroneDropEnv(gym.Env):
         with self._state_lock:
             self._node.payload_attached = True
             self._node.mission_state = 'IDLE'  # avoid stale CRUISE from last episode
+
+        # 1b. Refresh curriculum settings (max_steps, use_vision may change)
+        self._update_curriculum_settings()
 
         # 2. Kill previous episode processes.
         self._kill_episode()
@@ -612,16 +660,81 @@ class DroneDropEnv(gym.Env):
         self._episode_reward += reward
         if terminated or truncated:
             info['episode_reward'] = self._episode_reward
+            # Curriculum: track success for stage advancement
+            if self._curriculum_enabled:
+                is_success = info.get('is_success', False)
+                self._curriculum_successes.append(1.0 if is_success else 0.0)
+                self._check_curriculum_advance()
+                idx, name = self.current_curriculum_stage
+                info['curriculum_stage'] = idx
+                info['curriculum_name'] = name
 
         return obs, reward, terminated, truncated, info
 
-    def close(self):
-        """Shutdown episode nodes, infrastructure, and ROS2."""
+    def close(self, keep_infra=False):
+        """Shutdown episode nodes, infrastructure, and ROS2.
+
+        Args:
+            keep_infra: If True, keep Gazebo/PX4 running (for Optuna trials).
+        """
         self._kill_episode()
-        self._kill_infra()
+        if not keep_infra:
+            self._kill_infra()
         if rclpy.ok():
             self._node.destroy_node()
             rclpy.shutdown()
+
+    # ------------------------------------------------------------------
+    # Curriculum learning
+    # ------------------------------------------------------------------
+
+    def _update_curriculum_settings(self):
+        """Cache current stage settings into instance attributes."""
+        if not self._curriculum_enabled or not self._curriculum_stages:
+            self._curr_stage_mask_gt = False
+            return
+        stage = self._curriculum_stages[self._curriculum_idx]
+        self._cfg_max_steps = stage.get('max_steps', 500)
+        self._cfg_use_vision = stage.get('use_vision', False)
+        self._curr_stage_mask_gt = stage.get('mask_ground_truth', False)
+
+    def _check_curriculum_advance(self):
+        """Check if success rate meets threshold to advance to next stage."""
+        if not self._curriculum_enabled:
+            return
+        if self._curriculum_idx >= len(self._curriculum_stages) - 1:
+            return  # already at final stage
+        stage = self._curriculum_stages[self._curriculum_idx]
+        window = stage.get('advance_window', 50)
+        threshold = stage.get('advance_threshold', 0.5)
+        if len(self._curriculum_successes) < window:
+            return
+        recent = list(self._curriculum_successes)[-window:]
+        success_rate = sum(recent) / len(recent)
+        if success_rate >= threshold:
+            self._curriculum_idx += 1
+            self._curriculum_successes.clear()
+            self._update_curriculum_settings()
+            new_stage = self._curriculum_stages[self._curriculum_idx]
+            self._node.get_logger().info(
+                f'[Curriculum] Advanced to stage {self._curriculum_idx}: '
+                f'{new_stage.get("name", "unknown")} '
+                f'(success_rate={success_rate:.2f} >= {threshold})')
+
+    @property
+    def current_curriculum_stage(self):
+        """Return current curriculum stage index and name."""
+        if not self._curriculum_enabled or not self._curriculum_stages:
+            return 0, 'default'
+        stage = self._curriculum_stages[self._curriculum_idx]
+        return self._curriculum_idx, stage.get('name', 'unknown')
+
+    def set_reward_weights(self, **kwargs):
+        """Override reward weights at runtime (used by Optuna)."""
+        for key, val in kwargs.items():
+            attr = f'_cfg_{key}'
+            if hasattr(self, attr):
+                setattr(self, attr, val)
 
     # ------------------------------------------------------------------
     # Kinematic predictor — AeroThrow projectile physics
@@ -807,6 +920,8 @@ class DroneDropEnv(gym.Env):
             ang = self._node.ang_vel.copy()
             pix = self._node.pixel_coords.copy()
             attached = float(self._node.payload_attached)
+            bbox_w = self._node.bbox_width
+            bbox_h = self._node.bbox_height
 
         pos_n = np.nan_to_num(pos / POS_SCALE, nan=0.0)
         vel_n = np.nan_to_num(vel / VEL_SCALE, nan=0.0)
@@ -829,6 +944,20 @@ class DroneDropEnv(gym.Env):
         rel_dx = (pos_clean[0] - self._cfg_target_x) / POS_SCALE
         rel_dy = (pos_clean[1] - self._cfg_target_y) / POS_SCALE
 
+        # Curriculum Stage 4 (vision): mask ground-truth relative position
+        # so agent learns to navigate using only vision features.
+        if self._curr_stage_mask_gt:
+            rel_dx = 0.0
+            rel_dy = 0.0
+
+        # Bounding box size (distance proxy: larger bbox = closer to target)
+        if self._cfg_use_vision:
+            bbox_w_norm = np.clip(bbox_w / 640.0, 0.0, 1.0)
+            bbox_h_norm = np.clip(bbox_h / 480.0, 0.0, 1.0)
+        else:
+            bbox_w_norm = 0.0
+            bbox_h_norm = 0.0
+
         obs = np.array([
             *np.clip(pos_n, -1.0, 1.0),    # 0-2  world position (ENU, normalised)
             *np.clip(vel_n, -1.0, 1.0),    # 3-5  world velocity (ENU, normalised)
@@ -837,6 +966,8 @@ class DroneDropEnv(gym.Env):
             attached,                       # 12   payload attached flag
             np.clip(rel_dx, -1.0, 1.0),    # 13   relative x to target (normalised)
             np.clip(rel_dy, -1.0, 1.0),    # 14   relative y to target (normalised)
+            bbox_w_norm,                    # 15   bbox width (normalised, vision only)
+            bbox_h_norm,                    # 16   bbox height (normalised, vision only)
         ], dtype=np.float32)
         return obs
 
@@ -1032,6 +1163,12 @@ class DroneDropEnv(gym.Env):
             f'  ros_type_name: std_msgs/msg/Empty\n'
             f'  gz_type_name: gz.msgs.Empty\n'
             f'  direction: ROS_TO_GZ\n'
+            f'\n'
+            f'- ros_topic_name: /camera/rgb/image_raw\n'
+            f'  gz_topic_name: /{self._model_name}/down_camera/image_raw\n'
+            f'  ros_type_name: sensor_msgs/msg/Image\n'
+            f'  gz_type_name: gz.msgs.Image\n'
+            f'  direction: GZ_TO_ROS\n'
         )
         with open(bridge_cfg_path, 'w') as f:
             f.write(bridge_cfg_content)
@@ -1084,7 +1221,17 @@ class DroneDropEnv(gym.Env):
             preexec_fn=os.setsid,
         )
 
-        self._infra_procs = [p for p in [uxrce, gz, bridge, px4] if p is not None]
+        # 4. YOLO vision node (infra-level: model loading ~5s, reused across episodes)
+        yolo = None
+        if _VISION_MSG_AVAILABLE:
+            yolo = subprocess.Popen(
+                ['ros2', 'run', 'vision_detection', 'xmarker_detector'],
+                env=infra_env,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                preexec_fn=os.setsid,
+            )
+
+        self._infra_procs = [p for p in [uxrce, gz, bridge, px4, yolo] if p is not None]
         # Note: bridge is always non-None (per-instance); gz is None for iid > 0
 
         # Wait for PX4 readiness (obs_ready set by _on_local_pos callback)
@@ -1165,8 +1312,10 @@ class DroneDropEnv(gym.Env):
         ep_log = open(f'/tmp/episode_{iid}.log', 'w')
 
         # mission_manager (no PX4 topics — only /drone/cmd/* and /mission/state)
+        # skip_takeoff=true: drone already at cruise altitude via set_pose teleport
         proc = subprocess.Popen(
-            ['ros2', 'run', 'mission_manager', 'mission_manager_node'],
+            ['ros2', 'run', 'mission_manager', 'mission_manager_node',
+             '--ros-args', '-p', 'skip_takeoff:=true'],
             env=ep_env, stdout=ep_log, stderr=subprocess.STDOUT,
             preexec_fn=os.setsid,
         )
@@ -1204,28 +1353,35 @@ class DroneDropEnv(gym.Env):
         self._episode_procs.append(proc)
 
     def _gz_reset_poses(self):
-        """Teleport drone and payload to upright spawn positions between episodes.
+        """Teleport drone and payload to cruise altitude between episodes.
 
-        Root cause of CRUISE timeout recurrence: after each episode the drone
-        may crash/flip (roll=π).  Motors on an inverted drone push DOWN, so
-        TAKEOFF never reaches altitude → perpetual CRUISE timeouts.
-
-        fix: use set_pose/blocking to snap both models to spawn before the new
-        drone_controller starts its 5 s EKF warmup.  0.5 s settle is enough
-        because EKF reconvergence happens during the warmup, not here.
-
-        If the payload was previously detached (dropped), it just sits freely
-        at spawn; no DetachableJoint impulse because the joint is already gone.
-        If the payload is still attached, both models align at the correct
-        relative offset (z_drone=0, z_payload=0.14) → zero constraint error.
+        When curriculum is enabled, spawns at a random distance from the
+        target within the current stage's [spawn_distance_min, max] range.
+        Otherwise spawns at the default position (Gazebo origin + instance offset).
         """
         iid = self._instance_id
         model_y = iid * 150   # Method A: 150m Y-offset per instance
         gz_world = 'x_marker_world'
+        cruise_alt = self._cfg_cruise_altitude
+
+        if self._curriculum_enabled and self._curriculum_stages:
+            stage = self._curriculum_stages[self._curriculum_idx]
+            d_min = stage.get('spawn_distance_min', 3.0)
+            d_max = stage.get('spawn_distance_max', 50.0)
+            d = np.random.uniform(d_min, d_max)
+            angle = np.random.uniform(0, 2 * math.pi)
+            # Target in Gazebo world frame: (11.0, 10.0 + instance_offset, 0)
+            gz_target_x = 11.0
+            gz_target_y = 10.0 + model_y
+            spawn_x = gz_target_x - d * math.cos(angle)
+            spawn_y = gz_target_y - d * math.sin(angle)
+        else:
+            spawn_x = 0.0
+            spawn_y = float(model_y)
 
         for name, x, y, z in [
-            (self._model_name,   0.0, float(model_y), 0.0),    # drone on ground
-            (self._payload_name, 0.0, float(model_y), 0.14),   # payload at mount height
+            (self._model_name,   spawn_x, spawn_y, cruise_alt),
+            (self._payload_name, spawn_x, spawn_y, cruise_alt + 0.14),
         ]:
             subprocess.run(
                 [

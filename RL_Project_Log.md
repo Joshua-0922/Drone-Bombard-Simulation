@@ -6,8 +6,8 @@
 
 # 1. Current State
 
-## Method A — 1-World-4-Payload Architecture (2026-03-20)
-**Production training RUNNING** — resumed from preempt `08:26` (~114K steps), WandB run `8otphxy8`. Linear distance reward active (`w_dist=1.0`). CRUISE retry added. Explosion defence in place.
+## Method A — 1-World-4-Payload Architecture (2026-03-21)
+**Major architecture upgrade:** 4 enhancements implemented — TAKEOFF skip (altitude teleport), 4-stage curriculum learning, YOLO vision integration (17D obs), Optuna HPO. Requires fresh training start (obs space changed 15→17).
 
 ### Training Environment Summary
 
@@ -29,7 +29,11 @@
 | **Drop trigger** | `d_xy ≤ 0.5 m` (2D horizontal distance, no kinematic prediction) |
 | **Drop reward** | Actual physics from `drop_calculator` (`/rl/drop_error`), 10s timeout |
 | **Target** | (11, 10, 0) ENU — X-marker `x_marker_0` |
-| **Bridge config** | `/tmp/ros_gz_bridge_0.yaml` — `payload_0/odometry` + `x500_0/drop` |
+| **Bridge config** | `/tmp/ros_gz_bridge_0.yaml` — `payload_0/odometry` + `x500_0/drop` + camera image |
+| **Obs space** | **17D** (was 15D): +bbox_width, +bbox_height (vision features) |
+| **Curriculum** | 4-stage: Close(3-8m) → Medium(8-20m) → Full(20-50m) → Vision(20-50m, pure vision) |
+| **TAKEOFF** | Skipped via altitude teleport (`skip_takeoff=true`) — saves 10-20s/episode |
+| **Optuna** | `tune_optuna.py` — SAC HPO with MedianPruner, SQLite persistence |
 | **WandB** | `cj3ytvq2` (production) · `ljbn3wfg` (dry-run) |
 
 ### Multi-env Test Results (2026-03-20)
@@ -56,6 +60,13 @@
 ---
 
 # 2. Recent Progress
+
+- **4-Enhancement Architecture Upgrade (2026-03-21):**
+  - **Task 4 — TAKEOFF skip:** `_gz_reset_poses()` now teleports drone to `cruise_altitude` (5.0m). `mission_manager_node` gains `skip_takeoff` ROS parameter → bypasses TAKEOFF state, directly enters CRUISE once armed. Saves 10-20s per episode reset. `cruise_poll_timeout` reduced 60→20s.
+  - **Task 2 — Curriculum learning:** 4-stage progression (Close 3-8m, Medium 8-20m, Full 20-50m, Vision 20-50m). Auto-advances when `success_rate > threshold` over `advance_window` episodes. Stage-specific `max_steps` and `use_vision` toggle. Stage 4 masks `rel_x, rel_y` for pure vision-based navigation. `CurriculumCallback` logs stage to WandB.
+  - **Task 1 — YOLO vision integration:** Obs space expanded 15→17D (+`bbox_width_norm`, +`bbox_height_norm`). `_RLBridgeNode` subscribes to `/vision/detections` (DetectionResult). Camera image bridge added to infra bridge YAML. YOLO node launched at infra level (not per-episode). Stage 4 masks ground-truth `rel_x, rel_y` → agent uses only vision features.
+  - **Task 3 — Optuna HPO:** New `tune_optuna.py` script. Searches SAC params (lr, buffer_size, batch_size, gamma, tau, net_arch) with TPE sampler + MedianPruner. SQLite storage for Spot VM resilience. Each trial logs to WandB group. `close(keep_infra=True)` for Gazebo reuse between trials.
+  - **Breaking change:** obs 15→17D requires fresh training start. All existing checkpoints incompatible.
 
 - **Method A Dry-run Passed (2026-03-20):**
   - Discovered `PX4_GZ_MODEL_NAME` (pre-spawn mode) causes ODE crash: all 4 motor plugins activate simultaneously at physics step 1. Switched to dynamic spawn via `PX4_SIM_MODEL`.
@@ -135,16 +146,16 @@
 - [x] **Three-layer physics explosion defence** — (1) `_on_local_pos` now rejects finite positions with `|pos| > 1000 m` (retains last-known-good), blocking explosions at source; (2) explosion guard upgraded: `not isfinite(d_xy) or d_xy > 500` catches NaN hole; (3) glitch step uses key `glitch_d_xy` not `d_xy`, so WandbMetricsCallback never averages it into `env/mean_d_xy`; glitch count logged as `env/physics_glitch_count`
 - [x] **Linear distance reward** — replaced `exp(−k1·d)` potential (k1=1.0 → saturated to ~0 for d > 10 m, giving `rew_dist = 0` at d=45 m) with linear `r3_dist = w_dist × (d_prev − d_xy)`; nonzero gradient at any distance; `w_dist` rescaled 10.0 → 1.0 (linear is unbounded)
 - [x] **CRUISE retry on timeout** — `reset()` now retries `_start_episode()` + `_wait_for_cruise()` once if CRUISE not reached; prevents 500-step crash-penalty episodes from polluting replay buffer when PX4 arm race fires
-- [ ] **Investigate RTF>1** — try PX4_SIM_SPEED_FACTOR>1 to increase training speed for single-env
-- [ ] **Try RTF=3 or higher** — update `x_marker_world.sdf` + PX4_SIM_SPEED_FACTOR together
-- [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`
-- [ ] **phase 2 curriculum** — re-enable manual drop once policy navigates to target reliably
-- [ ] **Custom SB3 policy** — PyTorch AMP for faster L4 GPU training
-- [ ] **Try RTF=3 or higher** — only after multi-env is stable; update `x_marker_world.sdf` + `PX4_SIM_SPEED_FACTOR`
-- [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`
-- [ ] **Custom SB3 policy** — add PyTorch AMP (mixed precision) for faster L4 training
+- [x] **TAKEOFF skip** — teleport to cruise altitude, mission_manager `skip_takeoff=true`
+- [x] **4-stage curriculum** — distance-based stages + vision stage (Stage 4)
+- [x] **YOLO vision 17D obs** — bbox features, DetectionResult subscription, camera bridge
+- [x] **Optuna HPO script** — `tune_optuna.py` with SAC param search
+- [ ] **Fresh training with 4-stage curriculum** — build, deploy, dry-run 3 episodes, then full 1M steps
+- [ ] **Run Optuna study** — 50 trials × 50K steps after curriculum training baseline
+- [ ] **Investigate RTF>1** — try PX4_SIM_SPEED_FACTOR>1 to increase training speed
 - [ ] **Phase 2 curriculum** — re-enable manual drop once policy navigates to target reliably
-- [ ] **Redirect PX4 logs to /dev/null** — `/tmp/px4_{i}.log` files grow to 100+ MB per session (pxh prompt spam)
+- [ ] **Custom SB3 policy** — PyTorch AMP for faster L4 GPU training
+- [ ] **Redirect PX4 logs to /dev/null** — `/tmp/px4_{i}.log` files grow to 100+ MB per session
 
 ---
 

@@ -29,6 +29,7 @@ setup(
             'simple_drop        = rl_navigation.simple_drop_node:main',
             'train_sac        = rl_navigation.train_sac:main',
             'evaluate         = rl_navigation.evaluate:main',
+            'tune_optuna      = rl_navigation.tune_optuna:main',
         ],
     },
 )

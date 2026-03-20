@@ -280,6 +280,38 @@ Gazebo/PX4 can produce coordinate explosions (e.g., `d_xy = 1.98×10¹¹` m). Th
 | `env/drop_error_actual_m` | Mean physics miss distance | Decreasing; 0 = perfect |
 | `env/success_rate` | Fraction of drops within 0.5 m | Increasing; target > 0.8 |
 | `env/physics_glitch_count` | Gazebo explosion events per rollout | Should be 0; investigate if > 0 |
+| `curriculum/stage` | Current curriculum stage index | 0→1→2→3 as success_rate improves |
+
+### Curriculum Learning (4 stages)
+
+| Stage | Name | Spawn Distance | max_steps | use_vision | Advance Condition |
+|-------|------|---------------|-----------|------------|-------------------|
+| 0 | Close | 3-8m | 150 | false | success_rate > 0.6 (50 ep) |
+| 1 | Medium | 8-20m | 300 | false | success_rate > 0.5 (50 ep) |
+| 2 | Full | 20-50m | 500 | false | success_rate > 0.4 (50 ep) |
+| 3 | Vision | 20-50m | 500 | **true** | (final stage) |
+
+Stage 3 masks ground-truth `rel_x, rel_y` (obs[13-14] → 0) forcing pure vision-based navigation. Config in `hyperparams.yaml` under `curriculum:`.
+
+### TAKEOFF Skip (Episode Reset Optimization)
+
+`_gz_reset_poses()` teleports drone to `cruise_altitude` (5.0m) instead of ground. `mission_manager_node` accepts `skip_takeoff:=true` parameter → bypasses TAKEOFF state → enters CRUISE immediately on arm. Saves 10-20s per episode reset.
+
+### Observation Space (17D)
+
+| Index | Content | Source |
+|-------|---------|--------|
+| 0-2 | Position (ENU, normalized) | PX4 |
+| 3-5 | Velocity (ENU, normalized) | PX4 |
+| 6-8 | Angular velocity (normalized) | PX4 |
+| 9-11 | Pixel u, v, confidence | YOLO / synthetic |
+| 12 | Payload attached flag | Drop event |
+| 13-14 | Relative x, y to target | Computed (masked in Stage 3) |
+| 15-16 | Bbox width, height (normalized) | YOLO DetectionResult |
+
+### Optuna Hyperparameter Optimization
+
+`tune_optuna.py` searches SAC params (lr, buffer_size, batch_size, gamma, tau, net_arch) with TPE sampler + MedianPruner. SQLite storage for Spot VM resilience. Run: `ros2 run rl_navigation tune_optuna`. Config in `hyperparams.yaml` under `optuna:`.
 
 ### Checkpoint Management Rules
 

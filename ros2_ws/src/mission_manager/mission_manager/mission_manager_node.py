@@ -51,6 +51,10 @@ class MissionManagerNode(Node):
             VehicleStatus, '/fmu/out/vehicle_status',
             self.vehicle_status_callback, qos_profile)
 
+        # --- [3.5] ROS parameters ---
+        self.declare_parameter('skip_takeoff', False)
+        self.skip_takeoff = self.get_parameter('skip_takeoff').get_parameter_value().bool_value
+
         # --- [4] 내부 변수 ---
         self.state = STATE_TAKEOFF
         self.current_pos = [0.0, 0.0, 0.0] # [x, y, z] (NED)
@@ -124,6 +128,16 @@ class MissionManagerNode(Node):
         
         if self.state == STATE_TAKEOFF:
             if not self.px4_armed:
+                return
+            # skip_takeoff: drone already at cruise altitude via Gazebo teleport.
+            # Transition to CRUISE immediately once PX4 is armed.
+            if self.skip_takeoff:
+                self.get_logger().info("skip_takeoff=true: skipping TAKEOFF, entering CRUISE.")
+                self.state = STATE_CRUISE
+                self.cruise_target_x = self.current_pos[0]
+                self.cruise_target_y = self.current_pos[1]
+                self.target_visible = False
+                self.last_detection_time = 0
                 return
             # Ground check: refuse to climb if drone was already airborne when armed.
             if self.on_ground_at_arm is False:
