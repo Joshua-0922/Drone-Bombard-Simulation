@@ -7,22 +7,39 @@
 # 1. Current State
 
 ## Method A — 1-World-4-Payload Architecture (2026-03-20)
-**Dry-run PASSED** — single-env validation complete at 31 fps, no ODE crashes. Proceeding to 4-env 10-minute test.
+**Production training RUNNING** — fresh start, 20K steps, 33 fps stable.
 
-| Metric | Value |
-|--------|-------|
-| num_envs | **1** (stable; multi-env Gazebo lockstep overhead exceeds parallelism benefit) |
-| Architecture | 1 Gazebo world; drone dynamically spawned by PX4 (PX4_SIM_MODEL=gz_x500_bombard_r0); payload_0 pre-spawned |
-| PX4 airframe | `4016_gz_x500_bombard_r0` (in PX4 rootfs; r0~r3 ready for future multi-env) |
-| PX4 model name | `PX4_SIM_MODEL=gz_x500_bombard_r0` → Gazebo entity: `x500_bombard_r0_0` |
-| Bridge | Per-instance `/tmp/ros_gz_bridge_0.yaml` mapping `payload_0/odometry` and `x500_0/drop` |
-| Drop trigger | `d_xy <= 0.5m` (2D horizontal distance, **no kinematic prediction**) |
-| Drop reward | **Actual physics** — waits for drop_calculator result (`/rl/drop_error`), timeout=10s |
-| Launch | Must source `/root/ros2_ws/install/setup.bash` for px4_msgs availability |
-| fps | **31 fps**, 8 episodes, 0 ODE crashes |
-| total_timesteps | 1,000,000 |
-| WandB | Run `ljbn3wfg` (dry-run); production run started (same project) |
-| **Multi-env note** | Shared Gazebo lockstep: 2-env → 10 fps total (vs 31 single); 4-env → PX4 lockstep crash. Architecture supports multi-env but RTF=1 physics is bottleneck. |
+### Training Environment Summary
+
+| Parameter | Value |
+|-----------|-------|
+| **num_envs** | **1** (stable; multi-env Gazebo lockstep overhead > parallelism benefit) |
+| **Simulator** | Gazebo Harmonic + PX4 SITL v1.15.4 |
+| **RTF** | **1.0** (`real_time_factor=1`, `real_time_update_rate=100 Hz`, `max_step_size=0.01 s`) |
+| **PX4_SIM_SPEED_FACTOR** | **1** (runs at wall-clock speed) |
+| **Training started** | **Fresh start** (no `--resume` flag; new SAC model from scratch; WandB run `cj3ytvq2`) |
+| **Checkpoint (unused)** | `sac_drop_preempt.zip` exists from dry-run (8K steps) but was NOT loaded |
+| **Algorithm** | SAC (Soft Actor-Critic), `net_arch=[256,256]`, `device=cuda` (L4 GPU) |
+| **total_timesteps** | 1,000,000 |
+| **fps** | **33 fps** (at 20K steps) |
+| **ep_len_mean** | 500 (all episodes hit max_steps — policy not navigating to target yet) |
+| **ep_rew_mean** | −545 (at 20K steps; improving from −1380 at 2K steps) |
+| **Drone model** | `gz_x500_bombard_r0` → PX4 spawns `x500_bombard_r0_0` in Gazebo |
+| **Payload** | `payload_0` pre-spawned at (0, 0, 0.14) |
+| **Drop trigger** | `d_xy ≤ 0.5 m` (2D horizontal distance, no kinematic prediction) |
+| **Drop reward** | Actual physics from `drop_calculator` (`/rl/drop_error`), 10s timeout |
+| **Target** | (11, 10, 0) ENU — X-marker `x_marker_0` |
+| **Bridge config** | `/tmp/ros_gz_bridge_0.yaml` — `payload_0/odometry` + `x500_0/drop` |
+| **WandB** | `cj3ytvq2` (production) · `ljbn3wfg` (dry-run) |
+
+### Multi-env Test Results (2026-03-20)
+
+| Config | Result |
+|--------|--------|
+| num_envs=1 | ✅ 31-33 fps, stable, no ODE crashes |
+| num_envs=2 | ❌ 10 fps total (6× overhead); both CRUISE timeouts due to Gazebo compute bottleneck |
+| num_envs=4 | ❌ 2 of 4 PX4 instances crash (lockstep timeout); shared Gazebo can't serve 4 drones at RTF=1 |
+| **Root cause** | Single Gazebo process handles all drone physics; shared lockstep serializes at >1 drone |
 
 ### Key Fixes (Method A Debugging, 2026-03-20)
 
@@ -142,7 +159,7 @@
 | 2026-03-19 | 6dopfyjn | drone-bombard-sac / L4-AutoDrop-v1 | ~96K–102K | — | **Debug run** — second attempt (world reset removed). Still crashed until spawn height fixed. Then CRUISE timeouts from COM_OF_LOSS_T race. Killed. |
 | 2026-03-19 | nynxn6b5 | drone-bombard-sac / L4-AutoDrop-v1 | 102K+ (running) | — | **Self-managed infra stable.** Spawn at z=0 (no free-fall), world reset removed, COM_OF_LOSS_T=10s. **fps=30-31 stable**, 0 ODE crashes, 0 CRUISE timeouts. 1M timesteps target. |
 | 2026-03-20 | ljbn3wfg | drone-bombard-sac / L4-AutoDrop-v1 | 8K (dry-run) | — | **Method A dry-run.** Dynamic PX4 spawn (PX4_SIM_MODEL=gz_x500_bombard_r0), px4_msgs fix (source /root/ros2_ws). **31 fps, 16 episodes, 0 ODE crashes.** Infra stable — proceeding to 4-env test. |
-| 2026-03-20 | (new run) | drone-bombard-sac / L4-AutoDrop-v1 | 0 (started) | — | **Production Method A training.** num_envs=1, 31 fps, actual physics reward (d_xy + drop_calculator). Multi-env (2/4 env) failed: shared Gazebo lockstep overhead (10 fps at 2-env, PX4 crash at 4-env). 1M timesteps. |
+| 2026-03-20 | cj3ytvq2 | drone-bombard-sac / L4-AutoDrop-v1 | 20K (running) | — | **Production Method A training — FRESH START.** num_envs=1, RTF=1, 33 fps, actual physics reward (d_xy + drop_calculator). ep_rew_mean=−545 at 20K. Multi-env failed (see table above). 1M timesteps. |
 
 ---
 
