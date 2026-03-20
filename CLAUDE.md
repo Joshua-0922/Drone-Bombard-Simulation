@@ -62,10 +62,42 @@ ros2 launch mission_manager drone_mission.launch.py enable_vision:=false
 
 This single launch starts everything in order: MicroXRCEAgent + Gazebo Harmonic (t=0s) → ros_gz_bridge (t=10s) → PX4 SITL (t=12s) → YOLO vision node (t=22s) → mission nodes (t=0s, block on topics).
 
-**RL training launch order** (two-step):
-1. `ros2 launch mission_manager infra.launch.py` — starts Gazebo + MicroXRCEAgent + ros_gz_bridge (t=10s) + **PX4 SITL (t=20s, persistent)** + YOLO (t=22s)
-2. Then start training: `ros2 run rl_navigation train_sac`
-   Each episode reset restarts only mission nodes (mission_manager, drone_controller, drop_calculator) via `episode.launch.py`. PX4 stays alive across resets.
+**RL training — self-managed (Method A, current):**
+
+`DroneDropEnv._start_infra()` launches and manages all infrastructure internally. No separate infra step needed.
+
+```bash
+# Resume from checkpoint (preferred)
+docker exec -d drone-bombard-harmonic bash -c \
+  "source /opt/ros/humble/setup.bash && \
+   source /root/ros2_ws/install/setup.bash && \
+   source /workspace/ros2_ws/install/setup.bash && \
+   export GZ_SIM_RESOURCE_PATH=/workspace/gazebo_models:/opt/PX4-Autopilot/Tools/simulation/gz/models:/opt/PX4-Autopilot/Tools/simulation/gz/worlds && \
+   cd /workspace/ros2_ws && \
+   ros2 run rl_navigation train_sac \
+     --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip \
+   > /tmp/production_train.log 2>&1"
+
+# Fresh start (after reward function changes)
+docker exec -d drone-bombard-harmonic bash -c \
+  "source /opt/ros/humble/setup.bash && \
+   source /root/ros2_ws/install/setup.bash && \
+   source /workspace/ros2_ws/install/setup.bash && \
+   export GZ_SIM_RESOURCE_PATH=/workspace/gazebo_models:/opt/PX4-Autopilot/Tools/simulation/gz/models:/opt/PX4-Autopilot/Tools/simulation/gz/worlds && \
+   cd /workspace/ros2_ws && \
+   ros2 run rl_navigation train_sac \
+   > /tmp/production_train.log 2>&1"
+
+# Monitor
+docker exec drone-bombard-harmonic bash -c "tail -f /tmp/production_train.log"
+
+# Stop gracefully (triggers _emergency_save → sac_drop_preempt.zip + _replay.pkl)
+docker exec drone-bombard-harmonic bash -c "pkill -SIGTERM -f train_sac"
+```
+
+> **IMPORTANT — source order:** Always source `/root/ros2_ws/install/setup.bash` **before** `/workspace/ros2_ws/install/setup.bash`. The container `.bashrc` does this, but `docker exec` non-interactive shells do not inherit it. Missing this causes `px4_msgs` import errors that silently crash episode nodes.
+
+Each episode reset: kills mission_manager + drone_controller + drop_calculator, teleports drone+payload via `gz service set_pose/blocking`, restarts episode nodes. Gazebo and PX4 SITL stay alive across resets.
 
 ## Testing
 
@@ -212,6 +244,63 @@ GIT_SSH_COMMAND="ssh -i /home/ubuntu/.ssh/id_ed25519" git push origin feature/mi
 
 ---
 
+## RL Environment — Current Design (Method A)
+
+### Reward Function (as of 2026-03-20)
+
+4-layer hierarchical reward in `drone_drop_env.py::_compute_reward()` and `step()`:
+
+| Layer | Condition | Formula | Key params |
+|-------|-----------|---------|-----------|
+| **1 — Safety** | Per step | `−penalty_crash` if alt < 2 m (after step 20); `−penalty_overspeed` if speed > 20 m/s | `penalty_crash=−10`, `penalty_overspeed=−8` |
+| **2 — Stability** | Per step | `−w_time − w_ang_vel·‖ω‖² − w_action_smooth·‖Δa‖²` | `w_time=0.01`, `w_ang_vel=0.05`, `w_action_smooth=0.05` |
+| **3 — Approach** | Per step | `w_dist·(d_prev − d_xy) + w_heading·cos(heading_to_target)` | `w_dist=1.0`, `w_heading=1.0` |
+| **4 — Drop** | Terminal | `w_drop_base·exp(−k2·d_error) [+ r_success_jackpot if d ≤ 0.1 m]` | `w_drop_base=50`, `k2=5.0`, `jackpot=100` |
+
+**Layer 3 note:** Uses **linear** distance reward (`d_prev − d_xy`), NOT exponential potential. The exponential `exp(−k1·d)` with `k1=1.0` saturated to machine-zero at d > 10 m, giving zero gradient throughout the operating range (~15–50 m). Never switch back to exponential without verifying `exp(−k1·d_max) > 1e-6`.
+
+**Auto-drop:** Fires when `d_xy ≤ 0.5 m` (2D horizontal distance, no kinematic prediction). Layer 4 reward is the actual Gazebo physics result from `drop_calculator` via `/rl/drop_error` (10 s timeout; 99.0 m penalty if no result).
+
+### Physics Explosion Defence (three layers)
+
+Gazebo/PX4 can produce coordinate explosions (e.g., `d_xy = 1.98×10¹¹` m). Three independent guards prevent replay buffer corruption:
+
+1. **Source (`_on_local_pos`):** Rejects positions with `|pos| > 1000 m` — retains last-known-good value. Bad coordinates never enter `pos_enu`.
+2. **Step guard (`step()`):** `not math.isfinite(d_xy) or d_xy > 500.0` → terminates episode with `reward = −100`, sets `info['physics_glitch'] = True`. Key is `glitch_d_xy` (not `d_xy`) so WandB callback skips it.
+3. **WandB (`WandbMetricsCallback`):** Accumulates `d_xy` only from steps where `'d_xy' in info` (glitch steps use `glitch_d_xy`). Counts glitches as `env/physics_glitch_count`.
+
+### WandB Metrics
+
+| Metric | Meaning | Healthy signal |
+|--------|---------|---------------|
+| `env/mean_d_xy` | Rollout-mean drone→target distance | Decreasing over training |
+| `env/mean_rew_dist` | Mean Layer 3 distance component | Positive = approaching |
+| `env/mean_rew_orient` | Mean heading alignment reward | Near 0 early; positive as policy aligns |
+| `env/mean_rew_ctrl` | Mean Layer 2 stability penalty | Always negative, small magnitude |
+| `env/drop_error_actual_m` | Mean physics miss distance | Decreasing; 0 = perfect |
+| `env/success_rate` | Fraction of drops within 0.5 m | Increasing; target > 0.8 |
+| `env/physics_glitch_count` | Gazebo explosion events per rollout | Should be 0; investigate if > 0 |
+
+### Checkpoint Management Rules
+
+- **Preempt checkpoint:** `sac_drop_preempt.zip` + `sac_drop_preempt_replay.pkl` — saved by `_emergency_save()` on SIGTERM. **Always overwritten on next SIGTERM.**
+- **Rolling checkpoints:** `sac_drop_{N}_steps.zip` — saved every 5000 steps, last 5 kept. No replay buffer. Safe to resume from.
+- **After a physics explosion:** SIGTERM → `_emergency_save` overwrites the preempt with the corrupted session's replay buffer. Resume from the latest **rolling checkpoint** instead (no matching `_replay.pkl` → SB3 starts fresh buffer automatically).
+- **Corrupted buffer convention:** Rename to `.CORRUPTED_{date}` rather than deleting, for audit trail.
+- **Reward function change → always fresh start.** Stored rewards in the replay buffer reflect the old formula. Resuming corrupts the critic for the first `buffer_size` steps (~100K), which is most of the training budget.
+
+### Known Failure Modes
+
+| Symptom | Root cause | Fix |
+|---------|-----------|-----|
+| `mean_rew_dist = 0` | Exponential potential saturated (k1 too large) | Use linear reward; check `exp(−k1·d_max) > 1e-6` |
+| `mean_d_xy` explodes to 1e11 | Gazebo ODE physics explosion | Three-layer defence (above) catches it |
+| CRUISE timeout warnings | PX4 arm race / drone flipped from previous episode | `reset()` retries once; investigate if > 1 timeout/10 episodes |
+| `ep_rew_mean` spiraling down | CRUISE timeouts → crash-penalty episodes filling buffer | Fix CRUISE timeout root cause; check fps drop |
+| fps drops suddenly | CRUISE timeout (65 s wait) or ODE crash | Check log for "Timed out waiting for CRUISE" |
+
+---
+
 ## RL Experiment & Debugging Rules (MANDATORY)
 
 To prevent wasting cloud resources, Gazebo crashes, and invalid data collection, Claude MUST strictly follow these rules when modifying or running RL code:
@@ -235,3 +324,21 @@ To prevent wasting cloud resources, Gazebo crashes, and invalid data collection,
   - `custom/success_rate`: % of drops within 0.5m of the target.
   - `custom/final_distance`: Average miss distance in meters.
   - `custom/timeout_rate`: % of episodes ending due to 500-step limits.
+
+### 4. Reward Function Design Rule
+- **Before implementing any distance-based reward**, verify the gradient is nonzero at the drone's actual operating range.
+  - Exponential potential `exp(−k1·d)`: with `k1=1.0` and `d=45 m`, this equals `6.5×10⁻²⁰` — machine zero. The policy receives no learning signal.
+  - **Rule of thumb:** `exp(−k1·d_max) > 1e-4`. For a 50 m operating range, `k1 < 0.18`.
+  - **Preferred:** Linear reward `w_dist × (d_prev − d_xy)` — gradient at any distance, no saturation.
+- **After any reward formula change, always do a fresh start** — do not resume from a checkpoint whose replay buffer contains rewards computed under the old formula. The critic will be trained on mixed rewards for `buffer_size` steps (~100K), corrupting Q-value estimates throughout most of training.
+- **Verify reward components are nonzero in WandB** before starting a long run. If `env/mean_rew_dist = 0` after the first rollout, stop immediately and diagnose.
+
+### 5. Checkpoint and Replay Buffer Integrity Rule
+- **Never resume from a preempt checkpoint immediately after a physics explosion.** `_emergency_save()` overwrites `sac_drop_preempt.zip` and `sac_drop_preempt_replay.pkl` with the current (possibly corrupted) state. Resume from the latest rolling `sac_drop_{N}_steps.zip` instead (no matching `_replay.pkl` → SB3 starts fresh buffer).
+- **When quarantining a corrupted buffer**, rename it to `.CORRUPTED_{YYYYMMDD}` rather than deleting. This preserves an audit trail.
+- **The rolling checkpoints** (`sac_drop_{N}_steps.zip`, no replay buffer) are always safe to resume from. They contain only model weights.
+
+### 6. WandB Metric Integrity Rule
+- **Never log physics-glitch values into running means.** A single step with `d_xy = 1.98×10¹¹` in a 2048-step rollout makes `env/mean_d_xy ≈ 10⁸` — the metric is useless for the rest of the run.
+- **Pattern:** For any metric that can have pathological outliers, use a separate key for the outlier value (e.g., `glitch_d_xy`) and only accumulate the normal-path key (e.g., `d_xy`) in running means.
+- **Always check WandB after the first rollout** (~2 min) to verify all `env/*` metrics are nonzero and plausible before walking away from a training run.
