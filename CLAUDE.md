@@ -209,3 +209,29 @@ GIT_SSH_COMMAND="ssh -i /home/ubuntu/.ssh/id_ed25519" git push origin feature/mi
 ```
 
 > **Note on git auth:** Commits should be made as the `drone-bombard` user (`sudo -u drone-bombard git commit ...`). The push must be issued as `ubuntu` with the explicit SSH key because `sudo` drops key access. If the working directory is not trusted, first run: `git config --global --add safe.directory /opt/drone-bombard/Drone-Bombard-Simulation`
+
+---
+
+## RL Experiment & Debugging Rules (MANDATORY)
+
+To prevent wasting cloud resources, Gazebo crashes, and invalid data collection, Claude MUST strictly follow these rules when modifying or running RL code:
+
+### 1. "Fail-Fast" Debugging Rule
+- **Never** start a long training run (>10,000 steps) immediately after changing code.
+- **Always** run a short dry-run (e.g., 2-3 episodes, `num_envs=1`) to verify that there are no syntax errors, Gazebo ODE crashes, or PX4 lockstep timeouts.
+- Only proceed to full training after the dry-run successfully completes and logs to WandB.
+
+### 2. Simulator Stability & Parallelism Rule
+- The environment uses heavy 3D simulation (Gazebo Harmonic + PX4 SITL).
+- If setting up `SubprocVecEnv` (e.g., `num_envs=4`), Claude MUST stagger the initialization (e.g., `time.sleep(15)` between instance creations) to prevent CPU spikes and PX4 connection timeouts.
+- **Beware of ODE AABB Crashes:** Ensure the payload does not free-fall before the drone spawns. Use physics pausing (`--pause`) during environment initialization if necessary.
+- If `num_envs=4` repeatedly crashes with timeout or memory errors, automatically fallback to `num_envs=1` to ensure stable data collection.
+
+### 3. Evaluation and Paper-Ready Data Rule
+- **Never** use training reward (`rollout/ep_rew_mean`) as the sole metric for final performance, as it includes exploration noise.
+- **Always** implement and rely on `EvalCallback` (e.g., every 10,000 steps in a deterministic environment).
+- Automatically save the `best_model.zip` based on the evaluation environment.
+- Explicitly log custom domain metrics to WandB during evaluation, such as:
+  - `custom/success_rate`: % of drops within 0.5m of the target.
+  - `custom/final_distance`: Average miss distance in meters.
+  - `custom/timeout_rate`: % of episodes ending due to 500-step limits.
