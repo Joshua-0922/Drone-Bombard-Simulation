@@ -53,3 +53,12 @@ yolo_workspace/runs/train/*/weights/last.pt
 # Other training artifacts
 yolo_workspace/runs/train/drone_bombard_train/
 claude_config/
+
+# ======================
+# RL Training Artifacts
+# ======================
+# WandB run directories (large binary files, synced to cloud)
+ros2_ws/wandb/
+
+# RL checkpoints (large .zip and .pkl files)
+ros2_ws/rl_checkpoints/
