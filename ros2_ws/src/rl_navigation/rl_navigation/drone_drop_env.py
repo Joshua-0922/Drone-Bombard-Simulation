@@ -465,8 +465,21 @@ class DroneDropEnv(gym.Env):
         # 4. Start fresh episode processes
         self._start_episode()
 
-        # 6. Wait for CRUISE state (blocks until takeoff + climb complete)
+        # 6. Wait for CRUISE state (blocks until takeoff + climb complete).
+        #    Retry once: if PX4 fails to arm in the first window (EKF race,
+        #    brief physics glitch) restarting episode nodes usually recovers.
+        #    Without retry, the episode starts in TAKEOFF → crash penalty fires
+        #    for 500 steps, polluting the replay buffer.
         self._wait_for_cruise()
+        with self._state_lock:
+            _reached_cruise = (self._node.mission_state == 'CRUISE')
+        if not _reached_cruise:
+            self._node.get_logger().warn(
+                '[RL Env] CRUISE timeout — retrying episode once')
+            self._kill_episode()
+            time.sleep(1.0)
+            self._start_episode()
+            self._wait_for_cruise()
 
         # 7. Seed d_xy_prev from the initial CRUISE position (no kinematic prediction)
         with self._state_lock:
@@ -735,15 +748,17 @@ class DroneDropEnv(gym.Env):
 
         # ----------------------------------------------------------------
         # Layer 3 — Approach
-        # R3 = w_dist * (exp(-k1 * d_now) - exp(-k1 * d_prev))
+        # R3 = w_dist * (d_prev - d_now)           ← linear distance reward
         #      + w_heading * cos(angle between drone heading and bearing to target)
+        #
+        # NOTE: Previously used exp(-k1*d) potential which saturates to ~0 for
+        # d > 10 m (with k1=1.0, exp(-45) ≈ 6e-20 in float64 — machine zero).
+        # Linear reward gives a nonzero gradient at ANY distance.
+        # k1_potential is retained in config for reference but unused here.
         # ----------------------------------------------------------------
 
-        # Distance gradient (positive when d_xy decreases toward target)
-        r3_dist = self._cfg_w_dist * (
-            math.exp(-self._cfg_k1_potential * d_xy)
-            - math.exp(-self._cfg_k1_potential * self.d_xy_prev)
-        )
+        # Distance gradient (positive when moving toward target, any distance)
+        r3_dist = self._cfg_w_dist * (self.d_xy_prev - d_xy)
 
         # Heading alignment: cos(delta_yaw_to_target)
         # Use 2-D velocity direction as drone heading proxy.

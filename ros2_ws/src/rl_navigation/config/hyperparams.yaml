@@ -42,8 +42,9 @@ reward:
   drop_wait_timeout: 10.0   # seconds to wait for actual physics landing result from drop_calculator
 
   # --- Approach shaping (Layer 3) ---
-  k1_potential: 1.0         # potential field decay constant for approach reward
-  w_dist: 10.0              # weight for impact-distance gradient reward
+  k1_potential: 1.0         # UNUSED — kept for reference. Was: exp(-k1*d) potential (saturated at d>10m)
+  w_dist: 1.0               # linear distance reward weight: r3_dist = w_dist*(d_prev - d_now)
+                             # (reduced from 10.0: linear is unbounded, exponential was bounded by 1)
   w_heading: 1.0            # weight for heading alignment (cos delta_yaw)
 
   # --- Stability/efficiency (Layer 2) ---
