@@ -6,25 +6,26 @@
 
 # 1. Current State
 
-## Phase 1.5 — Self-Managed Infra, Single-Env Stable (2026-03-19)
-**Self-managed infra is working** — `DroneDropEnv._start_infra()` launches Gazebo + PX4 + MicroXRCEAgent + ros_gz_bridge without external `infra.launch.py`. Single-env training is stable at **fps=30-31**.
+## Method A — 1-World-4-Payload Architecture (2026-03-20)
+**Method A implementation complete** — 4-parallel envs with per-instance payload/drone in shared Gazebo world. Actual physics-based reward (no kinematic prediction). Awaiting 10-minute fail-fast test.
 
 | Metric | Value |
 |--------|-------|
-| num_envs | **1** (single-env, verified stable; scale to 4 next) |
-| Isolation | `ROS_DOMAIN_ID` per instance |
+| num_envs | **4** (Method A: 4 parallel envs) |
+| Architecture | 1 shared Gazebo world, 4 pre-spawned drones (x500_0~3), 4 payloads (payload_0~3) |
+| Y-offsets | 150m between instances (drones at y=0,150,300,450; targets at y=10,160,310,460) |
+| Isolation | `ROS_DOMAIN_ID` per instance + per-instance `ros_gz_bridge` |
 | PX4 port | `PX4_UXRCE_DDS_PORT=8888+instance_id` |
 | PX4 namespace | Instance 0: none; Instance N>0: `/px4_N/` (remapped for drone_controller) |
-| Episode launch | Direct `ros2 run` per node (no launch file) — enables per-node remapping |
-| Episode kill | Process-group SIGTERM only — no global `pkill` (multi-instance safe) |
-| Infra startup | Sequential: UXRCE(t=0) → Gazebo(t=0) → bridge(t=10s) → PX4(t=20s) |
-| PX4 spawn height | `PX4_GZ_MODEL_POSE=0,y,0,0,0,0` — drone spawns sitting on ground (no free-fall) |
-| Gz world reset | **Disabled** — model_only reset doesn't reposition PX4-spawned models; drone_controller TAKEOFF handles repositioning |
-| COM_OF_LOSS_T | **10.0s** — gives new drone_controller 5s margin to establish OFFBOARD before PX4 AUTO.LAND |
-| PX4 readiness | Poll `_obs_ready` (set by `_on_local_pos` callback), 90s timeout |
-| Curriculum | **Phase 1: manual drop disabled** (auto-drop at d_impact ≤ 0.5m) |
+| PX4 connect | `PX4_GZ_MODEL_NAME=x500_N` (connects to pre-spawned model, no spawn) |
+| Bridge | Per-instance `/tmp/ros_gz_bridge_N.yaml` mapping `payload_N/odometry` and `x500_N/drop` |
+| Drop trigger | `d_xy <= 0.5m` (2D horizontal distance, **no kinematic prediction**) |
+| Drop reward | **Actual physics** — waits for drop_calculator result (`/rl/drop_error`), timeout=10s |
+| Success flag | `info['is_success'] = bool(d_error <= 0.5)` logged per terminal step |
+| Startup stagger | `time.sleep(rank * 10)` in SubprocVecEnv factory |
+| Curriculum | **Phase 1: manual drop disabled** (auto-drop at d_xy ≤ 0.5m) |
 | total_timesteps | 1,000,000 |
-| WandB run | `nynxn6b5` |
+| Previous run | `nynxn6b5` (single-env stable baseline, fps=30-31)
 
 ### Key Fixes (Phase 1.5 Debugging, 2026-03-19)
 
@@ -41,6 +42,17 @@
 ---
 
 # 2. Recent Progress
+
+- **Method A Implementation (2026-03-20):**
+  - 1-World-4-Payload architecture: 4 drones (x500_0~3) + 4 payloads (payload_0~3) pre-spawned at 150m Y-offsets in shared Gazebo world SDF.
+  - Created 4 drone model variants (`x500_bombard_r0~3`) with per-instance `DetachableJoint` (child_model=payload_N, topic=/x500_N/drop).
+  - Created 4 payload model variants (`payload_0~3`) with per-instance `OdometryPublisher` (/model/payload_N/odometry).
+  - Updated `x_marker_world.sdf`: 4 X-markers, 4 payloads, 4 pre-spawned drones.
+  - `drone_drop_env.py`: `PX4_GZ_MODEL_NAME=x500_N` (no PX4 spawning); per-instance bridge config (`/tmp/ros_gz_bridge_N.yaml`); each instance starts own bridge.
+  - Replaced `_predict_impact_point` with `_compute_d_xy` (pure 2D horizontal distance, zero kinematics).
+  - Layer 4 reward: waits for actual `drop_error` from `drop_calculator` queue (real Gazebo physics) — `info['drop_error_actual_m']` + `info['is_success']`.
+  - `train_sac.py`: `time.sleep(rank * 10)` stagger in SubprocVecEnv factory.
+  - `hyperparams.yaml`: `num_envs: 4`, `env_stagger_secs: 10`, `drop_wait_timeout: 10.0`.
 
 - **Phase 1.5 Debugging (2026-03-19):**
   - Diagnosed ODE AABB crash: drone spawning at z=5 falls 5m during EKF warmup → high-speed ground impact → crash on motor spin-up. Fixed by `PX4_GZ_MODEL_POSE=0,y,0` (spawn on ground).
@@ -87,7 +99,8 @@
 
 - [x] **Multi-instance self-managed infra** — Phase 1.5: DroneDropEnv._start_infra() implemented
 - [x] **Verify single-env training** — stable at fps=30-31 with self-managed infra
-- [ ] **Scale to 4 envs** — Set `num_envs: 4` in hyperparams.yaml and verify all 4 instances arm + reach CRUISE. Each instance spawns at `y = instance_id * 100m`.
+- [x] **Method A architecture** — 1-World-4-Payload: 4 drones pre-spawned, per-instance bridge, actual physics reward, staggered SubprocVecEnv init
+- [ ] **10-minute fail-fast test** — Run `num_envs=4` for 10 min; pass = all 4 CRUISE, fps>60 cumulative, 0 ODE crashes, `drop_error_actual_m` logged
 - [ ] **Try RTF=3 or higher** — only after multi-env is stable; update `x_marker_world.sdf` + `PX4_SIM_SPEED_FACTOR`
 - [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`
 - [ ] **Custom SB3 policy** — add PyTorch AMP (mixed precision) for faster L4 training

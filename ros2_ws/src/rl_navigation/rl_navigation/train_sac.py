@@ -229,8 +229,12 @@ def main(args=None):
         print(f'  Resuming   : {cli.resume}')
 
     if num_envs > 1:
+        stagger_secs = cfg_train.get('env_stagger_secs', 10)
+
         def _make_env(rank, cfg_path):
             def _init():
+                # Stagger init to prevent CPU spike and PX4 lockstep timeouts
+                time.sleep(rank * stagger_secs)
                 return DroneDropEnv(config_path=cfg_path, instance_id=rank)
             return _init
         env = SubprocVecEnv([_make_env(i, config_path) for i in range(num_envs)])

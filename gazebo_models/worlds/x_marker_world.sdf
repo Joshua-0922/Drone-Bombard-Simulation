@@ -230,38 +230,81 @@
     </model>
 
     <!-- ============================================================
-         X-marker ground target
-         Positioned at (11, 10, 0): the drop mission target coordinates.
-         Drone spawns at origin (0, 0); path_generation navigates to this
-         position and triggers payload drop.
-         Note: x_marker model uses Harmonic PBR material (see
-               gazebo_models/x_marker/model.sdf)
+         Method A: 1-World-4-Payload architecture
+         4 X-marker targets at 150m Y-offsets (one per RL rank).
+         4 payloads pre-spawned and attached to drones via DetachableJoint.
+         4 drones pre-spawned; PX4 SITL connects via PX4_GZ_MODEL_NAME=x500_N.
+
+         Y-offsets (150m) ensure no physical interference between instances.
+         Target positions: rank N → (11, 10 + N*150, 0)
+         Drone/payload spawn: rank N → Y = N * 150
+         Payload spawn z = 0.14 m — matches payload_mount world-z exactly.
     ============================================================ -->
+
+    <!-- X-marker targets (one per RL rank) -->
     <include>
       <uri>model://x_marker</uri>
-      <name>x_marker</name>
+      <name>x_marker_0</name>
       <pose>11 10 0 0 0 0</pose>
     </include>
-
-    <!-- ============================================================
-         Payload cylinder
-         Spawned as a separate model; attached to x500_bombard's
-         payload_mount link via DetachableJoint plugin in model.sdf.
-
-         Spawn z = 5.14 m (drone spawns at 5m via PX4_GZ_MODEL_POSE=0,0,5):
-           drone base_link world-z ≈ 5.24 (5m spawn + 0.24 model offset)
-           payload_mount offset from base_link = -0.10
-           → belly world-z = 5.24 - 0.10 = 5.14
-
-         Position reporting:
-           Harmonic: gz::sim::systems::OdometryPublisher in payload.sdf
-                     + ros_gz_bridge: /model/payload_cylinder/odometry
-                       -> ROS2 /drone/payload/position (nav_msgs/Odometry)
-    ============================================================ -->
     <include>
-      <uri>model://payload_cylinder</uri>
-      <name>payload_cylinder</name>
-      <pose>0 0 5.14 0 0 0</pose>
+      <uri>model://x_marker</uri>
+      <name>x_marker_1</name>
+      <pose>11 160 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://x_marker</uri>
+      <name>x_marker_2</name>
+      <pose>11 310 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://x_marker</uri>
+      <name>x_marker_3</name>
+      <pose>11 460 0 0 0 0</pose>
+    </include>
+
+    <!-- Payloads (one per RL rank) — OdometryPublisher publishes /model/payload_N/odometry -->
+    <include>
+      <uri>model://payload_0</uri>
+      <name>payload_0</name>
+      <pose>0 0 0.14 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://payload_1</uri>
+      <name>payload_1</name>
+      <pose>0 150 0.14 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://payload_2</uri>
+      <name>payload_2</name>
+      <pose>0 300 0.14 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://payload_3</uri>
+      <name>payload_3</name>
+      <pose>0 450 0.14 0 0 0</pose>
+    </include>
+
+    <!-- Drones pre-spawned (one per RL rank) — PX4 attaches via PX4_GZ_MODEL_NAME -->
+    <include>
+      <uri>model://x500_bombard_r0</uri>
+      <name>x500_0</name>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://x500_bombard_r1</uri>
+      <name>x500_1</name>
+      <pose>0 150 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://x500_bombard_r2</uri>
+      <name>x500_2</name>
+      <pose>0 300 0 0 0 0</pose>
+    </include>
+    <include>
+      <uri>model://x500_bombard_r3</uri>
+      <name>x500_3</name>
+      <pose>0 450 0 0 0 0</pose>
     </include>
 
     <!-- ============================================================

@@ -3,7 +3,8 @@ training:
   checkpoint_freq: 5000
   max_checkpoints_kept: 5        # keep only last 5 rolling checkpoints
   checkpoint_dir: "/workspace/ros2_ws/rl_checkpoints"
-  num_envs: 1              # test single-env first
+  num_envs: 4              # Method A: 4 parallel envs (1-World-4-Payload)
+  env_stagger_secs: 10    # 10s stagger between SubprocVecEnv instance inits
 
 sac:
   learning_rate: 3.0e-4
@@ -36,8 +37,9 @@ reward:
   # --- Physics ---
   g: 9.81                   # gravity (m/s^2)
 
-  # --- Auto-drop ---
-  auto_drop_threshold: 0.5  # fire drop when predicted impact <= this (m)
+  # --- Auto-drop (Method A: 2D horizontal distance, no kinematic prediction) ---
+  auto_drop_threshold: 0.5  # fire drop when drone 2D distance to target <= this (m)
+  drop_wait_timeout: 10.0   # seconds to wait for actual physics landing result from drop_calculator
 
   # --- Approach shaping (Layer 3) ---
   k1_potential: 1.0         # potential field decay constant for approach reward

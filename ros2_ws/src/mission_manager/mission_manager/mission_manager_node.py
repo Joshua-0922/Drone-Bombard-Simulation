@@ -130,24 +130,32 @@ class MissionManagerNode(Node):
                 return
             self.send_position_cmd(0.0, 0.0, self.target_altitude)
 
-            # Altitude check — ABSOLUTE NED z (NED: up = negative-z).
-            # With persistent PX4, after a Gazebo world reset, PX4's EKF still
-            # reports the old altitude from the previous episode (e.g. -4.14 m)
-            # for several seconds. Using a relative check (arm_ned_z - target)
-            # therefore requires the drone to reach an impossible depth (e.g.
-            # -8.89 m when target is 5 m and arm_ned_z = -4.14 m) while the
-            # position command only sends it to NED -5 m.
-            # Absolute check: PX4 EKF home = ground level (set at first arm),
-            # so NED z ≤ -(target_altitude × 0.95) correctly fires once the
-            # drone has climbed to 95 % of target altitude above physical ground.
+            # Altitude check — EKF-home-aware relative check.
+            #
+            # Problem: PX4 SITL EKF home can drift above physical ground over many
+            # episode resets (drone arms mid-descent during AUTO.LAND → EKF home set
+            # at, e.g., +1.44 m ENU instead of 0 m). With home at +1.44 m, the drone
+            # commanded to 5 m ENU sits at NED z = -(5-1.44) = -3.56, which fails the
+            # old absolute check z ≤ -4.75.
+            #
+            # Fix: use arm_ned_z to handle both cases:
+            #   • On-ground arm (arm_ned_z > 0, EKF home above physical ground):
+            #       target = arm_ned_z - target_altitude*0.95  (climb 4.75 m above arm)
+            #   • Mid-air arm  (arm_ned_z ≤ 0, drone already at altitude after reset):
+            #       target = -target_altitude*0.95              (absolute ≤ -4.75)
+            #   Combined: threshold = max(arm_ned_z, 0) - target_altitude*0.95
+            # This is equivalent to: climb at least target_altitude*0.95 meters above
+            # the physical arm point, regardless of EKF home drift.
             # Requires 0.3 s EKF settle after arming and 2 consecutive ticks (~0.2 s).
             min_armed_secs = 0.3
             armed_long_enough = (
                 self.armed_stamp is not None
                 and (time.time() - self.armed_stamp) >= min_armed_secs
             )
+            arm_z = self.arm_ned_z if self.arm_ned_z is not None else 0.0
+            altitude_threshold = max(arm_z, 0.0) - (self.target_altitude * 0.95)
             if (armed_long_enough
-                    and self.current_pos[2] <= -(self.target_altitude * 0.95)):
+                    and self.current_pos[2] <= altitude_threshold):
                 self.altitude_hold_ticks += 1
             else:
                 self.altitude_hold_ticks = 0

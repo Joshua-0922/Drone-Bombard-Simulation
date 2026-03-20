@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  x500_bombard_r2 — drone variant for RL rank 2 (Method A, 1-World-4-Payload).
+  Identical to x500_bombard except DetachableJoint references payload_2
+  and listens on drop topic /x500_2/drop.
+  When included in world SDF with <name>x500_2</name>, PX4 connects via
+  PX4_GZ_MODEL_NAME=x500_2 (no spawning; model is pre-spawned).
+-->
+<sdf version="1.9">
+  <model name="x500_bombard_r2">
+
+    <include merge="true">
+      <uri>model://x500</uri>
+    </include>
+
+    <link name="magnetometer_link">
+      <pose relative_to="base_link">0 0 0 0 0 0</pose>
+      <inertial>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>1e-7</ixx><ixy>0</ixy><ixz>0</ixz>
+          <iyy>1e-7</iyy><iyz>0</iyz><izz>1e-7</izz>
+        </inertia>
+      </inertial>
+      <sensor name="magnetometer_sensor" type="magnetometer">
+        <always_on>1</always_on>
+        <update_rate>100</update_rate>
+        <magnetometer>
+          <x><noise type="gaussian"><mean>0</mean><stddev>0.0004</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0</mean><stddev>0.0004</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0</mean><stddev>0.0004</stddev></noise></z>
+        </magnetometer>
+      </sensor>
+    </link>
+    <joint name="magnetometer_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>magnetometer_link</child>
+    </joint>
+
+    <link name="payload_mount">
+      <pose relative_to="base_link">0 0 -0.10 0 0 0</pose>
+      <inertial>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>1e-7</ixx><ixy>0</ixx><ixz>0</ixz>
+          <iyy>1e-7</iyy><iyz>0</iyz><izz>1e-7</izz>
+        </inertia>
+      </inertial>
+      <visual name="mount_visual">
+        <geometry><cylinder><radius>0.015</radius><length>0.01</length></cylinder></geometry>
+        <material><ambient>0.8 0.4 0.0 1</ambient><diffuse>0.8 0.4 0.0 1</diffuse></material>
+      </visual>
+    </link>
+    <joint name="payload_mount_joint" type="fixed">
+      <parent>base_link</parent>
+      <child>payload_mount</child>
+    </joint>
+
+    <!-- DetachableJoint for rank 2: child=payload_2, drop topic=/x500_2/drop -->
+    <plugin name="gz::sim::systems::DetachableJoint"
+            filename="gz-sim-detachable-joint-system">
+      <parent_link>payload_mount</parent_link>
+      <child_model>payload_2</child_model>
+      <child_link>payload_link</child_link>
+      <topic>/x500_2/drop</topic>
+    </plugin>
+
+  </model>
+</sdf>
