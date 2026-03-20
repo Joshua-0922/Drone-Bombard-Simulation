@@ -307,9 +307,16 @@ class DroneDropEnv(gym.Env):
         self._uxrce_port = 8888 + instance_id
         # PX4 -i N publishes to /px4_N/fmu/* topics; instance 0 uses /fmu/*
         self._px4_ns = f'/px4_{instance_id}' if instance_id > 0 else ''
-        # Method A: per-instance Gazebo model names and drop topic
-        self._model_name = f'x500_{instance_id}'      # Gazebo model name (pre-spawned)
-        self._payload_name = f'payload_{instance_id}'  # Paired payload model name
+        # Method A: per-instance model names.
+        # PX4_SIM_MODEL=gz_x500_bombard_rN → rcS matches airframe 4016_gz_x500_bombard_r0.
+        # PX4 gz_bridge strips "gz_" prefix → spawns model "x500_bombard_rN" in Gazebo,
+        # then appends "_N" (instance suffix) → final Gazebo entity name: x500_bombard_rN_N.
+        # Payloads are pre-spawned as payload_N.
+        # Drop topic is /x500_N/drop (hardcoded in DetachableJoint SDF).
+        self._px4_sim_model = f'gz_x500_bombard_r{instance_id}'   # PX4_SIM_MODEL env var
+        self._model_name = f'x500_bombard_r{instance_id}_{instance_id}'  # Gazebo entity name
+        self._drop_topic = f'x500_{instance_id}'                   # drop gz-topic prefix
+        self._payload_name = f'payload_{instance_id}'       # Paired payload model name
 
         # Set ROS_DOMAIN_ID before rclpy.init() so DDS uses the right domain
         os.environ['ROS_DOMAIN_ID'] = str(instance_id)
@@ -965,7 +972,7 @@ class DroneDropEnv(gym.Env):
             f'  direction: GZ_TO_ROS\n'
             f'\n'
             f'- ros_topic_name: /payload/drop_cmd\n'
-            f'  gz_topic_name: /{self._model_name}/drop\n'
+            f'  gz_topic_name: /{self._drop_topic}/drop\n'
             f'  ros_type_name: std_msgs/msg/Empty\n'
             f'  gz_type_name: gz.msgs.Empty\n'
             f'  direction: ROS_TO_GZ\n'
@@ -981,17 +988,20 @@ class DroneDropEnv(gym.Env):
         )
         time.sleep(5)
 
-        # 3. PX4 SITL — connect to pre-spawned drone model via PX4_GZ_MODEL_NAME.
-        #    Method A: drones are pre-spawned in world SDF at 150m Y-offsets;
-        #    PX4 does NOT spawn a new model — it connects to the existing one.
+        # 3. PX4 SITL — spawn drone model dynamically (not pre-spawned in world SDF).
+        #    Method A: payloads are pre-spawned but DRONES are spawned by PX4.
+        #    Pre-spawning all 4 drones causes ODE crash at physics step 1 (all
+        #    motor plugins activate simultaneously). PX4_SIM_MODEL spawn inserts
+        #    the drone after Gazebo is running — proven stable in Phase 1.5.
+        iid_y = self._instance_id * 150
         px4_env = infra_env.copy()
         px4_env.update({
             'PX4_GZ_STANDALONE': '1',
             'PX4_GZ_WORLD': 'x_marker_world',
-            'PX4_GZ_MODEL_NAME': self._model_name,  # connect to pre-spawned x500_N
+            'PX4_SIM_MODEL': self._px4_sim_model,  # gz_x500_bombard_rN → spawns x500_bombard_rN_N
+            'PX4_GZ_MODEL_POSE': f'0,{iid_y},0,0,0,0',  # spawn at instance Y-offset
             'PX4_SIM_SPEED_FACTOR': '1',
             'PX4_UXRCE_DDS_PORT': str(self._uxrce_port),
-            # No PX4_SIM_MODEL or PX4_GZ_MODEL_POSE — model is pre-spawned
         })
         px4_bridge_dir = (
             f'{px4_dir}/build/px4_sitl_default/src/modules/simulation/gz_bridge')

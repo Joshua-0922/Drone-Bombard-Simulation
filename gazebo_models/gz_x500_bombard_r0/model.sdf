@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  x500_bombard_r2 — drone variant for RL rank 2 (Method A, 1-World-4-Payload).
-  Identical to x500_bombard except DetachableJoint references payload_2
-  and listens on drop topic /x500_2/drop.
-  When included in world SDF with <name>x500_2</name>, PX4 connects via
-  PX4_GZ_MODEL_NAME=x500_2 (no spawning; model is pre-spawned).
+  x500_bombard_r0 — drone variant for RL rank 0 (Method A, 1-World-4-Payload).
+  Identical to x500_bombard except DetachableJoint references payload_0
+  and listens on drop topic /x500_0/drop.
+  When included in world SDF with <name>x500_0</name>, PX4 connects via
+  PX4_GZ_MODEL_NAME=x500_0 (no spawning; model is pre-spawned).
 -->
 <sdf version="1.9">
-  <model name="x500_bombard_r2">
+  <model name="gz_x500_bombard_r0">
 
     <include merge="true">
       <uri>model://x500</uri>
@@ -56,13 +56,13 @@
       <child>payload_mount</child>
     </joint>
 
-    <!-- DetachableJoint for rank 2: child=payload_2, drop topic=/x500_2/drop -->
+    <!-- DetachableJoint for rank 0: child=payload_0, drop topic=/x500_0/drop -->
     <plugin name="gz::sim::systems::DetachableJoint"
             filename="gz-sim-detachable-joint-system">
       <parent_link>payload_mount</parent_link>
-      <child_model>payload_2</child_model>
+      <child_model>payload_0</child_model>
       <child_link>payload_link</child_link>
-      <topic>/x500_2/drop</topic>
+      <topic>/x500_0/drop</topic>
     </plugin>
 
   </model>

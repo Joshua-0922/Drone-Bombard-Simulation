@@ -285,27 +285,11 @@
       <pose>0 450 0.14 0 0 0</pose>
     </include>
 
-    <!-- Drones pre-spawned (one per RL rank) — PX4 attaches via PX4_GZ_MODEL_NAME -->
-    <include>
-      <uri>model://x500_bombard_r0</uri>
-      <name>x500_0</name>
-      <pose>0 0 0 0 0 0</pose>
-    </include>
-    <include>
-      <uri>model://x500_bombard_r1</uri>
-      <name>x500_1</name>
-      <pose>0 150 0 0 0 0</pose>
-    </include>
-    <include>
-      <uri>model://x500_bombard_r2</uri>
-      <name>x500_2</name>
-      <pose>0 300 0 0 0 0</pose>
-    </include>
-    <include>
-      <uri>model://x500_bombard_r3</uri>
-      <name>x500_3</name>
-      <pose>0 450 0 0 0 0</pose>
-    </include>
+    <!-- Drones are NOT pre-spawned — PX4 SITL spawns each x500_bombard_rN at startup
+         via PX4_SIM_MODEL=x500_bombard_rN + PX4_GZ_MODEL_POSE=0,N*150,0.
+         Pre-spawning all 4 at t=0 causes ODE AABB crash: motor plugins for all 4
+         drones activate simultaneously at physics step 1, generating numerical
+         instability. Dynamic spawn (PX4 inserts after Gazebo is running) is stable. -->
 
     <!-- ============================================================
          World origin coordinate axes (RGB = XYZ convention)

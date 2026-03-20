@@ -7,7 +7,7 @@
   PX4_GZ_MODEL_NAME=x500_2 (no spawning; model is pre-spawned).
 -->
 <sdf version="1.9">
-  <model name="x500_bombard_r2">
+  <model name="gz_x500_bombard_r2">
 
     <include merge="true">
       <uri>model://x500</uri>

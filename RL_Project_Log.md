@@ -7,27 +7,26 @@
 # 1. Current State
 
 ## Method A — 1-World-4-Payload Architecture (2026-03-20)
-**Method A implementation complete** — 4-parallel envs with per-instance payload/drone in shared Gazebo world. Actual physics-based reward (no kinematic prediction). Awaiting 10-minute fail-fast test.
+**Dry-run PASSED** — single-env validation complete at 31 fps, no ODE crashes. Proceeding to 4-env 10-minute test.
 
 | Metric | Value |
 |--------|-------|
-| num_envs | **4** (Method A: 4 parallel envs) |
-| Architecture | 1 shared Gazebo world, 4 pre-spawned drones (x500_0~3), 4 payloads (payload_0~3) |
+| num_envs | **1** (DRYRUN) → set to **4** for 10-min test |
+| Architecture | 1 shared Gazebo world; drones dynamically spawned by PX4 (PX4_SIM_MODEL=gz_x500_bombard_rN); 4 pre-spawned payloads (payload_0~3) |
 | Y-offsets | 150m between instances (drones at y=0,150,300,450; targets at y=10,160,310,460) |
 | Isolation | `ROS_DOMAIN_ID` per instance + per-instance `ros_gz_bridge` |
 | PX4 port | `PX4_UXRCE_DDS_PORT=8888+instance_id` |
-| PX4 namespace | Instance 0: none; Instance N>0: `/px4_N/` (remapped for drone_controller) |
-| PX4 connect | `PX4_GZ_MODEL_NAME=x500_N` (connects to pre-spawned model, no spawn) |
+| PX4 airframe | `4016_gz_x500_bombard_r0` ... `4019_gz_x500_bombard_r3` (in PX4 rootfs) |
+| PX4 model name | `PX4_SIM_MODEL=gz_x500_bombard_rN` → Gazebo entity: `x500_bombard_rN_N` |
 | Bridge | Per-instance `/tmp/ros_gz_bridge_N.yaml` mapping `payload_N/odometry` and `x500_N/drop` |
 | Drop trigger | `d_xy <= 0.5m` (2D horizontal distance, **no kinematic prediction**) |
 | Drop reward | **Actual physics** — waits for drop_calculator result (`/rl/drop_error`), timeout=10s |
-| Success flag | `info['is_success'] = bool(d_error <= 0.5)` logged per terminal step |
+| Launch | Must source `/root/ros2_ws/install/setup.bash` for px4_msgs availability |
 | Startup stagger | `time.sleep(rank * 10)` in SubprocVecEnv factory |
-| Curriculum | **Phase 1: manual drop disabled** (auto-drop at d_xy ≤ 0.5m) |
 | total_timesteps | 1,000,000 |
-| Previous run | `nynxn6b5` (single-env stable baseline, fps=30-31)
+| Dry-run result | ✅ 31 fps, 16 episodes, 0 ODE crashes, WandB active (run `ljbn3wfg`) |
 
-### Key Fixes (Phase 1.5 Debugging, 2026-03-19)
+### Key Fixes (Method A Debugging, 2026-03-20)
 
 1. **ODE AABB crash fix**: `PX4_GZ_MODEL_POSE` changed from `0,0,5` to `0,y,0`. Drone spawned at z=5 fell 5m during 5s EKF warmup, hitting ground at ~10 m/s → extreme contact + motor forces on spin-up → ODE integer overflow. Spawning at z=0 (sitting on ground) eliminates free-fall.
 2. **Gz world reset removed from episode cycle**: `model_only` reset does NOT reposition PX4-spawned models (they keep their current position). Calling reset during flight caused DetachableJoint inconsistency. Episode reset now just restarts drone_controller + mission_manager; drone takes off from wherever it is.
@@ -43,16 +42,27 @@
 
 # 2. Recent Progress
 
-- **Method A Implementation (2026-03-20):**
-  - 1-World-4-Payload architecture: 4 drones (x500_0~3) + 4 payloads (payload_0~3) pre-spawned at 150m Y-offsets in shared Gazebo world SDF.
+- **Method A Dry-run Passed (2026-03-20):**
+  - Discovered `PX4_GZ_MODEL_NAME` (pre-spawn mode) causes ODE crash: all 4 motor plugins activate simultaneously at physics step 1. Switched to dynamic spawn via `PX4_SIM_MODEL`.
+  - **PX4 airframe discovery**: rcS `sed` searches `[digits]_${PX4_SIM_MODEL}` in rootfs airframes. Created `4016~4019_gz_x500_bombard_r{0-3}` in `/opt/PX4-Autopilot/build/px4_sitl_default/rootfs/etc/init.d-posix/airframes/`.
+  - **Model naming**: `PX4_SIM_MODEL=gz_x500_bombard_rN` → PX4 strips `gz_` prefix → spawns `x500_bombard_rN` → appends instance suffix → final Gazebo entity: `x500_bombard_rN_N`.
+  - Created `gz_x500_bombard_r{0-3}/` model dirs (copies of `x500_bombard_r{0-3}/` with updated model.config + SDF names).
+  - `drone_drop_env.py`: `_px4_sim_model = gz_x500_bombard_rN`, `_model_name = x500_bombard_rN_N` (actual Gazebo entity).
+  - **px4_msgs fix**: Must source `/root/ros2_ws/install/setup.bash` before training launch (container .bashrc-only, not inherited by non-interactive `docker exec`).
+  - Removed world SDF drone pre-spawns; updated `_start_infra()` to use `PX4_SIM_MODEL` dynamic spawn.
+  - git large-file fix: `git-filter-repo` removed `ros2_ws/wandb/` + `ros2_ws/rl_checkpoints/` from history; added to `.gitignore`.
+  - **Dry-run result**: 31 fps, 16 episodes, 0 ODE crashes, WandB run `ljbn3wfg`.
+
+- **Method A Architecture (2026-03-20, initial implementation):**
+  - 1-World-4-Payload architecture: 4 payloads (payload_0~3) pre-spawned at 150m Y-offsets in shared Gazebo world SDF.
   - Created 4 drone model variants (`x500_bombard_r0~3`) with per-instance `DetachableJoint` (child_model=payload_N, topic=/x500_N/drop).
   - Created 4 payload model variants (`payload_0~3`) with per-instance `OdometryPublisher` (/model/payload_N/odometry).
-  - Updated `x_marker_world.sdf`: 4 X-markers, 4 payloads, 4 pre-spawned drones.
-  - `drone_drop_env.py`: `PX4_GZ_MODEL_NAME=x500_N` (no PX4 spawning); per-instance bridge config (`/tmp/ros_gz_bridge_N.yaml`); each instance starts own bridge.
+  - Updated `x_marker_world.sdf`: 4 X-markers, 4 payloads (drones spawned dynamically by PX4).
+  - `drone_drop_env.py`: per-instance bridge config (`/tmp/ros_gz_bridge_N.yaml`); each instance starts own bridge.
   - Replaced `_predict_impact_point` with `_compute_d_xy` (pure 2D horizontal distance, zero kinematics).
   - Layer 4 reward: waits for actual `drop_error` from `drop_calculator` queue (real Gazebo physics) — `info['drop_error_actual_m']` + `info['is_success']`.
   - `train_sac.py`: `time.sleep(rank * 10)` stagger in SubprocVecEnv factory.
-  - `hyperparams.yaml`: `num_envs: 4`, `env_stagger_secs: 10`, `drop_wait_timeout: 10.0`.
+  - `hyperparams.yaml`: `num_envs: 1` (DRYRUN), `env_stagger_secs: 10`, `drop_wait_timeout: 10.0`.
 
 - **Phase 1.5 Debugging (2026-03-19):**
   - Diagnosed ODE AABB crash: drone spawning at z=5 falls 5m during EKF warmup → high-speed ground impact → crash on motor spin-up. Fixed by `PX4_GZ_MODEL_POSE=0,y,0` (spawn on ground).
@@ -99,7 +109,8 @@
 
 - [x] **Multi-instance self-managed infra** — Phase 1.5: DroneDropEnv._start_infra() implemented
 - [x] **Verify single-env training** — stable at fps=30-31 with self-managed infra
-- [x] **Method A architecture** — 1-World-4-Payload: 4 drones pre-spawned, per-instance bridge, actual physics reward, staggered SubprocVecEnv init
+- [x] **Method A architecture** — 1-World-4-Payload: PX4 dynamic spawn (PX4_SIM_MODEL=gz_x500_bombard_rN), per-instance bridge, actual physics reward, staggered SubprocVecEnv init
+- [x] **Single-env dry-run** — 31 fps, 16 episodes, 0 ODE crashes (run `ljbn3wfg`)
 - [ ] **10-minute fail-fast test** — Run `num_envs=4` for 10 min; pass = all 4 CRUISE, fps>60 cumulative, 0 ODE crashes, `drop_error_actual_m` logged
 - [ ] **Try RTF=3 or higher** — only after multi-env is stable; update `x_marker_world.sdf` + `PX4_SIM_SPEED_FACTOR`
 - [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`
@@ -126,6 +137,7 @@
 | 2026-03-19 | a9f6lk57 | drone-bombard-sac / L4-AutoDrop-v1 | — | — | **Debug run** — first attempt at self-managed infra (_start_infra). ODE crash immediately (z=5 spawn → free-fall → ground impact → motor spin-up crash). Killed. |
 | 2026-03-19 | 6dopfyjn | drone-bombard-sac / L4-AutoDrop-v1 | ~96K–102K | — | **Debug run** — second attempt (world reset removed). Still crashed until spawn height fixed. Then CRUISE timeouts from COM_OF_LOSS_T race. Killed. |
 | 2026-03-19 | nynxn6b5 | drone-bombard-sac / L4-AutoDrop-v1 | 102K+ (running) | — | **Self-managed infra stable.** Spawn at z=0 (no free-fall), world reset removed, COM_OF_LOSS_T=10s. **fps=30-31 stable**, 0 ODE crashes, 0 CRUISE timeouts. 1M timesteps target. |
+| 2026-03-20 | ljbn3wfg | drone-bombard-sac / L4-AutoDrop-v1 | 8K (dry-run) | — | **Method A dry-run.** Dynamic PX4 spawn (PX4_SIM_MODEL=gz_x500_bombard_r0), px4_msgs fix (source /root/ros2_ws). **31 fps, 16 episodes, 0 ODE crashes.** Infra stable — proceeding to 4-env test. |
 
 ---
 
@@ -142,7 +154,8 @@ docker exec drone-bombard-harmonic bash /workspace/ros2_ws/start_infra_clean.sh
 docker exec drone-bombard-harmonic bash -c "cd /workspace/ros2_ws && source /opt/ros/humble/setup.bash && source /root/ros2_ws/install/setup.bash && colcon build --packages-select rl_navigation && source install/setup.bash"
 
 # 4. Start training (self-manages all infra internally)
-docker exec -d drone-bombard-harmonic bash -c "cd /workspace/ros2_ws && /workspace/ros2_ws/train_managed.sh > /tmp/train_managed.log 2>&1"
+# IMPORTANT: source /root/ros2_ws before train_sac for px4_msgs availability
+docker exec -d drone-bombard-harmonic bash -c "source /opt/ros/humble/setup.bash && source /root/ros2_ws/install/setup.bash && source /workspace/ros2_ws/install/setup.bash && cd /workspace/ros2_ws && ros2 run rl_navigation train_sac > /tmp/train.log 2>&1"
 
 # 5. Monitor
 docker exec drone-bombard-harmonic tail -20 /tmp/train_managed.log
