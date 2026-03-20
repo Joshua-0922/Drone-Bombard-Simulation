@@ -155,17 +155,28 @@ class _RLBridgeNode(Node):
     # Subscriber callbacks
     # ------------------------------------------------------------------
 
+    # Maximum plausible position magnitude (metres). The mission world spans
+    # ~150 m; anything beyond 1 000 m is a Gazebo/EKF physics glitch.
+    _POS_PLAUSIBLE_MAX = 1000.0
+
     def _on_local_pos(self, msg):
         """Convert NED to ENU and update shared state.
 
-        NaN guard: PX4 EKF can output NaN velocity during DDS time-sync resets
-        (RTF>1). Replace NaN with 0.0 to prevent observation/reward corruption.
+        Two-layer guard:
+        1. NaN guard: PX4 EKF can output NaN during DDS time-sync resets.
+        2. Magnitude guard: rejects finite but physically impossible values
+           (e.g. 1.98e11 m from a Gazebo ODE explosion). Retains last-known-
+           good position so neither the observation nor _compute_d_xy ever
+           receives a coordinate explosion.
         """
+        def _valid_pos(v):
+            return math.isfinite(v) and abs(v) < self._POS_PLAUSIBLE_MAX
+
         with self._lock:
             # NED→ENU: East=Y_ned, North=X_ned, Up=−Z_ned
-            self.pos_enu[0] = msg.y if math.isfinite(msg.y) else self.pos_enu[0]
-            self.pos_enu[1] = msg.x if math.isfinite(msg.x) else self.pos_enu[1]
-            self.pos_enu[2] = -msg.z if math.isfinite(msg.z) else self.pos_enu[2]
+            self.pos_enu[0] = msg.y if _valid_pos(msg.y) else self.pos_enu[0]
+            self.pos_enu[1] = msg.x if _valid_pos(msg.x) else self.pos_enu[1]
+            self.pos_enu[2] = -msg.z if _valid_pos(msg.z) else self.pos_enu[2]
             self.vel_enu[0] = msg.vy if math.isfinite(msg.vy) else 0.0
             self.vel_enu[1] = msg.vx if math.isfinite(msg.vx) else 0.0
             self.vel_enu[2] = -msg.vz if math.isfinite(msg.vz) else 0.0
@@ -493,15 +504,19 @@ class DroneDropEnv(gym.Env):
         d_xy = self._compute_d_xy(pos)
 
         # --- Physics explosion guard ---
-        # d_xy > 500 m means Gazebo had a coordinate explosion (physics glitch).
-        # Terminate immediately with a large penalty so no corrupted transition
-        # enters the replay buffer beyond this step.
-        if d_xy > 500.0:
+        # Catches two failure modes:
+        #   a) non-finite d_xy (NaN/Inf slipping past _on_local_pos guards)
+        #   b) finite but implausible d_xy (> 500 m — magnitude clamp in
+        #      _on_local_pos uses 1 000 m so a residual window still exists)
+        # Terminate immediately; note: 'd_xy' key intentionally omitted so
+        # WandbMetricsCallback does NOT average the glitch value into
+        # env/mean_d_xy. Use 'glitch_d_xy' for one-off diagnostics only.
+        if not math.isfinite(d_xy) or d_xy > 500.0:
             reward = -100.0
             self._episode_reward += reward
             return self._get_obs(), reward, True, False, {
                 'physics_glitch': True,
-                'd_xy': d_xy,
+                'glitch_d_xy': float(d_xy),
                 'episode_reward': self._episode_reward,
                 'rew_ctrl': 0.0, 'rew_dist': 0.0,
                 'rew_orient': 0.0, 'rew_drop': 0.0,

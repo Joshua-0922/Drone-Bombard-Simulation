@@ -7,7 +7,7 @@
 # 1. Current State
 
 ## Method A — 1-World-4-Payload Architecture (2026-03-20)
-**Production training RUNNING** — resumed from `sac_drop_95000_steps.zip` (clean, Mar 18), WandB run `53samoqz`. Replay buffer fresh-start (corrupted preempt buffer quarantined). Physics explosion guard active (d_xy > 500 → immediate termination). Spawn altitude +0.5 m.
+**Production training RUNNING** — resumed from preempt `08:10` (~104K steps), WandB run `naf4zyhm`. Three-layer physics explosion defence active. `env/mean_d_xy` now explosion-proof.
 
 ### Training Environment Summary
 
@@ -132,6 +132,7 @@
 - [x] **Physics explosion guard** — `step()` checks `d_xy > 500 m` immediately after computing distance; terminates episode with −100 penalty before any corrupted transition reaches the replay buffer; logs `info['physics_glitch'] = True`
 - [x] **Spawn altitude fix** — `PX4_GZ_MODEL_POSE` changed from `z=0` to `z=0.5` (0.5 m above ground) to prevent geometry overlap between drone landing gear and ground plane at spawn
 - [x] **Corrupted replay buffer quarantined** — `sac_drop_preempt_replay.pkl` from the explosion session (Mar 20 07:53) renamed to `.CORRUPTED_20260320`; resumed from `sac_drop_95000_steps.zip` (Mar 18, clean) with fresh replay buffer
+- [x] **Three-layer physics explosion defence** — (1) `_on_local_pos` now rejects finite positions with `|pos| > 1000 m` (retains last-known-good), blocking explosions at source; (2) explosion guard upgraded: `not isfinite(d_xy) or d_xy > 500` catches NaN hole; (3) glitch step uses key `glitch_d_xy` not `d_xy`, so WandbMetricsCallback never averages it into `env/mean_d_xy`; glitch count logged as `env/physics_glitch_count`
 - [ ] **Investigate RTF>1** — try PX4_SIM_SPEED_FACTOR>1 to increase training speed for single-env
 - [ ] **Try RTF=3 or higher** — update `x_marker_world.sdf` + PX4_SIM_SPEED_FACTOR together
 - [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`
@@ -165,7 +166,8 @@
 | 2026-03-20 | ljbn3wfg | drone-bombard-sac / L4-AutoDrop-v1 | 8K (dry-run) | — | **Method A dry-run.** Dynamic PX4 spawn (PX4_SIM_MODEL=gz_x500_bombard_r0), px4_msgs fix (source /root/ros2_ws). **31 fps, 16 episodes, 0 ODE crashes.** Infra stable — proceeding to 4-env test. |
 | 2026-03-20 | cj3ytvq2 | drone-bombard-sac / L4-AutoDrop-v1 | 20K (running) | — | **Production Method A training — FRESH START.** num_envs=1, RTF=1, 33 fps, actual physics reward (d_xy + drop_calculator). ep_rew_mean=−545 at 20K. Multi-env failed (see table above). 1M timesteps. |
 | 2026-03-20 | mjfet61f | drone-bombard-sac / L4-AutoDrop-v1 | 52K (resumed) | — | **WandB reward monitoring added.** Resumed from preempt (~52K steps). New metrics: `env/mean_d_xy`, `env/mean_rew_ctrl`, `env/mean_rew_dist`, `env/mean_rew_orient`, `env/drop_error_actual_m`, `env/success_rate`. **KILLED** — d_xy exploded to 1.98e11 (Gazebo physics glitch). Replay buffer corrupted. |
-| 2026-03-20 | 53samoqz | drone-bombard-sac / L4-AutoDrop-v1 | 95K (resumed) | — | **Post-explosion recovery.** Resumed from `sac_drop_95000_steps.zip` (clean, Mar 18). Fresh replay buffer. Physics explosion guard added (d_xy > 500 → terminate + −100 penalty). Spawn altitude changed 0→0.5 m. |
+| 2026-03-20 | 53samoqz | drone-bombard-sac / L4-AutoDrop-v1 | 95K (resumed) | — | **Post-explosion recovery.** Resumed from `sac_drop_95000_steps.zip` (clean, Mar 18). Fresh replay buffer. Physics explosion guard added (d_xy > 500 → terminate + −100 penalty). Spawn altitude changed 0→0.5 m. **KILLED** — mean_d_xy still spiking (WandB callback was still logging the glitch d_xy value; _on_local_pos magnitude guard missing). |
+| 2026-03-20 | naf4zyhm | drone-bombard-sac / L4-AutoDrop-v1 | 104K (resumed) | — | **Three-layer explosion defence.** (1) `_on_local_pos` rejects \|pos\| > 1000 m; (2) guard catches NaN + > 500 m; (3) glitch key renamed → WandB mean clean. `env/physics_glitch_count` now monitored. |
 
 ---
 

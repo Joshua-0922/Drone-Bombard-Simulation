@@ -53,11 +53,17 @@ class WandbMetricsCallback(BaseCallback):
         self._step_rew_dist: list = []
         self._step_rew_orient: list = []
         self._step_rew_drop: list = []
+        self._physics_glitch_count: int = 0
 
     def _on_step(self):
         infos = self.locals.get('infos', [])
         dones = self.locals.get('dones', [])
         for info, done in zip(infos, dones):
+            # physics_glitch steps: count for monitoring but DO NOT add their
+            # 'd_xy' to _step_d_xy — the key is 'glitch_d_xy' on glitch steps,
+            # so the 'd_xy' check below naturally skips them.
+            if info.get('physics_glitch'):
+                self._physics_glitch_count += 1
             if 'd_xy' in info:
                 self._step_d_xy.append(info['d_xy'])
             if 'rew_ctrl' in info:
@@ -107,6 +113,10 @@ class WandbMetricsCallback(BaseCallback):
             log_dict['env/drop_count'] = len(self._ep_drop_errors)
             self._ep_drop_errors.clear()
             self._ep_success_flags.clear()
+
+        if self._physics_glitch_count:
+            log_dict['env/physics_glitch_count'] = self._physics_glitch_count
+            self._physics_glitch_count = 0
 
         if log_dict:
             log_dict['time/total_timesteps'] = self.num_timesteps
