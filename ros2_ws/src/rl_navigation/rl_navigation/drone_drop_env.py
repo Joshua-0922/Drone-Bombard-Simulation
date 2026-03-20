@@ -492,6 +492,21 @@ class DroneDropEnv(gym.Env):
         # --- 2D horizontal distance to target (no kinematic prediction) ---
         d_xy = self._compute_d_xy(pos)
 
+        # --- Physics explosion guard ---
+        # d_xy > 500 m means Gazebo had a coordinate explosion (physics glitch).
+        # Terminate immediately with a large penalty so no corrupted transition
+        # enters the replay buffer beyond this step.
+        if d_xy > 500.0:
+            reward = -100.0
+            self._episode_reward += reward
+            return self._get_obs(), reward, True, False, {
+                'physics_glitch': True,
+                'd_xy': d_xy,
+                'episode_reward': self._episode_reward,
+                'rew_ctrl': 0.0, 'rew_dist': 0.0,
+                'rew_orient': 0.0, 'rew_drop': 0.0,
+            }
+
         terminated = False
         truncated = False
         info = {}
@@ -1010,7 +1025,7 @@ class DroneDropEnv(gym.Env):
             'PX4_GZ_STANDALONE': '1',
             'PX4_GZ_WORLD': 'x_marker_world',
             'PX4_SIM_MODEL': self._px4_sim_model,  # gz_x500_bombard_rN → spawns x500_bombard_rN_N
-            'PX4_GZ_MODEL_POSE': f'0,{iid_y},0,0,0,0',  # spawn at instance Y-offset
+            'PX4_GZ_MODEL_POSE': f'0,{iid_y},0.5,0,0,0',  # 0.5m above ground to prevent geometry overlap on spawn
             'PX4_SIM_SPEED_FACTOR': '1',
             'PX4_UXRCE_DDS_PORT': str(self._uxrce_port),
         })
