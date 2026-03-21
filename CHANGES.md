@@ -1,4 +1,4 @@
-# 변경 사항 문서 (donghyeok 브랜치)
+# 변경 사항
 
 > **기준 브랜치:** `feature/migration-harmonic` → **변경 브랜치:** `donghyeok`
 > **작성일:** 2026-03-21
