@@ -6,8 +6,18 @@
 
 # 1. Current State
 
-## Method A — 1-World-4-Payload Architecture (2026-03-20)
-**Production training RUNNING** — resumed from preempt `08:26` (~114K steps), WandB run `8otphxy8`. Linear distance reward active (`w_dist=1.0`). CRUISE retry added. Explosion defence in place.
+## Method A — 1-World-4-Payload Architecture (2026-03-22)
+**Reward shaping patched — ready for fresh 1M-step training run.** Four anti-hacking fixes applied to `drone_drop_env.py`. Previous run `8otphxy8` was the last checkpoint baseline.
+
+### Active Reward Formula (as of 2026-03-22)
+
+| Layer | Formula | Notes |
+|-------|---------|-------|
+| **R2 (time penalty)** | `−0.05 − 0.05·‖ω‖² − 0.05·‖Δa‖²` | Time term raised from −0.01 → **−0.05** (5× urgency) |
+| **R3_dist** | `w_dist · (d_prev − d_xy)` | Linear, unchanged |
+| **R3_orient** | `w_heading · cos_heading · speed_gate` | **speed_gate = min(speed_xy/2.0, 1.0)** — zero at hover |
+| **R4 (drop)** | `50·exp(−5·d_error) [+ 100 jackpot]` | Unchanged |
+| **Truncation penalty** | `reward −= 50.0 if not dropped` | **NEW** — fires at step 500 without drop |
 
 ### Training Environment Summary
 
@@ -135,6 +145,11 @@
 - [x] **Three-layer physics explosion defence** — (1) `_on_local_pos` now rejects finite positions with `|pos| > 1000 m` (retains last-known-good), blocking explosions at source; (2) explosion guard upgraded: `not isfinite(d_xy) or d_xy > 500` catches NaN hole; (3) glitch step uses key `glitch_d_xy` not `d_xy`, so WandbMetricsCallback never averages it into `env/mean_d_xy`; glitch count logged as `env/physics_glitch_count`
 - [x] **Linear distance reward** — replaced `exp(−k1·d)` potential (k1=1.0 → saturated to ~0 for d > 10 m, giving `rew_dist = 0` at d=45 m) with linear `r3_dist = w_dist × (d_prev − d_xy)`; nonzero gradient at any distance; `w_dist` rescaled 10.0 → 1.0 (linear is unbounded)
 - [x] **CRUISE retry on timeout** — `reset()` now retries `_start_episode()` + `_wait_for_cruise()` once if CRUISE not reached; prevents 500-step crash-penalty episodes from polluting replay buffer when PX4 arm race fires
+- [x] **Reward hacking analysis** — identified orientation-milking vulnerability (500 steps × w_heading=1.0 >> drop jackpot). Applied 4 anti-hacking patches (2026-03-22).
+- [x] **Anti-milking speed gate** — `r3_orient` scaled by `min(speed_xy/2.0, 1.0)`; crawling at <0.1 m/s earns zero heading reward
+- [x] **Urgency time penalty** — `w_time` raised from −0.01 to **−0.05** per step (25 extra penalty over 500 steps)
+- [x] **Truncation penalty** — −50 applied at step 500 if payload not dropped (anti-quitting)
+- [ ] **Fresh 1M-step training run** — all reward patches require fresh start (replay buffer incompatible with new formula)
 - [ ] **Investigate RTF>1** — try PX4_SIM_SPEED_FACTOR>1 to increase training speed for single-env
 - [ ] **Try RTF=3 or higher** — update `x_marker_world.sdf` + PX4_SIM_SPEED_FACTOR together
 - [ ] **Tune reward weights** — start with `w_dist`, `w_drop_base`, `r_success_jackpot`
@@ -171,6 +186,7 @@
 | 2026-03-20 | 53samoqz | drone-bombard-sac / L4-AutoDrop-v1 | 95K (resumed) | — | **Post-explosion recovery.** Resumed from `sac_drop_95000_steps.zip` (clean, Mar 18). Fresh replay buffer. Physics explosion guard added (d_xy > 500 → terminate + −100 penalty). Spawn altitude changed 0→0.5 m. **KILLED** — mean_d_xy still spiking (WandB callback was still logging the glitch d_xy value; _on_local_pos magnitude guard missing). |
 | 2026-03-20 | naf4zyhm | drone-bombard-sac / L4-AutoDrop-v1 | 104K (resumed) | — | **Three-layer explosion defence.** (1) `_on_local_pos` rejects \|pos\| > 1000 m; (2) guard catches NaN + > 500 m; (3) glitch key renamed → WandB mean clean. `env/physics_glitch_count` now monitored. **KILLED** — `mean_rew_dist=0`, `mean_d_xy` stuck 45.8 m: exponential potential k1=1.0 saturated to ~0; CRUISE timeouts worsening (ep_rew −110 → −591). |
 | 2026-03-20 | 8otphxy8 | drone-bombard-sac / L4-AutoDrop-v1 | 114K (resumed) | — | **Linear distance reward + CRUISE retry.** `r3_dist = w_dist*(d_prev−d_xy)`, w_dist=1.0. Nonzero gradient at any distance. CRUISE retry prevents crash-penalty episodes. |
+| 2026-03-22 | — | — | — | — | **Reward shaping patches applied (no training yet).** (1) Speed-gated orient reward anti-milking; (2) time penalty −0.01→−0.05; (3) truncation penalty −50 if no drop; (4) confirmed linear dist. Requires fresh start. |
 
 ---
 

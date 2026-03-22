@@ -604,6 +604,8 @@ class DroneDropEnv(gym.Env):
         # --- Truncation on step limit ---
         if self._step_count >= self._cfg_max_steps:
             truncated = True
+            if not self.dropped:
+                reward -= 50.0   # Mission failure: timed out without dropping
 
         # --- Update action memory ---
         self.action_prev = np.array(action, dtype=np.float32)
@@ -741,7 +743,7 @@ class DroneDropEnv(gym.Env):
         action_smooth_sq = float(np.dot(delta_action, delta_action))
 
         r2 = (
-            -self._cfg_w_time
+            -0.05
             - self._cfg_w_ang_vel * omega_sq
             - self._cfg_w_action_smooth * action_smooth_sq
         )
@@ -778,7 +780,11 @@ class DroneDropEnv(gym.Env):
         else:
             cos_heading = 0.0   # hovering — no heading signal
 
-        r3 = r3_dist + self._cfg_w_heading * cos_heading
+        # Speed-gated orientation reward: scales from 0 at hover to full at ≥2 m/s.
+        # Prevents farming cos_heading by crawling/hovering (anti-milking).
+        speed_gate = min(speed_xy / 2.0, 1.0)
+        r3_orient = self._cfg_w_heading * cos_heading * speed_gate
+        r3 = r3_dist + r3_orient
 
         # Advance d_xy_prev for next step
         self.d_xy_prev = d_xy
@@ -791,7 +797,7 @@ class DroneDropEnv(gym.Env):
         # Split reward components for per-rollout WandB monitoring
         info['rew_ctrl'] = r2
         info['rew_dist'] = r3_dist
-        info['rew_orient'] = self._cfg_w_heading * cos_heading
+        info['rew_orient'] = r3_orient
         info['rew_drop'] = 0.0
 
         return reward, False, info
