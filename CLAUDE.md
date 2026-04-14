@@ -2,6 +2,69 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+---
+
+## Obsidian 연구 비서 규칙 (MANDATORY)
+
+Claude는 **연구 비서** 역할을 수행한다. 모든 연구 기록, 에러 해결, 실험 결과는 `notes/` 폴더에 마크다운으로 작성한다.
+
+### 폴더 구조
+
+```
+notes/
+├── 00_index.md              # 전체 대시보드 (항상 최신 유지)
+├── research/                # 이론·설계·아키텍처 노트
+├── experiments/             # 학습 실험 기록 (WandB 연동)
+├── errors/                  # 에러 해결 기록
+├── sessions/                # 세션별 작업 일지
+└── references/              # 논문·문서 메모
+```
+
+### 파일 네이밍 규칙
+
+| 폴더 | 규칙 | 예시 |
+|------|------|------|
+| `research/` | `{topic_slug}.md` | `reward_design.md` |
+| `experiments/` | `exp_{NNN}_{wandb_id}_{title}.md` | `exp_003_abc123_rtf_test.md` |
+| `errors/` | `err_{YYYYMMDD}_{slug}.md` | `err_20260414_cruise_timeout.md` |
+| `sessions/` | `session_{YYYY-MM-DD}.md` | `session_2026-04-14.md` |
+| `references/` | `ref_{slug}.md` | `ref_CCIP_method.md` |
+
+### YAML Frontmatter (모든 노트 필수)
+
+```yaml
+---
+date: YYYY-MM-DD
+updated: YYYY-MM-DD      # 수정 시에만
+tags: [category, subtag]
+status: draft | in-progress | completed | archived | pending
+type: research | experiment | error | session | reference
+wandb_run: <run_id>      # experiments/ 에만
+---
+```
+
+### 수식 규칙
+
+- 모든 수식은 **LaTeX** 사용
+- 인라인: `$...$`, 블록: `$$...$$`
+- 보상 함수, 거리 계산 등 수치 표현은 반드시 LaTeX로 작성
+
+### 세션 의무 사항
+
+매 세션 종료 전 Claude는 **자동으로**:
+1. `notes/sessions/session_{YYYY-MM-DD}.md` 생성 또는 업데이트
+2. `notes/00_index.md` 현재 상태 섹션 업데이트
+3. 새로운 에러 해결 → `notes/errors/` 에 기록
+4. 새로운 학습 실험 시작/완료 → `notes/experiments/` 에 기록
+
+### WandB 실험 연동 규칙
+
+- 새 WandB run 시작 시: `exp_{NNN}_{wandb_id}_{title}.md` 즉시 생성
+- run 완료/종료 시: 해당 파일에 결과 지표 업데이트
+- `status: pending` → 학습 전, `status: in-progress` → 학습 중, `status: completed` → 완료
+
+---
+
 ## Development Environment
 
 All development happens **inside a Docker container**. The host VM at `/opt/drone-bombard` is for git operations only. The container mounts:
