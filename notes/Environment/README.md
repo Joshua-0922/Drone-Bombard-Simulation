@@ -384,6 +384,17 @@ sudo apt-get install -y \
   xfce4 xfce4-goodies \
   dbus-x11 \
   xfonts-base
+
+# 한글 폰트 설치 (없으면 GUI에서 한글 깨짐)
+sudo apt-get install -y \
+  fonts-nanum fonts-nanum-coding fonts-nanum-extra fonts-unfonts-core \
+  locales
+
+# 한글 locale 생성
+sudo locale-gen ko_KR.UTF-8
+sudo update-locale LANG=ko_KR.UTF-8
+
+fc-cache -fv   # 폰트 캐시 갱신
 ```
 
 ### 9-2. VNC 비밀번호 설정
@@ -413,6 +424,12 @@ export XDG_SESSION_TYPE=x11
 export XDG_RUNTIME_DIR=/tmp/runtime-$(id -u)
 mkdir -p $XDG_RUNTIME_DIR
 chmod 700 $XDG_RUNTIME_DIR
+
+# 한글 표시를 위한 locale 설정
+export LANG=ko_KR.UTF-8
+export LC_ALL=ko_KR.UTF-8
+export LANGUAGE=ko_KR:ko
+
 exec dbus-launch --exit-with-session startxfce4
 ```
 
