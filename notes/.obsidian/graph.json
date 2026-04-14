@@ -9,19 +9,31 @@
   "colorGroups": [
     {
       "query": "path:experiments/",
-      "color": { "a": 1, "rgb": 14701138 }
+      "color": {
+        "a": 1,
+        "rgb": 14701138
+      }
     },
     {
       "query": "path:errors/",
-      "color": { "a": 1, "rgb": 14164545 }
+      "color": {
+        "a": 1,
+        "rgb": 14164545
+      }
     },
     {
       "query": "path:research/",
-      "color": { "a": 1, "rgb": 4237130 }
+      "color": {
+        "a": 1,
+        "rgb": 4237130
+      }
     },
     {
       "query": "path:sessions/",
-      "color": { "a": 1, "rgb": 9408399 }
+      "color": {
+        "a": 1,
+        "rgb": 9408399
+      }
     }
   ],
   "collapse-display": false,
@@ -34,6 +46,6 @@
   "repelStrength": 10,
   "linkStrength": 1,
   "linkDistance": 250,
-  "scale": 1,
+  "scale": 0.6666666666666666,
   "close": false
 }

@@ -75,3 +75,11 @@ $R_{3,dist} = w_{dist}(d_{prev} - d_{xy})$ (Exp 001에서 이미 적용됨)
 ## 결과 (학습 후 업데이트)
 
 _TBD_
+
+---
+
+## 관련 링크
+
+- [[experiments/exp_001_8otphxy8_linear_reward]] — 이전 베이스라인 run
+- [[research/reward_design]] — 패치된 보상 함수 전체 수식
+- [[research/rl_rules]] — Fresh Start 규칙 §3, §4

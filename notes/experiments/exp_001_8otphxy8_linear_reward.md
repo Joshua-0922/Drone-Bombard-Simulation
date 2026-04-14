@@ -61,4 +61,4 @@ PX4 arm race로 인한 크래시 페널티 에피소드 방지.
 
 ## 다음 실험
 
-→ [[exp_002_reward_shaping_patches]] (패치 후 Fresh 1M-step)
+→ [[experiments/exp_002_reward_shaping_patches]] (패치 후 Fresh 1M-step)

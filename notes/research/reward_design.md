@@ -98,5 +98,5 @@ $$R_{trunc} = -50 \quad \text{if step = 500 and not dropped}$$
 
 ## 관련 링크
 
-- [[../experiments/exp_001_8otphxy8_linear_reward]]
-- [[../experiments/exp_002_reward_shaping_patches]]
+- [[experiments/exp_001_8otphxy8_linear_reward]] — 선형 보상 첫 적용 run
+- [[experiments/exp_002_reward_shaping_patches]] — anti-milking + truncation penalty

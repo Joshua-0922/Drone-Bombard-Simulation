@@ -78,6 +78,7 @@ reset()
 
 ## 관련 링크
 
-- [[research/reward_design]]
-- [[errors/err_20260319_ode_aabb_crash]]
-- [[errors/err_20260320_physics_explosion]]
+- [[research/reward_design]] — 보상 함수 상세
+- [[research/system_overview]] — 패키지·토픽·좌표계 전체 구조
+- [[errors/err_20260319_ode_aabb_crash]] — 스폰 고도 크래시
+- [[errors/err_20260320_physics_explosion]] — ODE 물리 폭발 방어

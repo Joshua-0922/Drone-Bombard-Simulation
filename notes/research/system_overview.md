@@ -111,3 +111,12 @@ TAKEOFF → CRUISE → TRACKING → DROP
 - uXRCE-DDS-Agent @ `/opt/Micro-XRCE-DDS-Agent`
 - px4_msgs 사전 빌드 @ `/root/ros2_ws` (볼륨 마운트와 별개)
 - Python 의존성: `drone_drop_system/docker/requirements.txt`
+
+---
+
+## 관련 링크
+
+- [[research/architecture]] — Method A 1-World-4-Payload 멀티 인스턴스 설계
+- [[research/reward_design]] — `_compute_reward()` 4-layer 보상 함수
+- [[research/rl_rules]] — 학습 실행 전 체크리스트 & Known Failure Modes
+- [[Environment/README]] — VM 인프라 복구 가이드 (Docker, VNC, Guacamole)

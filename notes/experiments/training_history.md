@@ -31,5 +31,5 @@ type: reference
 | 2026-03-20 | mjfet61f | 52K | — | WandB 보상 모니터링 추가. **KILLED** — d_xy=1.98e11 물리 폭발. 버퍼 오염. |
 | 2026-03-20 | 53samoqz | 95K | — | 폭발 복구. physics explosion guard 추가. **KILLED** — WandB 콜백 글리치 값 누산 버그. |
 | 2026-03-20 | naf4zyhm | 104K | — | 3중 폭발 방어 적용. **KILLED** — `mean_rew_dist=0` (지수 포텐셜 포화 k1=1.0). |
-| 2026-03-20 | 8otphxy8 | 114K | — | **선형 거리 보상 + CRUISE retry.** 마지막 정상 베이스라인. → [[exp_001_8otphxy8_linear_reward]] |
-| 2026-03-22 | — | — | — | **보상 패치 적용 (학습 없음).** anti-milking, w_time 5×, truncation penalty. Fresh start 필요. → [[exp_002_reward_shaping_patches]] |
+| 2026-03-20 | 8otphxy8 | 114K | — | **선형 거리 보상 + CRUISE retry.** 마지막 정상 베이스라인. → [[experiments/exp_001_8otphxy8_linear_reward]] |
+| 2026-03-22 | — | — | — | **보상 패치 적용 (학습 없음).** anti-milking, w_time 5×, truncation penalty. Fresh start 필요. → [[experiments/exp_002_reward_shaping_patches]] |
