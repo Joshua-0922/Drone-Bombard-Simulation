@@ -75,4 +75,4 @@ mv sac_drop_preempt_replay.pkl sac_drop_preempt_replay.pkl.CORRUPTED_20260320
 
 ## 관련 실험
 
-- [[../experiments/exp_001_8otphxy8_linear_reward]] — 3중 방어 적용 후 안정화
+- [[experiments/exp_001_8otphxy8_linear_reward]] — 3중 방어 적용 후 안정화

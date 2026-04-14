@@ -78,6 +78,6 @@ reset()
 
 ## 관련 링크
 
-- [[reward_design]]
-- [[../errors/err_20260319_ode_aabb_crash]]
-- [[../errors/err_20260320_physics_explosion]]
+- [[research/reward_design]]
+- [[errors/err_20260319_ode_aabb_crash]]
+- [[errors/err_20260320_physics_explosion]]

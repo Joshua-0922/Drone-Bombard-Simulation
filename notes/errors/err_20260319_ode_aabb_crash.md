@@ -58,4 +58,4 @@ PX4_GZ_MODEL_POSE = f"0,{y},0.5"
 
 ## 관련
 
-- [[../research/architecture]] — Method A 스폰 설정
+- [[research/architecture]] — Method A 스폰 설정
