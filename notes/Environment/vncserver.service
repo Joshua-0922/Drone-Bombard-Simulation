@@ -1,0 +1,33 @@
+# /etc/systemd/system/vncserver@.service
+# TigerVNC 서버 systemd 유닛 파일
+#
+# 설치:
+#   sudo cp vncserver.service /etc/systemd/system/vncserver@.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable vncserver@1   # :1 (port 5901)
+#   sudo systemctl start  vncserver@1
+#
+# 상태 확인:
+#   sudo systemctl status vncserver@1
+#   vncserver -list
+
+[Unit]
+Description=TigerVNC server for display %i
+After=syslog.target network.target
+
+[Service]
+Type=forking
+User=nachoigpt
+Group=nachoigpt
+WorkingDirectory=/home/nachoigpt
+
+# vncserver 시작 — 1920x1080 24-bit 색상
+ExecStartPre=/bin/sh -c '/usr/bin/vncserver -kill :%i > /dev/null 2>&1 || :'
+ExecStart=/usr/bin/vncserver :%i -geometry 1920x1080 -depth 24 -localhost no
+ExecStop=/usr/bin/vncserver -kill :%i
+
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

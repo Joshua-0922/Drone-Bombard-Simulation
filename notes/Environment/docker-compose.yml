@@ -1,0 +1,90 @@
+version: "3.9"
+
+# ============================================================
+# Guacamole Stack — Docker Compose
+# 접속: http://136.113.193.83  →  guacadmin / guacadmin
+# VNC:  VM 호스트 TigerVNC :1 (port 5901)
+# ============================================================
+
+networks:
+  guac-net:
+    driver: bridge
+
+volumes:
+  guac-pgdata:
+
+services:
+
+  # ----------------------------------------------------------
+  # 1. guacd — Guacamole 프록시 데몬 (VNC/RDP 변환)
+  # ----------------------------------------------------------
+  guacd:
+    image: guacamole/guacd:1.5.5
+    container_name: guacd
+    networks:
+      - guac-net
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # 2. postgres — Guacamole 사용자/연결 DB
+  # ----------------------------------------------------------
+  postgres:
+    image: postgres:15-alpine
+    container_name: guac-postgres
+    environment:
+      POSTGRES_DB: guacamole_db
+      POSTGRES_USER: guacamole_user
+      POSTGRES_PASSWORD: guac_pg_pass_2026
+    volumes:
+      - guac-pgdata:/var/lib/postgresql/data
+      - ./initdb.sql:/docker-entrypoint-initdb.d/01-initdb.sql:ro
+    networks:
+      - guac-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U guacamole_user -d guacamole_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------
+  # 3. guacamole — 웹 애플리케이션 (Tomcat 내장)
+  # ----------------------------------------------------------
+  guacamole:
+    image: guacamole/guacamole:1.5.5
+    container_name: guacamole
+    depends_on:
+      postgres:
+        condition: service_healthy
+      guacd:
+        condition: service_started
+    environment:
+      GUACD_HOSTNAME: guacd
+      GUACD_PORT: 4822
+      POSTGRESQL_HOSTNAME: postgres
+      POSTGRESQL_PORT: 5432
+      POSTGRESQL_DATABASE: guacamole_db
+      POSTGRESQL_USER: guacamole_user
+      POSTGRESQL_PASSWORD: guac_pg_pass_2026
+    networks:
+      - guac-net
+    restart: unless-stopped
+    # guacd가 VM 호스트 VNC(5901)에 접근하기 위해 host-gateway 필요
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ----------------------------------------------------------
+  # 4. nginx — 리버스 프록시 (port 80 → guacamole:8080)
+  # ----------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: guac-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - guacamole
+    networks:
+      - guac-net
+    restart: unless-stopped

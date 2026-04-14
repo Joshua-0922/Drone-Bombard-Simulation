@@ -1,0 +1,11 @@
+#!/bin/bash
+# ~/.vnc/xstartup — TigerVNC 세션 시작 스크립트
+# 위치: /home/nachoigpt/.vnc/xstartup
+# 권한: chmod +x ~/.vnc/xstartup
+
+unset SESSION_MANAGER
+unset DBUS_SESSION_BUS_ADDRESS
+export XDG_SESSION_TYPE=x11
+
+# XFCE4 데스크탑 환경 시작
+exec startxfce4

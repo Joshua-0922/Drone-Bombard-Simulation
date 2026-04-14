@@ -30,6 +30,7 @@ type: index
 | `errors/` | 에러 해결 기록 | `err_{YYYYMMDD}_{slug}.md` |
 | `sessions/` | 세션별 작업 일지 | `session_{YYYY-MM-DD}.md` |
 | `references/` | 논문·문서 메모 | `ref_{slug}.md` |
+| `Environment/` | 인프라 설정 백업 | `{service}.{ext}` |
 
 ---
 
@@ -52,3 +53,9 @@ type: index
 
 ### 세션 (sessions/)
 - [[sessions/session_2026-04-14]] — Obsidian 시스템 초기화 + 파일 간소화
+
+### 환경 설정 (Environment/)
+- [[Environment/README]] — Guacamole Docker Compose 스택 설치 가이드
+- [[Environment/docker-compose.yml]] — guacd + guacamole + postgres + nginx
+- [[Environment/nginx.conf]] — WebSocket 리버스 프록시 설정
+- [[Environment/vncserver.service]] — TigerVNC systemd 유닛
