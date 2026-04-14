@@ -1,0 +1,13 @@
+{
+  "legacyEditor": false,
+  "livePreview": true,
+  "defaultViewMode": "preview",
+  "foldHeading": true,
+  "foldIndent": true,
+  "showLineNumber": false,
+  "strictLineBreaks": false,
+  "showFrontmatter": false,
+  "newFileLocation": "current",
+  "promptDelete": false,
+  "attachmentFolderPath": "assets"
+}

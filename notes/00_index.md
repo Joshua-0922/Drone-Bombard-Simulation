@@ -21,6 +21,36 @@ type: index
 
 ---
 
+## 실험 현황 (Dataview)
+
+```dataview
+TABLE date, status, wandb_run FROM "experiments"
+WHERE type = "experiment"
+SORT date DESC
+```
+
+---
+
+## 미해결 에러 (Dataview)
+
+```dataview
+TABLE date, file.name FROM "errors"
+WHERE status = "open"
+SORT date DESC
+```
+
+---
+
+## 최근 세션 (Dataview)
+
+```dataview
+LIST FROM "sessions"
+SORT date DESC
+LIMIT 5
+```
+
+---
+
 ## 폴더 구조
 
 | 폴더 | 용도 | 네이밍 규칙 |
@@ -55,7 +85,7 @@ type: index
 - [[sessions/session_2026-04-14]] — Obsidian 시스템 초기화 + 파일 간소화
 
 ### 환경 설정 (Environment/)
-- [[Environment/README]] — Guacamole Docker Compose 스택 설치 가이드
+- [[Environment/README]] — VM 완전 복구 가이드
 - [[Environment/docker-compose.yml]] — guacd + guacamole + postgres + nginx
 - [[Environment/nginx.conf]] — WebSocket 리버스 프록시 설정
 - [[Environment/vncserver.service]] — TigerVNC systemd 유닛
