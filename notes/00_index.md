@@ -41,6 +41,15 @@ SORT date DESC
 
 ---
 
+## 최근 연구 일지 (Dataview)
+
+```dataview
+LIST FROM "daily"
+WHERE type = "daily"
+SORT date DESC
+LIMIT 7
+```
+
 ## 최근 세션 (Dataview)
 
 ```dataview
@@ -80,6 +89,9 @@ LIMIT 5
 ### 에러 (errors/)
 - [[errors/err_20260320_physics_explosion]] — Gazebo ODE 물리 폭발 3중 방어
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
+
+### 연구 일지 (daily/)
+- [[daily/daily_2026-04-14]] — Guacamole HTTPS + Obsidian 설치 + wikilink 정비
 
 ### 세션 (sessions/)
 - [[sessions/session_2026-04-14]] — Obsidian 시스템 초기화 + 파일 간소화

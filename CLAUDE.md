@@ -9,14 +9,15 @@
 ```
 notes/
 ├── 00_index.md          # 전체 대시보드 (항상 최신 유지)
+├── daily/               # 하루 마감 연구 일지 ← NEW
 ├── research/            # 이론·설계·아키텍처
 ├── experiments/         # 학습 실험 (WandB 연동)
 ├── errors/              # 에러 해결 기록
-├── sessions/            # 세션 일지
+├── sessions/            # 세션 작업 상세 기록
 └── references/          # 논문·문서
 ```
 
-**파일 네이밍:** `research/{topic}.md` / `experiments/exp_{NNN}_{run_id}_{title}.md` / `errors/err_{YYYYMMDD}_{slug}.md` / `sessions/session_{YYYY-MM-DD}.md`
+**파일 네이밍:** `research/{topic}.md` / `experiments/exp_{NNN}_{run_id}_{title}.md` / `errors/err_{YYYYMMDD}_{slug}.md` / `sessions/session_{YYYY-MM-DD}.md` / `daily/daily_{YYYY-MM-DD}.md`
 
 **YAML frontmatter 필수:** `date`, `tags`, `status`, `type` (experiments는 `wandb_run` 추가)
 
@@ -27,6 +28,21 @@ notes/
 2. `notes/00_index.md` 현재 상태 업데이트
 3. 에러 해결 → `notes/errors/` 기록
 4. 실험 시작/완료 → `notes/experiments/` 기록
+
+**VM 종료 전 자동 수행 (MANDATORY):**
+
+`notes/daily/daily_{YYYY-MM-DD}.md` 를 생성/업데이트. 양식은 `notes/daily/_template.md` 참고.
+
+필수 섹션:
+- **오늘 한 일** — 수행한 작업 전체 목록
+- **주요 결정 & 발견** — 왜 그런 판단을 내렸는지 이유 포함
+- **코드 변경 사항** — 파일명 + 변경 내용 표
+- **문제 & 해결** — 에러 발생 여부, 해결 방법, 미해결 상태 명시
+- **내일 할 일** — 다음 세션 시작 시 가장 먼저 할 것 (우선순위 순)
+- **관련 노트** — 오늘 작성/수정된 notes/ 파일 wikilink
+
+> 이 일지는 다음 세션에서 Claude가 "어제 무엇을 했는지" 파악하는 **핵심 컨텍스트**다.
+> 세션 시작 시 가장 최근 `daily/` 파일을 먼저 읽어 맥락을 복원한다.
 
 ---
 
