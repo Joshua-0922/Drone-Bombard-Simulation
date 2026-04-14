@@ -41,6 +41,11 @@ Makefile
 Thumbs.db
 
 # ======================
+# Claude Code
+# ======================
+.claude/
+
+# ======================
 # YOLO / ML
 # ======================
 # YOLO datasets (can be re-downloaded)
