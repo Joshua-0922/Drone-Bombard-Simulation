@@ -23,7 +23,7 @@ WorkingDirectory=/home/nachoigpt
 
 # vncserver 시작 — 1920x1080 24-bit 색상
 ExecStartPre=/bin/sh -c '/usr/bin/vncserver -kill :%i > /dev/null 2>&1 || :'
-ExecStart=/usr/bin/vncserver :%i -geometry 1920x1080 -depth 24 -localhost no
+ExecStart=/usr/bin/vncserver :%i -geometry 1920x1080 -depth 24 -localhost no -SecurityTypes VncAuth
 ExecStop=/usr/bin/vncserver -kill :%i
 
 Restart=on-failure
