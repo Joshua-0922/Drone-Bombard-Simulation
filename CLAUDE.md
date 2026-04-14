@@ -1,83 +1,44 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ---
 
 ## Obsidian 연구 비서 규칙 (MANDATORY)
 
-Claude는 **연구 비서** 역할을 수행한다. 모든 연구 기록, 에러 해결, 실험 결과는 `notes/` 폴더에 마크다운으로 작성한다.
-
-### 폴더 구조
+모든 연구 기록·에러 해결·실험 결과는 `notes/` 폴더에 마크다운으로 작성한다.
 
 ```
 notes/
-├── 00_index.md              # 전체 대시보드 (항상 최신 유지)
-├── research/                # 이론·설계·아키텍처 노트
-├── experiments/             # 학습 실험 기록 (WandB 연동)
-├── errors/                  # 에러 해결 기록
-├── sessions/                # 세션별 작업 일지
-└── references/              # 논문·문서 메모
+├── 00_index.md          # 전체 대시보드 (항상 최신 유지)
+├── research/            # 이론·설계·아키텍처
+├── experiments/         # 학습 실험 (WandB 연동)
+├── errors/              # 에러 해결 기록
+├── sessions/            # 세션 일지
+└── references/          # 논문·문서
 ```
 
-### 파일 네이밍 규칙
+**파일 네이밍:** `research/{topic}.md` / `experiments/exp_{NNN}_{run_id}_{title}.md` / `errors/err_{YYYYMMDD}_{slug}.md` / `sessions/session_{YYYY-MM-DD}.md`
 
-| 폴더 | 규칙 | 예시 |
-|------|------|------|
-| `research/` | `{topic_slug}.md` | `reward_design.md` |
-| `experiments/` | `exp_{NNN}_{wandb_id}_{title}.md` | `exp_003_abc123_rtf_test.md` |
-| `errors/` | `err_{YYYYMMDD}_{slug}.md` | `err_20260414_cruise_timeout.md` |
-| `sessions/` | `session_{YYYY-MM-DD}.md` | `session_2026-04-14.md` |
-| `references/` | `ref_{slug}.md` | `ref_CCIP_method.md` |
+**YAML frontmatter 필수:** `date`, `tags`, `status`, `type` (experiments는 `wandb_run` 추가)
 
-### YAML Frontmatter (모든 노트 필수)
+**수식:** 모든 수식은 LaTeX (`$...$` / `$$...$$`)
 
-```yaml
----
-date: YYYY-MM-DD
-updated: YYYY-MM-DD      # 수정 시에만
-tags: [category, subtag]
-status: draft | in-progress | completed | archived | pending
-type: research | experiment | error | session | reference
-wandb_run: <run_id>      # experiments/ 에만
----
-```
-
-### 수식 규칙
-
-- 모든 수식은 **LaTeX** 사용
-- 인라인: `$...$`, 블록: `$$...$$`
-- 보상 함수, 거리 계산 등 수치 표현은 반드시 LaTeX로 작성
-
-### 세션 의무 사항
-
-매 세션 종료 전 Claude는 **자동으로**:
-1. `notes/sessions/session_{YYYY-MM-DD}.md` 생성 또는 업데이트
-2. `notes/00_index.md` 현재 상태 섹션 업데이트
-3. 새로운 에러 해결 → `notes/errors/` 에 기록
-4. 새로운 학습 실험 시작/완료 → `notes/experiments/` 에 기록
-
-### WandB 실험 연동 규칙
-
-- 새 WandB run 시작 시: `exp_{NNN}_{wandb_id}_{title}.md` 즉시 생성
-- run 완료/종료 시: 해당 파일에 결과 지표 업데이트
-- `status: pending` → 학습 전, `status: in-progress` → 학습 중, `status: completed` → 완료
+**세션 종료 전 자동 수행:**
+1. `notes/sessions/session_{YYYY-MM-DD}.md` 생성/업데이트
+2. `notes/00_index.md` 현재 상태 업데이트
+3. 에러 해결 → `notes/errors/` 기록
+4. 실험 시작/완료 → `notes/experiments/` 기록
 
 ---
 
 ## Development Environment
 
-All development happens **inside a Docker container**. The host VM at `/opt/drone-bombard` is for git operations only. The container mounts:
-- `ros2_ws/` → `/workspace/ros2_ws` (ROS2 packages)
-- `gazebo_models/` → `/workspace/gazebo_models` (Gazebo models/worlds)
-
-Docker image is built automatically via GitHub Actions on push to `main` or `feature/migration-harmonic`. Pull the image; never build locally.
+개발은 **Docker 컨테이너 내부**에서만. 호스트 VM(`/opt/drone-bombard`)은 git 작업 전용.
 
 ```bash
-# Pull latest image
+# 이미지 pull
 docker pull us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest
 
-# Start container (first time)
+# 컨테이너 최초 실행
 xhost +local:docker
 docker run -itd --gpus all --net=host --privileged --ipc=host \
   --name drone-bombard-harmonic \
@@ -89,319 +50,112 @@ docker run -itd --gpus all --net=host --privileged --ipc=host \
   --log-driver=json-file --log-opt max-size=10m --log-opt max-file=3 \
   us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest /bin/bash
 
-# Reconnect to existing container
+# 기존 컨테이너 재접속
 xhost +local:docker && docker start -ai drone-bombard-harmonic
 ```
 
-## Build Commands (inside container)
+### 빌드 (컨테이너 내부)
 
 ```bash
-# Build all ROS2 packages
-cd /workspace/ros2_ws
-colcon build
-source install/setup.bash
-
-# Build a single package
-colcon build --packages-select <package_name>
-source install/setup.bash
+cd /workspace/ros2_ws && colcon build && source install/setup.bash
+colcon build --packages-select <package_name> && source install/setup.bash
 ```
 
-## Running the Full Simulation
+---
 
-**One-time PX4 build prerequisite:**
-```bash
-cd /opt/PX4-Autopilot && DONT_RUN=1 make px4_sitl gz_x500
-```
+## RL Training (Method A, Self-Managed)
 
-**Single launch command (inside container):**
-```bash
-cd /workspace/ros2_ws && source install/setup.bash
-ros2 launch mission_manager drone_mission.launch.py
+`DroneDropEnv._start_infra()`가 모든 인프라를 내부 관리. 별도 인프라 시작 불필요.
 
-# Optional flags:
-ros2 launch mission_manager drone_mission.launch.py headless:=true
-ros2 launch mission_manager drone_mission.launch.py enable_vision:=false
-```
-
-This single launch starts everything in order: MicroXRCEAgent + Gazebo Harmonic (t=0s) → ros_gz_bridge (t=10s) → PX4 SITL (t=12s) → YOLO vision node (t=22s) → mission nodes (t=0s, block on topics).
-
-**RL training — self-managed (Method A, current):**
-
-`DroneDropEnv._start_infra()` launches and manages all infrastructure internally. No separate infra step needed.
+> **⚠️ source 순서 필수:** `/root/ros2_ws/install/setup.bash` → `/workspace/ros2_ws/install/setup.bash`
+> 순서 틀리면 `px4_msgs` import 에러로 에피소드 노드 silent crash.
 
 ```bash
-# Resume from checkpoint (preferred)
+# Fresh start (보상 함수 변경 후)
 docker exec -d drone-bombard-harmonic bash -c \
   "source /opt/ros/humble/setup.bash && \
    source /root/ros2_ws/install/setup.bash && \
    source /workspace/ros2_ws/install/setup.bash && \
    export GZ_SIM_RESOURCE_PATH=/workspace/gazebo_models:/opt/PX4-Autopilot/Tools/simulation/gz/models:/opt/PX4-Autopilot/Tools/simulation/gz/worlds && \
-   cd /workspace/ros2_ws && \
-   ros2 run rl_navigation train_sac \
+   cd /workspace/ros2_ws && ros2 run rl_navigation train_sac \
+   > /tmp/production_train.log 2>&1"
+
+# Resume from checkpoint
+docker exec -d drone-bombard-harmonic bash -c \
+  "source /opt/ros/humble/setup.bash && \
+   source /root/ros2_ws/install/setup.bash && \
+   source /workspace/ros2_ws/install/setup.bash && \
+   export GZ_SIM_RESOURCE_PATH=/workspace/gazebo_models:/opt/PX4-Autopilot/Tools/simulation/gz/models:/opt/PX4-Autopilot/Tools/simulation/gz/worlds && \
+   cd /workspace/ros2_ws && ros2 run rl_navigation train_sac \
      --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip \
    > /tmp/production_train.log 2>&1"
 
-# Fresh start (after reward function changes)
-docker exec -d drone-bombard-harmonic bash -c \
-  "source /opt/ros/humble/setup.bash && \
-   source /root/ros2_ws/install/setup.bash && \
-   source /workspace/ros2_ws/install/setup.bash && \
-   export GZ_SIM_RESOURCE_PATH=/workspace/gazebo_models:/opt/PX4-Autopilot/Tools/simulation/gz/models:/opt/PX4-Autopilot/Tools/simulation/gz/worlds && \
-   cd /workspace/ros2_ws && \
-   ros2 run rl_navigation train_sac \
-   > /tmp/production_train.log 2>&1"
-
-# Monitor
+# 모니터
 docker exec drone-bombard-harmonic bash -c "tail -f /tmp/production_train.log"
 
-# Stop gracefully (triggers _emergency_save → sac_drop_preempt.zip + _replay.pkl)
+# 정상 종료 (→ sac_drop_preempt.zip + _replay.pkl 저장)
 docker exec drone-bombard-harmonic bash -c "pkill -SIGTERM -f train_sac"
 ```
 
-> **IMPORTANT — source order:** Always source `/root/ros2_ws/install/setup.bash` **before** `/workspace/ros2_ws/install/setup.bash`. The container `.bashrc` does this, but `docker exec` non-interactive shells do not inherit it. Missing this causes `px4_msgs` import errors that silently crash episode nodes.
-
-Each episode reset: kills mission_manager + drone_controller + drop_calculator, teleports drone+payload via `gz service set_pose/blocking`, restarts episode nodes. Gazebo and PX4 SITL stay alive across resets.
-
-## Testing
+### Quick-Start After VM Preemption
 
 ```bash
-# Publish test pixel coordinates to simulate vision detection
-# system_tester.py lives at the workspace root (ros2_ws/system_tester.py)
-cd /workspace/ros2_ws
-python3 system_tester.py
-
-# Test vision detection node
-bash test_vision_detection.sh
+xhost +local:docker && docker start -ai drone-bombard-harmonic
+docker exec drone-bombard-harmonic bash /workspace/ros2_ws/start_infra_clean.sh
+# 코드 변경 시 빌드 후 학습 재시작
 ```
-
-Python packages each have autogenerated linting tests (`test_flake8.py`, `test_pep257.py`). Run them with:
-```bash
-colcon test --packages-select <package_name>
-colcon test-result --verbose
-```
-
-## System Architecture
-
-The system is an autonomous drone that **cruises**, **detects** an X-marker target via downward camera, **tracks** it, then **drops** a payload.
-
-### Mission State Machine (`mission_manager`)
-
-FSM states managed by `mission_manager_node`, running at 10 Hz:
-- `TAKEOFF` → climbs to 10 m altitude (position-controlled to ENU (0,0,10))
-- `CRUISE` → flies north-east at 1 m/s by incrementing a position setpoint until target detected
-- `TRACKING` → delegates velocity control to `rl_navigation`; `rl_navigation_node` continuously publishes 2.0 m/s forward velocity while centering on target laterally; reverts to CRUISE if target lost
-- `DROP` → hovers (zero velocity) after drop confirmed via `/payload/drop_cmd`
-- `STATE_RETURN` → placeholder state; **not implemented**
-
-State transitions: `/target/pixel_coords` triggers CRUISE→TRACKING; `/payload/drop_cmd` triggers any→DROP.
-
-### Package Overview
-
-| Package | Type | Executable | Loop Rate | Role |
-|---------|------|-----------|-----------|------|
-| `mission_manager` | Python | `mission_manager_node` | 10 Hz | FSM commander; publishes `/drone/cmd/position` or `/drone/cmd/velocity`; also owns `drone_mission.launch.py` and `ros_gz_bridge.yaml` |
-| `drone_controller` | Python | `controller` | 20 Hz | PX4 bridge; converts ENU→NED commands to `/fmu/in/trajectory_setpoint`; arms and enters offboard mode 5 s after start |
-| `vision_detection` | ament_cmake (Python node) | `xmarker_detector` | 10 Hz | YOLOv8 inference; publishes `/target/pixel_coords` and `/vision/detections`. Package uses CMake for custom msg generation; detection node itself (`monocamera_xmarker_detector.py`) is Python. |
-| `rl_navigation` | Python | `rl_navigation_node` | 10 Hz | Tracking controller; sends velocity commands; triggers payload drop via `/payload/drop_cmd`. `drone_env.py` and `train_ppo.py` are empty placeholders for future RL training. |
-| `drop_calculator` | Python | `calculator` | 20 Hz | Post-drop referee; tracks payload position until ground impact; publishes miss distance to `/rl/drop_error` |
-| `px4_msgs` | CMake | — | — | PX4 message type definitions (synced with PX4 v1.15.4) |
-
-### Key Topics
-
-| Topic | Type | Flow |
-|-------|------|------|
-| `/target/pixel_coords` | `geometry_msgs/Point` | vision_detection → mission_manager, rl_navigation (x=u, y=v, z=confidence; z=0 means no detection) |
-| `/mission/state` | `std_msgs/String` | mission_manager → rl_navigation |
-| `/drone/cmd/position` | `geometry_msgs/Vector3` | mission_manager → drone_controller (ENU) |
-| `/drone/cmd/velocity` | `geometry_msgs/Twist` | rl_navigation → drone_controller (ENU) |
-| `/fmu/in/trajectory_setpoint` | `px4_msgs/TrajectorySetpoint` | drone_controller → PX4 (NED) |
-| `/payload/drop_cmd` | `std_msgs/Empty` | rl_navigation → ros_gz_bridge → DetachableJoint (triggers physical drop) |
-| `/drone/payload/drop_cmd_raw` | `std_msgs/Bool` | rl_navigation → drop_calculator (`False` = drop event) |
-| `/drone/payload/position` | `nav_msgs/Odometry` | ros_gz_bridge → drop_calculator (payload ground-truth position) |
-| `/rl/drop_error` | `std_msgs/Float32` | drop_calculator → logging/RL reward; meters from target |
-| `/vision/detections` | `vision_detection/DetectionResult` | vision_detection → monitoring |
-| `/vision/annotated_image` | `sensor_msgs/Image` | vision_detection → visualization |
-
-### Coordinate Systems
-
-- **PX4 uses NED** (North-East-Down): altitude is negative-z
-- **ROS2 uses ENU**: altitude is +z
-- `drone_controller` translates ENU→NED: position `(x, y, z)` → `(x, -y, -z)`; velocity `(vx, vy, vz, yaw)` → `(vx, -vy, -vz, -yaw)`
-- PX4 topics require `BEST_EFFORT` QoS reliability; using `RELIABLE` causes silent subscription failures
-
-### Payload Drop Mechanism
-
-The payload uses a `DetachableJoint` plugin defined in `gazebo_models/x500_bombard/model.sdf`. The joint auto-attaches at simulation startup — no service call needed.
-
-Drop sequence:
-1. `rl_navigation` publishes `std_msgs/Empty` to `/payload/drop_cmd`
-2. `ros_gz_bridge` forwards it to gz-transport topic `/x500_bombard/drop` → `DetachableJoint` releases the payload physically
-3. `rl_navigation` also publishes `Bool(False)` to `/drone/payload/drop_cmd_raw` to signal `drop_calculator` (note: `False` = drop event, `True` = normal — semantics are inverted)
-4. `drop_calculator` tracks `/drone/payload/position` (bridged from `OdometryPublisher` in `payload_cylinder/model.sdf`) until payload z ≤ 0.04 m, then publishes miss distance to `/rl/drop_error`
-
-> Note: `drop_calculator/node.py` is an older ballistics predictor that is **not** the registered entry point and not launched by default. The active entry point is `drop_calculator_node.py` (`calculator` executable).
-
-### Gazebo Bridge Configuration
-
-`mission_manager/config/ros_gz_bridge.yaml` defines all gz-transport ↔ ROS2 bridges:
-- `/clock` (GZ→ROS): simulation time sync
-- `/x500_bombard/down_camera/image_raw` → `/camera/rgb/image_raw` (GZ→ROS): camera feed for YOLO
-- `/model/payload_cylinder/odometry` → `/drone/payload/position` (GZ→ROS): payload position
-- `/payload/drop_cmd` → `/x500_bombard/drop` (ROS→GZ): drop trigger
-- `/imu/data` (GZ→ROS): diagnostics only
-
-### YOLO Model
-
-- Model file (inside container): `/workspace/ros2_ws/yolo_workspace/runs/train/drone_bombard_train2/weights/best.pt`
-- Root copy in repo: `drone_bombard_best.pt`
-- YOLOv8n trained on X-marker images; mAP@0.5 = 99.5%; inference at 10 Hz
-
-### Docker Image Contents
-
-Built from `drone_drop_system/docker/Dockerfile`:
-- Ubuntu 22.04 + CUDA 12.6.2
-- ROS2 Humble (desktop)
-- Gazebo Harmonic (`gz-harmonic`) + `ros-humble-ros-gzharmonic` bridge
-- PX4 Autopilot v1.15.4 at `/opt/PX4-Autopilot`
-- uXRCE-DDS-Agent at `/opt/Micro-XRCE-DDS-Agent`
-- px4_msgs pre-built at `/root/ros2_ws` (separate from workspace volume)
-- Python deps from `drone_drop_system/docker/requirements.txt`
 
 ---
 
-## Auto-Logging and Git Sync Rules (MANDATORY)
+## Auto-Logging & Git Sync (MANDATORY)
 
-These rules apply to every Claude Code session working in this repository.
+모든 주요 작업·코드 수정·세션 종료 전 Claude는 **자동으로**:
 
-### RL_Project_Log.md — Enforced Structure
-
-`RL_Project_Log.md` in the project root MUST always follow this exact 4-section structure:
-
-```
-# 1. Current State
-(Overwrite each session) — Current reward formula, key hyperparameters, path to best checkpoint.
-
-# 2. Recent Progress
-(Update each session) — Completed tasks, implemented plans, architecture changes moved from Remaining Tasks.
-
-# 3. Remaining Tasks (Next Steps)
-(Checklist) — Bulleted `- [ ]` items for what needs to be done next.
-
-# 4. Training History (Append-only)
-(Never overwrite) — Chronological experiment log: Date, WandB run link, metrics, brief summary.
-```
-
-### Zero-Prompt Execution Rule
-
-Before concluding **any** major task, code modification, or session, Claude MUST:
-1. Automatically update `RL_Project_Log.md` following the 4-section structure above — **without asking for permission**.
-2. Immediately after updating the log, run the following git commands to sync to the remote:
+1. `RL_Project_Log.md` 4-section 구조로 업데이트 (허락 불필요)
+2. Git push:
 
 ```bash
 git add .
-git commit -m "Auto-sync: [Brief summary of what was done]"
-GIT_SSH_COMMAND="ssh -i /home/ubuntu/.ssh/id_ed25519" git push origin feature/migration-harmonic
+git commit -m "Auto-sync: [작업 요약]"
+git push origin main
 ```
 
-> **Note on git auth:** Commits should be made as the `drone-bombard` user (`sudo -u drone-bombard git commit ...`). The push must be issued as `ubuntu` with the explicit SSH key because `sudo` drops key access. If the working directory is not trusted, first run: `git config --global --add safe.directory /opt/drone-bombard/Drone-Bombard-Simulation`
+### RL_Project_Log.md 구조
+
+```
+# 1. Current State     — 현재 보상 공식, 핵심 하이퍼파라미터, 체크포인트 경로
+# 2. Recent Progress   — 완료된 작업 (최근 5개 이내)
+# 3. Remaining Tasks   — [ ] 체크리스트
+# 4. Training History  — 추가만 가능 (날짜 | Run ID | Steps | 요약)
+```
 
 ---
 
-## RL Environment — Current Design (Method A)
+## RL 핵심 규칙 (MANDATORY)
 
-### Reward Function (as of 2026-03-20)
+상세 내용: `notes/research/rl_rules.md`
 
-4-layer hierarchical reward in `drone_drop_env.py::_compute_reward()` and `step()`:
-
-| Layer | Condition | Formula | Key params |
-|-------|-----------|---------|-----------|
-| **1 — Safety** | Per step | `−penalty_crash` if alt < 2 m (after step 20); `−penalty_overspeed` if speed > 20 m/s | `penalty_crash=−10`, `penalty_overspeed=−8` |
-| **2 — Stability** | Per step | `−w_time − w_ang_vel·‖ω‖² − w_action_smooth·‖Δa‖²` | `w_time=0.01`, `w_ang_vel=0.05`, `w_action_smooth=0.05` |
-| **3 — Approach** | Per step | `w_dist·(d_prev − d_xy) + w_heading·cos(heading_to_target)` | `w_dist=1.0`, `w_heading=1.0` |
-| **4 — Drop** | Terminal | `w_drop_base·exp(−k2·d_error) [+ r_success_jackpot if d ≤ 0.1 m]` | `w_drop_base=50`, `k2=5.0`, `jackpot=100` |
-
-**Layer 3 note:** Uses **linear** distance reward (`d_prev − d_xy`), NOT exponential potential. The exponential `exp(−k1·d)` with `k1=1.0` saturated to machine-zero at d > 10 m, giving zero gradient throughout the operating range (~15–50 m). Never switch back to exponential without verifying `exp(−k1·d_max) > 1e-6`.
-
-**Auto-drop:** Fires when `d_xy ≤ 0.5 m` (2D horizontal distance, no kinematic prediction). Layer 4 reward is the actual Gazebo physics result from `drop_calculator` via `/rl/drop_error` (10 s timeout; 99.0 m penalty if no result).
-
-### Physics Explosion Defence (three layers)
-
-Gazebo/PX4 can produce coordinate explosions (e.g., `d_xy = 1.98×10¹¹` m). Three independent guards prevent replay buffer corruption:
-
-1. **Source (`_on_local_pos`):** Rejects positions with `|pos| > 1000 m` — retains last-known-good value. Bad coordinates never enter `pos_enu`.
-2. **Step guard (`step()`):** `not math.isfinite(d_xy) or d_xy > 500.0` → terminates episode with `reward = −100`, sets `info['physics_glitch'] = True`. Key is `glitch_d_xy` (not `d_xy`) so WandB callback skips it.
-3. **WandB (`WandbMetricsCallback`):** Accumulates `d_xy` only from steps where `'d_xy' in info` (glitch steps use `glitch_d_xy`). Counts glitches as `env/physics_glitch_count`.
-
-### WandB Metrics
-
-| Metric | Meaning | Healthy signal |
-|--------|---------|---------------|
-| `env/mean_d_xy` | Rollout-mean drone→target distance | Decreasing over training |
-| `env/mean_rew_dist` | Mean Layer 3 distance component | Positive = approaching |
-| `env/mean_rew_orient` | Mean heading alignment reward | Near 0 early; positive as policy aligns |
-| `env/mean_rew_ctrl` | Mean Layer 2 stability penalty | Always negative, small magnitude |
-| `env/drop_error_actual_m` | Mean physics miss distance | Decreasing; 0 = perfect |
-| `env/success_rate` | Fraction of drops within 0.5 m | Increasing; target > 0.8 |
-| `env/physics_glitch_count` | Gazebo explosion events per rollout | Should be 0; investigate if > 0 |
-
-### Checkpoint Management Rules
-
-- **Preempt checkpoint:** `sac_drop_preempt.zip` + `sac_drop_preempt_replay.pkl` — saved by `_emergency_save()` on SIGTERM. **Always overwritten on next SIGTERM.**
-- **Rolling checkpoints:** `sac_drop_{N}_steps.zip` — saved every 5000 steps, last 5 kept. No replay buffer. Safe to resume from.
-- **After a physics explosion:** SIGTERM → `_emergency_save` overwrites the preempt with the corrupted session's replay buffer. Resume from the latest **rolling checkpoint** instead (no matching `_replay.pkl` → SB3 starts fresh buffer automatically).
-- **Corrupted buffer convention:** Rename to `.CORRUPTED_{date}` rather than deleting, for audit trail.
-- **Reward function change → always fresh start.** Stored rewards in the replay buffer reflect the old formula. Resuming corrupts the critic for the first `buffer_size` steps (~100K), which is most of the training budget.
+1. **Fail-Fast:** 코드 변경 후 dry-run (2–3 에피소드) 먼저. 성공 확인 후 full training.
+2. **병렬화:** `num_envs=1` 고정 (Gazebo lockstep 병목). SubprocVecEnv 시 15 s 스태거.
+3. **보상 공식 변경 → 항상 Fresh Start.** Replay buffer 재사용 금지.
+4. **거리 보상:** 지수 포텐셜 사용 전 $e^{-k_1 d_{max}} > 10^{-4}$ 확인. 권장: 선형 보상.
+5. **체크포인트:** 물리 폭발 후 preempt 재개 금지 → rolling checkpoint 사용.
+6. **WandB:** 첫 롤아웃 후 `env/mean_rew_dist ≠ 0` 확인. 물리 글리치 값은 별도 키(`glitch_d_xy`) 사용.
 
 ### Known Failure Modes
 
-| Symptom | Root cause | Fix |
-|---------|-----------|-----|
-| `mean_rew_dist = 0` | Exponential potential saturated (k1 too large) | Use linear reward; check `exp(−k1·d_max) > 1e-6` |
-| `mean_d_xy` explodes to 1e11 | Gazebo ODE physics explosion | Three-layer defence (above) catches it |
-| CRUISE timeout warnings | PX4 arm race / drone flipped from previous episode | `reset()` retries once; investigate if > 1 timeout/10 episodes |
-| `ep_rew_mean` spiraling down | CRUISE timeouts → crash-penalty episodes filling buffer | Fix CRUISE timeout root cause; check fps drop |
-| fps drops suddenly | CRUISE timeout (65 s wait) or ODE crash | Check log for "Timed out waiting for CRUISE" |
+| 증상 | 원인 | 해결 |
+|------|------|------|
+| `mean_rew_dist = 0` | 지수 포텐셜 포화 | 선형 보상으로 전환 |
+| `mean_d_xy` → 1e11 | Gazebo ODE 폭발 | 3중 방어 레이어 (notes/errors/) |
+| CRUISE 타임아웃 반복 | PX4 arm race | `reset()` 재시도; fps 하락 확인 |
+| fps 급감 | CRUISE 65 s 대기 / ODE 크래시 | 로그에서 "Timed out waiting for CRUISE" |
 
 ---
 
-## RL Experiment & Debugging Rules (MANDATORY)
+## 시스템 아키텍처 & 상세 레퍼런스
 
-To prevent wasting cloud resources, Gazebo crashes, and invalid data collection, Claude MUST strictly follow these rules when modifying or running RL code:
-
-### 1. "Fail-Fast" Debugging Rule
-- **Never** start a long training run (>10,000 steps) immediately after changing code.
-- **Always** run a short dry-run (e.g., 2-3 episodes, `num_envs=1`) to verify that there are no syntax errors, Gazebo ODE crashes, or PX4 lockstep timeouts.
-- Only proceed to full training after the dry-run successfully completes and logs to WandB.
-
-### 2. Simulator Stability & Parallelism Rule
-- The environment uses heavy 3D simulation (Gazebo Harmonic + PX4 SITL).
-- If setting up `SubprocVecEnv` (e.g., `num_envs=4`), Claude MUST stagger the initialization (e.g., `time.sleep(15)` between instance creations) to prevent CPU spikes and PX4 connection timeouts.
-- **Beware of ODE AABB Crashes:** Ensure the payload does not free-fall before the drone spawns. Use physics pausing (`--pause`) during environment initialization if necessary.
-- If `num_envs=4` repeatedly crashes with timeout or memory errors, automatically fallback to `num_envs=1` to ensure stable data collection.
-
-### 3. Evaluation and Paper-Ready Data Rule
-- **Never** use training reward (`rollout/ep_rew_mean`) as the sole metric for final performance, as it includes exploration noise.
-- **Always** implement and rely on `EvalCallback` (e.g., every 10,000 steps in a deterministic environment).
-- Automatically save the `best_model.zip` based on the evaluation environment.
-- Explicitly log custom domain metrics to WandB during evaluation, such as:
-  - `custom/success_rate`: % of drops within 0.5m of the target.
-  - `custom/final_distance`: Average miss distance in meters.
-  - `custom/timeout_rate`: % of episodes ending due to 500-step limits.
-
-### 4. Reward Function Design Rule
-- **Before implementing any distance-based reward**, verify the gradient is nonzero at the drone's actual operating range.
-  - Exponential potential `exp(−k1·d)`: with `k1=1.0` and `d=45 m`, this equals `6.5×10⁻²⁰` — machine zero. The policy receives no learning signal.
-  - **Rule of thumb:** `exp(−k1·d_max) > 1e-4`. For a 50 m operating range, `k1 < 0.18`.
-  - **Preferred:** Linear reward `w_dist × (d_prev − d_xy)` — gradient at any distance, no saturation.
-- **After any reward formula change, always do a fresh start** — do not resume from a checkpoint whose replay buffer contains rewards computed under the old formula. The critic will be trained on mixed rewards for `buffer_size` steps (~100K), corrupting Q-value estimates throughout most of training.
-- **Verify reward components are nonzero in WandB** before starting a long run. If `env/mean_rew_dist = 0` after the first rollout, stop immediately and diagnose.
-
-### 5. Checkpoint and Replay Buffer Integrity Rule
-- **Never resume from a preempt checkpoint immediately after a physics explosion.** `_emergency_save()` overwrites `sac_drop_preempt.zip` and `sac_drop_preempt_replay.pkl` with the current (possibly corrupted) state. Resume from the latest rolling `sac_drop_{N}_steps.zip` instead (no matching `_replay.pkl` → SB3 starts fresh buffer).
-- **When quarantining a corrupted buffer**, rename it to `.CORRUPTED_{YYYYMMDD}` rather than deleting. This preserves an audit trail.
-- **The rolling checkpoints** (`sac_drop_{N}_steps.zip`, no replay buffer) are always safe to resume from. They contain only model weights.
-
-### 6. WandB Metric Integrity Rule
-- **Never log physics-glitch values into running means.** A single step with `d_xy = 1.98×10¹¹` in a 2048-step rollout makes `env/mean_d_xy ≈ 10⁸` — the metric is useless for the rest of the run.
-- **Pattern:** For any metric that can have pathological outliers, use a separate key for the outlier value (e.g., `glitch_d_xy`) and only accumulate the normal-path key (e.g., `d_xy`) in running means.
-- **Always check WandB after the first rollout** (~2 min) to verify all `env/*` metrics are nonzero and plausible before walking away from a training run.
+→ `notes/research/system_overview.md` (패키지, 토픽, 좌표계, 브리지 설정, YOLO)  
+→ `notes/research/reward_design.md` (보상 함수 LaTeX 상세)  
+→ `notes/research/rl_rules.md` (RL 규칙 상세, WandB 메트릭 레퍼런스)  
+→ `notes/research/architecture.md` (Method A 아키텍처)
