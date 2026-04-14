@@ -24,6 +24,10 @@ services:
     networks:
       - guac-net
     restart: unless-stopped
+    # VNC 연결 시 hostname 'nachoigpt' 해석을 위해 host-gateway 매핑
+    extra_hosts:
+      - "nachoigpt:host-gateway"
+      - "host.docker.internal:host-gateway"
 
   # ----------------------------------------------------------
   # 2. postgres — Guacamole 사용자/연결 DB
@@ -69,8 +73,9 @@ services:
     networks:
       - guac-net
     restart: unless-stopped
-    # guacd가 VM 호스트 VNC(5901)에 접근하기 위해 host-gateway 필요
+    # guacd가 VM 호스트 VNC(5901)에 접근하기 위해 host-gateway 매핑
     extra_hosts:
+      - "nachoigpt:host-gateway"
       - "host.docker.internal:host-gateway"
 
   # ----------------------------------------------------------
