@@ -2,6 +2,7 @@
 
 > **이 파일 하나만 보고 새 VM에서 전체 환경을 원상 복구할 수 있도록 작성됨.**
 > 순서대로 실행하면 됨. VM IP: `136.113.193.83`
+> 접속: **https://136.113.193.83** (HTTP는 자동으로 HTTPS로 리다이렉트)
 
 ---
 
@@ -495,7 +496,21 @@ cp /opt/drone-bombard/Drone-Bombard-Simulation/notes/Environment/initdb.sql \
    /opt/drone-bombard/guacamole-stack/
 ```
 
-### 10-2. initdb.sql 생성 (최초 1회 또는 재생성 필요 시)
+### 10-2. SSL 인증서 생성 (자체 서명, 10년)
+
+> 도메인 없이 IP만으로 HTTPS 구성. 브라우저에서 "연결이 안전하지 않음" 경고 1회 무시 후 접속 가능.
+
+```bash
+mkdir -p /opt/drone-bombard/guacamole-stack/ssl
+
+openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+  -keyout /opt/drone-bombard/guacamole-stack/ssl/nginx.key \
+  -out    /opt/drone-bombard/guacamole-stack/ssl/nginx.crt \
+  -subj "/C=KR/ST=Seoul/L=Seoul/O=DroneBombard/OU=Research/CN=136.113.193.83" \
+  -addext "subjectAltName=IP:136.113.193.83"
+```
+
+### 10-3. initdb.sql 생성 (최초 1회 또는 재생성 필요 시)
 
 ```bash
 docker run --rm guacamole/guacamole:1.5.5 \
