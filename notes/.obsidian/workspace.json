@@ -11,10 +11,10 @@
             "id": "e58fb39b56c9efb5",
             "type": "leaf",
             "state": {
-              "type": "empty",
+              "type": "graph",
               "state": {},
-              "icon": "lucide-file",
-              "title": "새 탭"
+              "icon": "lucide-git-fork",
+              "title": "그래프 뷰"
             }
           }
         ]
@@ -176,6 +176,10 @@
   },
   "active": "e58fb39b56c9efb5",
   "lastOpenFiles": [
+    "sessions/commands.md",
+    "daily/daily_2026-04-14.md",
+    "daily/_template.md",
+    "daily",
     "00_index.md",
     "research/system_overview.md",
     "research/reward_design.md",

@@ -1,7 +1,10 @@
-# Build and Install files (?? ?? 1??)
+# Build artifacts
 build/
 install/
 log/
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
 
 # Git internals
 .git/
@@ -13,7 +16,19 @@ Thumbs.db
 # Python bytecode
 __pycache__/
 *.pyc
+*.pyo
 
-# PX4/Gazebo temporary files
+# Gazebo models (large asset files)
+gazebo_models/
+
+# Obsidian internal config
+notes/.obsidian/
+
+# RL checkpoints & replay buffers
+*.pkl
+*.zip
+*.bag
+
+# Logs
 *.log
 *.bak
