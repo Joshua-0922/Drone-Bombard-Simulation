@@ -12,12 +12,13 @@ type: index
 
 ---
 
-## 현재 상태 (2026-04-14)
+## 현재 상태 (2026-04-16)
 
 - **알고리즘:** SAC, `net_arch=[256,256]`, L4 GPU
 - **보상 함수:** 2026-03-22 패치 완료, **Fresh 1M-step 학습 대기 중**
+- **RTF:** **2** (dry-run 실험으로 RTF=2 최적 확정, avg 59.5 fps)
 - **마지막 정상 체크포인트:** `sac_drop_preempt.zip` (run `8otphxy8`, ~114K steps)
-- **다음 행동:** `ros2 run rl_navigation train_sac` (fresh start, no --resume)
+- **다음 행동:** `ros2 run rl_navigation train_sac --config hyperparams_rtf2.yaml` (fresh start)
 
 ---
 
@@ -26,7 +27,8 @@ type: index
 | # | Run ID | Steps | 상태 | 비고 |
 |---|--------|-------|------|------|
 | 001 | 8otphxy8 | 114K | ✅ 완료 | 선형 보상 + CRUISE retry |
-| 002 | — | 0 | ⏳ 대기 | 보상 패치 Fresh Start 필요 |
+| 002 | — | 0 | ⏳ 대기 | 보상 패치 Fresh Start 필요, RTF=2 |
+| 003 (dry-run) | mtx7ud6o/x8jq9fsy/u8w3xn0w | 5500×3 | ✅ 완료 | RTF 1/2/4 비교 → RTF=2 최적 |
 
 ## 에러 현황
 
@@ -75,15 +77,18 @@ type: index
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
 - [[experiments/exp_001_8otphxy8_linear_reward]] — 선형 거리 보상 + CRUISE retry
 - [[experiments/exp_002_reward_shaping_patches]] — 보상 패치 Fresh Training (대기 중)
+- [[experiments/exp_003_rtf_dryrun]] — RTF 1/2/4 dry-run 비교. RTF=2 최적 확정.
 
 ### 에러 (errors/)
 - [[errors/err_20260320_physics_explosion]] — Gazebo ODE 물리 폭발 3중 방어
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-04-16]] — WandB 연결 + RTF dry-run 실험 + 인프라 고장 해결
 - [[daily/daily_2026-04-14]] — Guacamole HTTPS + Obsidian 설치 + wikilink 정비
 
 ### 세션 (sessions/)
+- [[sessions/session_2026-04-16]] — RTF dry-run, docker commit, airframe 수정
 - [[sessions/session_2026-04-14]] — Obsidian 시스템 초기화 + 파일 간소화
 
 ### 환경 설정 (Environment/)

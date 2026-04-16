@@ -356,6 +356,7 @@ class DroneDropEnv(gym.Env):
         self._cfg_min_alt_start = cfg_env.get('min_altitude_start_step', 20)
         self._cfg_obs_wait = cfg_env.get('obs_wait_timeout', 0.15)
         self._cfg_cruise_timeout = cfg_env.get('cruise_poll_timeout', 60.0)
+        self._cfg_sim_speed_factor = int(cfg_env.get('sim_speed_factor', 1))
         # use_vision=False: skip camera termination + synthesise conf=1.0 in obs
         self._cfg_use_vision = cfg_env.get('use_vision', True)
 
@@ -992,10 +993,19 @@ class DroneDropEnv(gym.Env):
                 pass
 
             worlds_dir = os.path.join(models_dir, 'worlds')
+            # Generate temp SDF with configured real_time_factor (RTF > 1 for faster training)
+            world_sdf = os.path.join(worlds_dir, 'x_marker_world.sdf')
+            if self._cfg_sim_speed_factor != 1:
+                with open(world_sdf, 'r') as _f:
+                    _sdf = _f.read().replace(
+                        '<real_time_factor>1</real_time_factor>',
+                        f'<real_time_factor>{self._cfg_sim_speed_factor}</real_time_factor>')
+                world_sdf = f'/tmp/x_marker_world_rtf{self._cfg_sim_speed_factor}.sdf'
+                with open(world_sdf, 'w') as _f:
+                    _f.write(_sdf)
             gz_log = open(f'/tmp/gz_{iid}.log', 'w')
             gz = subprocess.Popen(
-                ['gz', 'sim', '-r', '-s',
-                 os.path.join(worlds_dir, 'x_marker_world.sdf')],
+                ['gz', 'sim', '-r', '-s', world_sdf],
                 env=infra_env,
                 stdout=gz_log, stderr=subprocess.STDOUT,
                 preexec_fn=os.setsid,
@@ -1062,7 +1072,7 @@ class DroneDropEnv(gym.Env):
             'PX4_GZ_WORLD': 'x_marker_world',
             'PX4_SIM_MODEL': self._px4_sim_model,  # gz_x500_bombard_rN → spawns x500_bombard_rN_N
             'PX4_GZ_MODEL_POSE': f'0,{iid_y},0.5,0,0,0',  # 0.5m above ground to prevent geometry overlap on spawn
-            'PX4_SIM_SPEED_FACTOR': '1',
+            'PX4_SIM_SPEED_FACTOR': str(self._cfg_sim_speed_factor),
             'PX4_UXRCE_DDS_PORT': str(self._uxrce_port),
         })
         px4_bridge_dir = (

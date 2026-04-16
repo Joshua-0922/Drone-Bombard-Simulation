@@ -1,0 +1,63 @@
+training:
+  total_timesteps: 5500
+  checkpoint_freq: 5000
+  max_checkpoints_kept: 2
+  checkpoint_dir: "/workspace/ros2_ws/rl_checkpoints/rtf4_dryrun"
+  num_envs: 1
+  env_stagger_secs: 10
+
+sac:
+  learning_rate: 3.0e-4
+  buffer_size: 100000
+  batch_size: 256
+  tau: 0.005
+  gamma: 0.99
+  learning_starts: 10000
+  net_arch: [256, 256]
+  device: "cuda"
+
+environment:
+  target_enu_x: 11.0
+  target_enu_y: 10.0
+  pos_scale: 50.0
+  vel_scale: 15.0
+  ang_vel_scale: 3.14159265
+  action_vx_scale: 15.0
+  action_vy_scale: 5.0
+  action_vz_scale: 3.0
+  action_yaw_scale: 1.0
+  max_steps: 500
+  min_altitude: 2.0
+  min_altitude_start_step: 20
+  obs_wait_timeout: 0.02
+  cruise_poll_timeout: 60.0
+  use_vision: false
+  sim_speed_factor: 4          # RTF=4 (4x faster than real-time)
+
+reward:
+  g: 9.81
+  auto_drop_threshold: 0.5
+  drop_wait_timeout: 10.0
+  k1_potential: 1.0
+  w_dist: 1.0
+  w_heading: 1.0
+  w_time: 0.05
+  w_ang_vel: 0.05
+  w_action_smooth: 0.05
+  w_drop_base: 50.0
+  r_success_jackpot: 100.0
+  success_threshold: 0.1
+  penalty_instability: 50.0
+  limit_ang_vel: 2.0
+  limit_tilt: 0.26
+  penalty_crash: -10.0
+  penalty_overspeed: -8.0
+  penalty_target_lost: -10.0
+
+wandb:
+  project: "drone-bombard-sac"
+  entity: "nayoonho0922-seoul-national-university"
+  run_name: "dryrun-RTF4-2026-04-16"
+  tags: ["dryrun", "rtf-comparison", "rtf4"]
+  save_model_artifact: false
+  log_freq: 100

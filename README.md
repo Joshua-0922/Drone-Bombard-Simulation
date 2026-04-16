@@ -154,6 +154,7 @@ docker run -itd \
   --env="DISPLAY=$DISPLAY" \
   --env="QT_X11_NO_MITSHM=1" \
   --env="NVIDIA_DRIVER_CAPABILITIES=all" \
+  --env-file /opt/drone-bombard/.wandb.env \
   --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
   -v /opt/drone-bombard/Drone-Bombard-Simulation/ros2_ws:/workspace/ros2_ws \
   -v /opt/drone-bombard/Drone-Bombard-Simulation/gazebo_models:/workspace/gazebo_models \

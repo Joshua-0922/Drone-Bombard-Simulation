@@ -6,7 +6,7 @@
 
 # 1. Current State
 
-**업데이트:** 2026-04-14
+**업데이트:** 2026-04-16
 
 ### 활성 보상 공식 (2026-03-22 패치, 미적용)
 
@@ -26,8 +26,8 @@
 | Algorithm | SAC, `net_arch=[256,256]`, `device=cuda` |
 | `num_envs` | 1 (Gazebo lockstep 병목으로 고정) |
 | `total_timesteps` | 1,000,000 |
-| RTF | 1.0 |
-| 예상 fps | ~33 |
+| RTF | **2** (RTF dry-run 결과: RTF=2 최적, avg 59.5 fps) |
+| 예상 fps | **~60** |
 
 ### 체크포인트
 
@@ -38,6 +38,8 @@
 
 # 2. Recent Progress
 
+- **2026-04-16:** RTF dry-run 3종 완료 (RTF 1/2/4). **RTF=2 최적** (avg 59.5 fps, 61s/4Kstep). RTF=4는 Python 병목으로 역전. Exp 002 RTF=2로 결정.
+- **2026-04-16:** WandB API key 영구 연결 (`/opt/drone-bombard/.wandb.env`, `--env-file` 방식). Docker image `drone-bombard-px4built:latest` — PX4 빌드 + 커스텀 airframes 4016-4019 포함.
 - **2026-04-14:** Obsidian 연구 비서 시스템 초기화. `notes/` 구조 구축, CLAUDE.md + RL_Project_Log.md 간소화.
 - **2026-03-22:** 보상 해킹 분석 → 4개 anti-milking 패치 적용 (학습 대기 중).
 - **2026-03-20:** 선형 거리 보상 도입 (지수 포텐셜 교체), CRUISE retry, 3중 물리 폭발 방어.
@@ -48,8 +50,8 @@
 
 # 3. Remaining Tasks (Next Steps)
 
-- [ ] **Fresh 1M-step 학습 시작** — 보상 패치 이후 fresh start (run `exp_002`)
-- [ ] **RTF > 1 조사** — `PX4_SIM_SPEED_FACTOR > 1`로 학습 속도 향상 가능성
+- [ ] **Fresh 1M-step 학습 시작** — 보상 패치 이후 fresh start (run `exp_002`), **RTF=2**로 진행
+- [x] **RTF > 1 조사** — dry-run 완료. RTF=2 최적 확정.
 - [ ] **EvalCallback 추가** — 10K steps마다 deterministic 평가, `best_model.zip` 저장
 - [ ] **커스텀 SB3 policy** — PyTorch AMP (mixed precision)으로 L4 GPU 활용도 향상
 - [ ] **Phase 2 커리큘럼** — policy가 표적 도달 안정화 후 manual drop 재활성화
@@ -68,4 +70,5 @@
 |------|--------|-------|------|
 | 2026-03-20 | 8otphxy8 | 114K | 선형 거리 보상 + CRUISE retry. 마지막 정상 베이스라인. |
 | 2026-03-22 | — | — | 보상 패치 적용 (학습 없음). Fresh start 대기 중. |
-| _TBD_ | exp_002 | — | 보상 패치 후 Fresh 1M-step 학습 |
+| 2026-04-16 | mtx7ud6o/x8jq9fsy/u8w3xn0w | 5500×3 | RTF 1/2/4 dry-run. RTF=2 최적 (59.5 fps). |
+| _TBD_ | exp_002 | — | 보상 패치 후 Fresh 1M-step 학습, RTF=2 |

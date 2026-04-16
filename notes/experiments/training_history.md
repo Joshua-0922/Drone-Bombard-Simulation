@@ -33,3 +33,4 @@ type: reference
 | 2026-03-20 | naf4zyhm | 104K | — | 3중 폭발 방어 적용. **KILLED** — `mean_rew_dist=0` (지수 포텐셜 포화 k1=1.0). |
 | 2026-03-20 | 8otphxy8 | 114K | — | **선형 거리 보상 + CRUISE retry.** 마지막 정상 베이스라인. → [[experiments/exp_001_8otphxy8_linear_reward]] |
 | 2026-03-22 | — | — | — | **보상 패치 적용 (학습 없음).** anti-milking, w_time 5×, truncation penalty. Fresh start 필요. → [[experiments/exp_002_reward_shaping_patches]] |
+| 2026-04-16 | mtx7ud6o / x8jq9fsy / u8w3xn0w | 5500×3 (dry-run) | — | **RTF dry-run 비교.** RTF 1/2/4 순차 측정. **RTF=2 최적 (avg 59.5 fps, 61s/4Kstep).** RTF=4는 Python 병목으로 역전. → [[experiments/exp_003_rtf_dryrun]] |
