@@ -60,6 +60,19 @@ LIMIT 5
 
 ---
 
+## 빠른 참조
+
+| 주제 | 파일 |
+|------|------|
+| Guacamole/VNC 설정·접속 | `notes/Environment/README.md` |
+| 자주 쓰는 명령어 | `notes/sessions/commands.md` |
+| RL 규칙 | `notes/research/rl_rules.md` |
+| VM 완전 복구 가이드 | `notes/Environment/README.md` |
+| 보상 함수 설계 | `notes/research/reward_design.md` |
+| 전체 시스템 아키텍처 | `notes/research/system_overview.md` |
+
+---
+
 ## 폴더 구조
 
 | 폴더 | 용도 | 네이밍 규칙 |
