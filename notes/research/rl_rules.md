@@ -104,6 +104,29 @@ if 'd_xy' in info:
 
 ---
 
+## Rule 7 — RTF(Real-Time Factor) 선택
+
+> **상세 분석:** [[research/rtf_fps_analysis]]
+
+**결론: RTF=2 고정.** RTF=4 이상은 Python RL 루프 병목으로 FPS가 오히려 감소한다.
+
+| RTF | avg fps | 권장 |
+|-----|---------|------|
+| 1 | 40.5 | 디버깅·dry-run 전용 |
+| **2** | **59.5** | **기본 학습 (최적)** |
+| 4 | 51.5 | 금지 — fps 역전 |
+
+**왜 역전되는가:**
+- Gazebo+PX4는 RTF배로 가속되지만 Python `train_sac` 루프는 CPU 바운드
+- `obs_wait_timeout=0.02s` 기준, RTF=4에서 obs 유실 및 강제 진행 발생
+- 결과: step당 실질 대기 시간 증가 → FPS 하락
+
+**RTF > 2로 이득 보려면 먼저 필요한 것:**
+- PyTorch AMP (GPU SAC update 가속)
+- 비동기 obs collector 분리
+
+---
+
 ## Known Failure Modes
 
 | 증상 | 원인 | 해결 |

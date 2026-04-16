@@ -72,6 +72,7 @@ type: index
 - [[research/architecture]] — Method A (1-World-4-Payload) 아키텍처
 - [[research/system_overview]] — 전체 시스템 (패키지, 토픽, 좌표계, 브리지)
 - [[research/rl_rules]] — RL 실험 규칙, WandB 메트릭, Known Failure Modes
+- [[research/rtf_fps_analysis]] — RTF vs FPS 분석. RTF=2 최적, Python 루프 병목 규명
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
