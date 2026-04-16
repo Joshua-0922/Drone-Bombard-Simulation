@@ -248,33 +248,90 @@ nvidia-smi
 PC, 태블릿, 휴대폰 어디서든 웹 브라우저만 있으면 접속 가능
 
 ### 1. 접속 정보
-- **접속 URL:** https://dronebombard.ddns.net/guacamole
+- **접속 URL:** https://136.113.193.83 (HTTP 접속 시 자동 HTTPS 리다이렉트)
 - **ID/PW:** (개별 전달받은 계정 사용) Discord / ide-server-cloud 참조
+- ⚠️ **자체 서명 SSL 인증서** 사용 — 브라우저에서 "연결이 안전하지 않음" 경고가 뜨면 **고급 → 계속 진행** 클릭 (1회만)
 
-### 2. 접속 방법
-1. Google Cloud Platform에서 VM 실행
-2. 웹 SSH에 들어가서 사용자 전환 및 VNC 실행
-```
-sudo su - ubuntu
-vncserver :1 -geometry 1920x1080 -localhost no
-```
-3. https://dronebombard.ddns.net/guacamole에 접속 후 로그인
-4. **[모든연결]** 목록에 있는 **"dronebombard"** 아이콘을 클릭
-5. 잠시 기다리면 Ubuntu Desktop 화면 나타남
+### 2. 아키텍처
 
-### 3. ⚠️ 주의사항 (필독!)
+```
+[브라우저]
+    │ HTTPS :443
+    ▼
+[nginx container]              ← Docker Compose
+    │ proxy :8080
+    ▼
+[guacamole container]          ← Docker Compose
+    │ guacd protocol :4822
+    ▼
+[guacd container]              ← Docker Compose
+    │ VNC :5901  (host.docker.internal)
+    ▼
+[TigerVNC — VM 호스트, systemd 자동 관리]
+    │ X11 display :1
+    ▼
+[XFCE4 데스크탑 on VM]
+```
+
+### 3. 접속 방법
+
+#### 3.1 정상 접속 (VNC + Guacamole 모두 실행 중인 경우)
+1. **https://136.113.193.83** 접속 → SSL 경고 무시 후 진행
+2. Guacamole 로그인
+3. **[모든연결]** 목록에서 **"VM-XFCE4"** 클릭
+4. 잠시 기다리면 XFCE4 Ubuntu Desktop 화면 나타남
+
+#### 3.2 VM 재부팅 또는 서비스 재시작 후
+VNC는 systemd가 자동으로 재시작합니다. 아래 명령으로 상태를 확인하고 필요 시 수동 시작합니다.
+
+```bash
+# VNC 서버 상태 확인
+sudo systemctl status vncserver@1
+
+# VNC 서버 수동 시작 (자동 시작이 안 됐을 때)
+sudo systemctl start vncserver@1
+
+# VNC 실행 여부 확인
+vncserver -list      # ":1" 라인이 보이면 정상
+ss -tlnp | grep 5901 # LISTEN 상태 확인
+```
+
+```bash
+# Guacamole Docker 스택 상태 확인
+cd /opt/drone-bombard/guacamole-stack
+docker compose ps    # guacd, guacamole, postgres, nginx 4개 모두 Up (healthy) 확인
+
+# Guacamole 스택 시작 (내려가 있을 때)
+docker compose up -d
+
+# 로그 확인 (기동 완료까지 ~30–60초)
+docker compose logs -f guacamole   # "Guacamole is now listening on port 8080" 확인
+```
+
+#### 3.3 VNC를 수동으로 직접 실행해야 할 때
+```bash
+# 기존 세션 종료 후 재시작
+vncserver -kill :1
+vncserver :1 -geometry 1920x1080 -depth 24 -localhost no -SecurityTypes VncAuth
+```
+
+### 4. ⚠️ 주의사항 (필독!)
 이 원격 데스크톱은 **"하나의 모니터를 다 같이 공유하는 방식"**
 - **화면 공유:** 내가 마우스를 움직이면 다른 접속자의 화면에서도 마우스가 움직임
 - **동시 작업 불가:** 한 명이 코딩 중일 때 다른 사람이 마우스를 뺏으면 작업이 중단됨
 - **협업:** "내가 잠깐 확인할게"라고 말하고 사용하는 '페어 프로그래밍' 용도로 쓰기
 - **개별 작업:** 개별 코드 작업은 각자 local pc나 github codespace에서 작업해서 git pull하고, 그걸 VM server에서 받기.
+- **VNC 비밀번호 8자 한도:** DES 기반 암호화로 앞 8자만 유효 — 비밀번호는 8자 이하로 설정할 것
 
-### 4. 문제 해결
-- **화면이 안 나올 때:** 브라우저 새로고침(F5)을 하기
-- **로그인이 안 될 때:** 접속 URL이 `https://`로 시작하는지 확인하기
-- **한영 전환:** (설정한 방식에 따라 기입, 예: Shift+Space 또는 한영키)
-- **클립보드 복사/붙여넣기:** `Ctrl+Alt+Shift`를 누르면 Guacamole 메뉴가 열림
-    - 여기서 클립보드 내용을 입력해야 VM 내부로 텍스트가 전달됨
+### 5. 문제 해결
+| 증상 | 해결 |
+|------|------|
+| 화면이 안 나올 때 | 브라우저 새로고침(F5) → 안 되면 `sudo systemctl restart vncserver@1` |
+| SSL 인증서 경고 | 브라우저에서 **고급 → 계속 진행** 클릭 (1회) |
+| Guacamole 페이지 자체가 안 열릴 때 | `cd /opt/drone-bombard/guacamole-stack && docker compose up -d` |
+| 접속은 되는데 화면이 검정일 때 | `vncserver -kill :1` 후 `sudo systemctl start vncserver@1` |
+| 클립보드 복사/붙여넣기 | `Ctrl+Alt+Shift`로 Guacamole 사이드 메뉴 열기 → 클립보드 탭에서 텍스트 입력 |
+| 한영 전환 | Shift+Space 또는 한영키 |
 
 
 ## 11. 시뮬레이션 실행 — Gazebo Harmonic
