@@ -35,12 +35,38 @@ MEMORY.md는 자동 로드됨. 추가 컨텍스트 필요 시 최근 daily 노�
 
 wikilink는 상대경로 사용: `[[research/reward_design]]`
 
+### 실험 완료 시 자동 수행 (MANDATORY)
+
+실험(dry-run 포함) 결과가 나오면 **항상 아래 3단계를 함께** 수행:
+
+1. **`experiments/exp_{NNN}_{run_id}_{title}.md`** 생성/업데이트
+   - WandB run ID, 설정, 결과 수치 기록
+   - `[[research/{finding}]]` wikilink 포함
+
+2. **`research/{finding}.md`** 생성 (새로운 발견이 있을 때)
+   - 원인 분석, 적용 규칙, 향후 조건 포함
+   - `[[experiments/exp_{NNN}]]` 역링크 포함
+
+3. **허브 노드 3곳 모두 업데이트**
+   - `experiments/training_history.md` — 실험 행 추가
+   - `research/rl_rules.md` — 새 Rule 추가 (발견이 규칙화될 때)
+   - `notes/00_index.md` — 실험 현황 테이블 + 연구 노트 인덱스 갱신
+
+```
+실험 완료
+    ├── experiments/exp_{NNN}.md  ←→  research/{finding}.md
+    │         ↓                              ↓
+    ├── training_history.md          rl_rules.md (Rule 추가)
+    └──────────────────────────────────────────────────────
+                          00_index.md (양쪽 링크)
+```
+
 ### 세션 종료 전 자동 수행
 
 1. `notes/sessions/session_{YYYY-MM-DD}.md` 생성/업데이트
 2. `notes/00_index.md` 현재 상태 업데이트
 3. 에러 해결 → `notes/errors/` 기록
-4. 실험 시작/완료 → `notes/experiments/` 기록
+4. 실험 시작/완료 → `notes/experiments/` 기록 (위 실험 완료 3단계 포함)
 5. Claude Code memory 업데이트 (project_state.md)
 
 ### VM 종료 전 자동 수행 (MANDATORY)
