@@ -21,42 +21,19 @@ type: index
 
 ---
 
-## 실험 현황 (Dataview)
+## 실험 현황
 
-```dataview
-TABLE date, status, wandb_run FROM "experiments"
-WHERE type = "experiment"
-SORT date DESC
-```
+| # | Run ID | Steps | 상태 | 비고 |
+|---|--------|-------|------|------|
+| 001 | 8otphxy8 | 114K | ✅ 완료 | 선형 보상 + CRUISE retry |
+| 002 | — | 0 | ⏳ 대기 | 보상 패치 Fresh Start 필요 |
 
----
+## 에러 현황
 
-## 미해결 에러 (Dataview)
-
-```dataview
-TABLE date, file.name FROM "errors"
-WHERE status = "open"
-SORT date DESC
-```
-
----
-
-## 최근 연구 일지 (Dataview)
-
-```dataview
-LIST FROM "daily"
-WHERE type = "daily"
-SORT date DESC
-LIMIT 7
-```
-
-## 최근 세션 (Dataview)
-
-```dataview
-LIST FROM "sessions"
-SORT date DESC
-LIMIT 5
-```
+| 파일 | 상태 | 요약 |
+|------|------|------|
+| [[errors/err_20260320_physics_explosion]] | ✅ 해결 | ODE 물리 폭발 3중 방어 |
+| [[errors/err_20260319_ode_aabb_crash]] | ✅ 해결 | 드론 스폰 고도 ODE AABB 크래시 |
 
 ---
 
