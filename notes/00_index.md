@@ -20,6 +20,7 @@ type: index
 - **마지막 정상 체크포인트:** `sac_drop_preempt.zip` (run `8otphxy8`, ~114K steps)
 - **다음 행동:** `ros2 run rl_navigation train_sac --config hyperparams_rtf2.yaml` (fresh start)
 - **Phase 1 계획:** CCIP 기반 자율 접근 비행 제어기 — 8주, 14개 실험, 5/8 시작 → [[research/phase1_plan]]
+- **다음 행동:** colcon build → Exp 004-dryrun (obs[15-16] 확인) → Exp 004-baseline → Exp 005a 야간
 
 ---
 
@@ -87,6 +88,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-04-17]] — Phase 1 코드 전체 구현 (변경 1-10, obs 15→17, CCIP auto-drop)
 - [[daily/daily_2026-04-16]] — WandB 연결 + RTF dry-run 실험 + 인프라 고장 해결
 - [[daily/daily_2026-04-14]] — Guacamole HTTPS + Obsidian 설치 + wikilink 정비
 
