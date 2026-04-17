@@ -19,6 +19,7 @@ type: index
 - **RTF:** **2** (dry-run 실험으로 RTF=2 최적 확정, avg 59.5 fps)
 - **마지막 정상 체크포인트:** `sac_drop_preempt.zip` (run `8otphxy8`, ~114K steps)
 - **다음 행동:** `ros2 run rl_navigation train_sac --config hyperparams_rtf2.yaml` (fresh start)
+- **Phase 1 계획:** CCIP 기반 자율 접근 비행 제어기 — 8주, 14개 실험, 5/8 시작 → [[research/phase1_plan]]
 
 ---
 
@@ -68,6 +69,7 @@ type: index
 ## 노트 인덱스
 
 ### 연구 (research/)
+- [[research/phase1_plan]] — Phase 1 CCIP 기반 자율 접근 연구 계획 (8주, 5/8-6/30)
 - [[research/reward_design]] — 4-layer 보상 함수 (LaTeX 수식)
 - [[research/architecture]] — Method A (1-World-4-Payload) 아키텍처
 - [[research/system_overview]] — 전체 시스템 (패키지, 토픽, 좌표계, 브리지)

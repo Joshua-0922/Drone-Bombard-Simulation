@@ -127,6 +127,10 @@ if 'd_xy' in info:
 
 ---
 
+> **Phase 1 전체 계획:** [[research/phase1_plan]] — CCIP 기반 자율 접근, 8주, 14개 실험
+
+---
+
 ## Known Failure Modes
 
 | 증상 | 원인 | 해결 |
