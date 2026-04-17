@@ -295,7 +295,10 @@ class _RLBridgeNode(Node):
 class DroneDropEnv(gym.Env):
     """Gymnasium env: SAC trains a fly-by precision-drop policy.
 
-    Observation: Box(15,) float32
+    Observation: Box(17,) float32
+      [0-14] same as before (pos, vel, ang_vel, vision, attached, rel_target)
+      [15]   d_impact / 50m (CCIP predicted miss distance, normalised)
+      [16]   t_f / 10s     (CCIP time-of-flight, normalised, clamped at 10s)
     Action:      Box(5,)  float32 in [-1, 1]
       [0] vx command (scaled by action_vx_scale)
       [1] vy command (scaled by action_vy_scale)
@@ -383,9 +386,14 @@ class DroneDropEnv(gym.Env):
         self._cfg_penalty_target_lost = r.get('penalty_target_lost', -10.0)
         # Layer 4: time to wait for actual physics landing result from drop_calculator
         self._cfg_drop_wait_timeout = r.get('drop_wait_timeout', 10.0)
+        # Ablation flag: disable speed gate to reproduce Spiral Milking reward hack
+        self._cfg_speed_gate = r.get('speed_gate_enabled', True)
 
+        # obs[0-14]: pos(3)+vel(3)+ang_vel(3)+vision(3)+attached(1)+rel_target(2)
+        # obs[15]:   d_impact / pos_scale  (CCIP predicted miss distance)
+        # obs[16]:   t_f / 10.0            (CCIP time-of-flight, clamped at 10s)
         self.observation_space = gym.spaces.Box(
-            low=-1.0, high=1.0, shape=(15,), dtype=np.float32)
+            low=-1.0, high=1.0, shape=(17,), dtype=np.float32)
         self.action_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(5,), dtype=np.float32)
 
@@ -514,8 +522,9 @@ class DroneDropEnv(gym.Env):
             pitch = self._node.pitch
             pix = self._node.pixel_coords.copy()
 
-        # --- 2D horizontal distance to target (no kinematic prediction) ---
+        # --- 2D horizontal distance + CCIP predicted impact distance ---
         d_xy = self._compute_d_xy(pos)
+        _, _, t_f, d_impact = self._predict_impact_point(pos, vel)
 
         # --- Physics explosion guard ---
         # Catches two failure modes:
@@ -540,12 +549,14 @@ class DroneDropEnv(gym.Env):
         truncated = False
         info = {}
 
-        # --- Drop decision: auto-drop when drone is directly over target ---
+        # --- Drop decision: CCIP auto-drop when predicted impact ≤ threshold ---
+        # Uses kinematic prediction (_predict_impact_point) so the drone does NOT
+        # need to fly directly overhead — a fly-by trajectory at the right distance
+        # and speed already achieves d_impact ≤ 0.5m.
         # Phase 1 curriculum: manual drop disabled. action[4] is kept as a
         # dummy dimension (always ignored) for checkpoint compatibility.
-        # Phase 2 will re-enable once policy navigates to target reliably.
         # manual_drop = float(action[4]) > 0.0
-        if d_xy <= self._cfg_auto_drop_threshold and not self.dropped:
+        if d_impact <= self._cfg_auto_drop_threshold and not self.dropped:
             # ============================================================
             # Layer 4: Terminal drop accuracy reward (ACTUAL physics result)
             # ============================================================
@@ -593,6 +604,7 @@ class DroneDropEnv(gym.Env):
             info['rew_dist'] = 0.0
             info['rew_orient'] = 0.0
             info['d_xy'] = d_xy            # drone was at this distance when dropped
+            info['d_impact'] = d_impact    # CCIP predicted distance that triggered drop
             terminated = True
 
         else:
@@ -600,7 +612,7 @@ class DroneDropEnv(gym.Env):
             # Layers 1–3: Per-step reward for non-terminal steps
             # ============================================================
             reward, terminated, info = self._compute_reward(
-                pos, vel, ang, pix, d_xy, action)
+                pos, vel, ang, pix, d_xy, d_impact, action)
 
         # --- Truncation on step limit ---
         if self._step_count >= self._cfg_max_steps:
@@ -667,6 +679,7 @@ class DroneDropEnv(gym.Env):
             t_f = (vz + math.sqrt(discriminant)) / g
             if t_f < 0.0:
                 t_f = 0.0   # numerical guard (should not occur for z > 0)
+            t_f = min(t_f, 10.0)  # clamp: at vz≈0, z=490m → t_f≈10s; beyond this obs diverges
 
         x_p = x + vx * t_f
         y_p = y + vy * t_f
@@ -696,7 +709,7 @@ class DroneDropEnv(gym.Env):
     # Reward computation — Layers 1, 2, 3 (non-terminal steps)
     # ------------------------------------------------------------------
 
-    def _compute_reward(self, pos, vel, ang, pix, d_xy, action):
+    def _compute_reward(self, pos, vel, ang, pix, d_xy, d_impact, action):
         """Compute per-step reward for non-terminal steps.
 
         Layer 1 — Safety:     penalty on crash / overspeed / target lost (no termination)
@@ -704,7 +717,8 @@ class DroneDropEnv(gym.Env):
         Layer 3 — Approach:   2D distance gradient + heading alignment reward
 
         Args:
-            d_xy: 2D horizontal distance to target (from _compute_d_xy, no kinematics)
+            d_xy:     2D horizontal distance to target (drone position, no kinematics)
+            d_impact: CCIP predicted miss distance (from _predict_impact_point)
 
         Returns:
             reward (float), terminated (bool), info (dict)
@@ -783,7 +797,8 @@ class DroneDropEnv(gym.Env):
 
         # Speed-gated orientation reward: scales from 0 at hover to full at ≥2 m/s.
         # Prevents farming cos_heading by crawling/hovering (anti-milking).
-        speed_gate = min(speed_xy / 2.0, 1.0)
+        # speed_gate_enabled=false reproduces Spiral Milking reward hack (ablation).
+        speed_gate = min(speed_xy / 2.0, 1.0) if self._cfg_speed_gate else 1.0
         r3_orient = self._cfg_w_heading * cos_heading * speed_gate
         r3 = r3_dist + r3_orient
 
@@ -794,6 +809,7 @@ class DroneDropEnv(gym.Env):
         info['r2'] = r2
         info['r3'] = r3
         info['d_xy'] = d_xy
+        info['d_impact'] = d_impact    # CCIP predicted miss distance (WandB: env/mean_d_impact)
         info['cos_heading'] = cos_heading
         # Split reward components for per-rollout WandB monitoring
         info['rew_ctrl'] = r2
@@ -833,8 +849,15 @@ class DroneDropEnv(gym.Env):
             conf = 1.0   # synthetic: "target always visible" via kinematics
 
         pos_clean = np.nan_to_num(pos, nan=0.0)
+        vel_clean = np.nan_to_num(vel, nan=0.0)
         rel_dx = (pos_clean[0] - self._cfg_target_x) / POS_SCALE
         rel_dy = (pos_clean[1] - self._cfg_target_y) / POS_SCALE
+
+        # CCIP features: predicted miss distance and time-of-flight
+        # t_f is clamped at 10s in _predict_impact_point; d_impact normalised by POS_SCALE.
+        _, _, t_f_obs, d_impact_obs = self._predict_impact_point(pos_clean, vel_clean)
+        obs_d_impact = float(np.clip(d_impact_obs / self._cfg_pos_scale, 0.0, 1.0))
+        obs_t_f = float(np.clip(t_f_obs / 10.0, 0.0, 1.0))
 
         obs = np.array([
             *np.clip(pos_n, -1.0, 1.0),    # 0-2  world position (ENU, normalised)
@@ -844,6 +867,8 @@ class DroneDropEnv(gym.Env):
             attached,                       # 12   payload attached flag
             np.clip(rel_dx, -1.0, 1.0),    # 13   relative x to target (normalised)
             np.clip(rel_dy, -1.0, 1.0),    # 14   relative y to target (normalised)
+            obs_d_impact,                  # 15   CCIP miss dist / 50m  (0=on target)
+            obs_t_f,                       # 16   CCIP t_f / 10s        (0=drop now)
         ], dtype=np.float32)
         return obs
 

@@ -13,6 +13,7 @@ sac:
   tau: 0.005
   gamma: 0.99
   learning_starts: 1000
+  gradient_steps: 1         # SAC gradient updates per env step (Week 3 HP tuning: try 2)
   net_arch: [256, 256]
   device: "cuda"            # L4 GPU; change to "cpu" if no GPU available
 
@@ -37,8 +38,8 @@ reward:
   # --- Physics ---
   g: 9.81                   # gravity (m/s^2)
 
-  # --- Auto-drop (Method A: 2D horizontal distance, no kinematic prediction) ---
-  auto_drop_threshold: 0.5  # fire drop when drone 2D distance to target <= this (m)
+  # --- Auto-drop (Phase 1 CCIP: fires when predicted impact point ≤ threshold) ---
+  auto_drop_threshold: 0.5  # fire drop when CCIP d_impact <= this (m); was d_xy in pre-Phase1
   drop_wait_timeout: 10.0   # seconds to wait for actual physics landing result from drop_calculator
 
   # --- Approach shaping (Layer 3) ---
@@ -46,6 +47,7 @@ reward:
   w_dist: 1.0               # linear distance reward weight: r3_dist = w_dist*(d_prev - d_now)
                              # (reduced from 10.0: linear is unbounded, exponential was bounded by 1)
   w_heading: 1.0            # weight for heading alignment (cos delta_yaw)
+  speed_gate_enabled: true  # false = disable speed gate → reproduces Spiral Milking (ablation Exp 007a)
 
   # --- Stability/efficiency (Layer 2) ---
   w_time: 0.01              # per-step time penalty

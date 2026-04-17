@@ -49,23 +49,32 @@ class WandbMetricsCallback(BaseCallback):
         self._ep_drop_errors: list = []
         self._ep_success_flags: list = []
         self._step_d_xy: list = []
+        self._step_d_impact: list = []
         self._step_rew_ctrl: list = []
         self._step_rew_dist: list = []
         self._step_rew_orient: list = []
         self._step_rew_drop: list = []
         self._physics_glitch_count: int = 0
+        self._safety_violation_count: int = 0
+        self._total_steps: int = 0
 
     def _on_step(self):
         infos = self.locals.get('infos', [])
         dones = self.locals.get('dones', [])
         for info, done in zip(infos, dones):
+            self._total_steps += 1
             # physics_glitch steps: count for monitoring but DO NOT add their
             # 'd_xy' to _step_d_xy — the key is 'glitch_d_xy' on glitch steps,
             # so the 'd_xy' check below naturally skips them.
             if info.get('physics_glitch'):
                 self._physics_glitch_count += 1
+            # Safety violations: Layer 1 crash or overspeed events
+            if info.get('crash') or info.get('overspeed'):
+                self._safety_violation_count += 1
             if 'd_xy' in info:
                 self._step_d_xy.append(info['d_xy'])
+            if 'd_impact' in info:
+                self._step_d_impact.append(info['d_impact'])
             if 'rew_ctrl' in info:
                 self._step_rew_ctrl.append(info['rew_ctrl'])
             if 'rew_dist' in info:
@@ -97,6 +106,7 @@ class WandbMetricsCallback(BaseCallback):
 
         for attr, key in (
             ('_step_d_xy',       'env/mean_d_xy'),
+            ('_step_d_impact',   'env/mean_d_impact'),
             ('_step_rew_ctrl',   'env/mean_rew_ctrl'),
             ('_step_rew_dist',   'env/mean_rew_dist'),
             ('_step_rew_orient', 'env/mean_rew_orient'),
@@ -117,6 +127,12 @@ class WandbMetricsCallback(BaseCallback):
         if self._physics_glitch_count:
             log_dict['env/physics_glitch_count'] = self._physics_glitch_count
             self._physics_glitch_count = 0
+
+        if self._total_steps > 0:
+            log_dict['env/safety_violation_rate'] = (
+                self._safety_violation_count / self._total_steps)
+            self._safety_violation_count = 0
+            self._total_steps = 0
 
         if log_dict:
             log_dict['time/total_timesteps'] = self.num_timesteps
@@ -353,6 +369,7 @@ def main(args=None):
             tau=cfg_sac.get('tau', 0.005),
             gamma=cfg_sac.get('gamma', 0.99),
             learning_starts=cfg_sac.get('learning_starts', 1_000),
+            gradient_steps=cfg_sac.get('gradient_steps', 1),
             policy_kwargs=dict(net_arch=cfg_sac.get('net_arch', [256, 256])),
             device=cfg_sac.get('device', 'cuda'),
             tensorboard_log=None,

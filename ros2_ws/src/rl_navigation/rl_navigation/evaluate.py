@@ -29,6 +29,9 @@ def _parse_args():
     parser.add_argument(
         '--output-dir', type=str, default=DEFAULT_OUTPUT_DIR,
         help='Directory for evaluation outputs (default: %(default)s)')
+    parser.add_argument(
+        '--config', type=str, default=None,
+        help='Path to hyperparams.yaml (uses env default if omitted)')
     return parser.parse_args()
 
 
@@ -59,8 +62,8 @@ def _run_evaluation(model, env, n_episodes):
             xs.append(x)
             ys.append(y)
 
-            if 'drop_error_m' in info:
-                ep_drop_error = info['drop_error_m']
+            if 'drop_error_actual_m' in info:
+                ep_drop_error = info['drop_error_actual_m']
             # Estimate drop speed from velocity obs
             vx = float(obs[3]) * 15.0
             vy = float(obs[4]) * 15.0
@@ -91,6 +94,8 @@ def _write_report(output_dir, drop_errors, drop_speeds, episode_rewards):
         'std_drop_error_m': float(np.nanstd(errors)),
         'min_drop_error_m': float(np.nanmin(errors)),
         'max_drop_error_m': float(np.nanmax(errors)),
+        'cep50_m': float(np.nanpercentile(errors, 50)),
+        'success_rate_05m': float(np.nanmean(errors <= 0.5)),
         'mean_drop_speed_mps': float(np.nanmean(speeds)),
         'mean_episode_reward': float(np.mean(episode_rewards)),
         'std_episode_reward': float(np.std(episode_rewards)),
@@ -114,6 +119,8 @@ def _write_report(output_dir, drop_errors, drop_speeds, episode_rewards):
         f.write(f'| Std miss distance (m)  | {summary["std_drop_error_m"]:.3f} |\n')
         f.write(f'| Min miss distance (m)  | {summary["min_drop_error_m"]:.3f} |\n')
         f.write(f'| Max miss distance (m)  | {summary["max_drop_error_m"]:.3f} |\n')
+        f.write(f'| CEP50 (m)              | {summary["cep50_m"]:.3f} |\n')
+        f.write(f'| Success rate (≤0.5m)   | {summary["success_rate_05m"]:.3f} |\n')
         f.write(f'| Mean drop speed (m/s)  | {summary["mean_drop_speed_mps"]:.2f} |\n')
         f.write(f'| Mean episode reward    | {summary["mean_episode_reward"]:.2f} |\n')
         f.write(f'| Std episode reward     | {summary["std_episode_reward"]:.2f} |\n')
@@ -189,7 +196,7 @@ def main(args=None):
     print(f'  Episodes  : {cli.episodes}')
     print(f'  Output dir: {cli.output_dir}')
 
-    env = DroneDropEnv()
+    env = DroneDropEnv(config_path=cli.config)
     model = SAC.load(cli.model, env=env)
 
     print('\nRunning evaluation episodes...')

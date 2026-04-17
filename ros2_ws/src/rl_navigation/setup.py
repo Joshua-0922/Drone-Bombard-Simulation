@@ -29,6 +29,7 @@ setup(
             'simple_drop        = rl_navigation.simple_drop_node:main',
             'train_sac        = rl_navigation.train_sac:main',
             'evaluate         = rl_navigation.evaluate:main',
+            'baseline_ccip    = rl_navigation.baseline_ccip:main',
         ],
     },
 )
