@@ -234,7 +234,16 @@ ls   # CLAUDE.md, notes/, ros2_ws/, gazebo_models/ 등 확인
 
 ---
 
-## Step 5: Claude CLI 설치
+## Step 5: Claude CLI + RTK 설치 + Claude Code 설정
+
+### 5-1. jq 설치 (RTK hook 의존성)
+
+```bash
+sudo apt-get install -y jq
+jq --version   # jq-1.6 이상 확인
+```
+
+### 5-2. Node.js + Claude Code CLI 설치
 
 ```bash
 # npm 설치 (Node.js 필요)
@@ -245,11 +254,103 @@ sudo apt-get install -y nodejs
 npm install -g @anthropic/claude-code
 
 # 확인
-claude --version
+claude --version   # 2.1.x 확인
 
 # 첫 실행 시 API 키 인증
 claude
 # → 브라우저 열림 → Anthropic 계정 로그인 → 완료
+```
+
+### 5-3. RTK (Rust Token Killer) 설치
+
+RTK는 Claude Code 명령을 토큰 효율적으로 재작성하는 CLI 프록시 (60~90% 토큰 절약).
+
+```bash
+# RTK 바이너리 다운로드 (공식 설치)
+# 방법 A — cargo (Rust 설치된 경우)
+cargo install rtk
+# 설치 후 ~/.cargo/bin/rtk 생성됨, PATH에 이미 포함되어 있으면 완료
+
+# 방법 B — 바이너리 직접 배치
+# GitHub Releases에서 linux-x86_64 바이너리 다운로드 후:
+mkdir -p ~/.local/bin
+# (다운로드한 바이너리를) cp rtk ~/.local/bin/rtk
+chmod +x ~/.local/bin/rtk
+
+# PATH 등록 확인 (~/.profile에 이미 있음)
+echo $PATH | grep -o "[^:]*local/bin[^:]*"   # ~/.local/bin 포함 확인
+
+# 확인
+rtk --version   # rtk 0.36.0
+rtk gain        # 절약 통계 (처음엔 0)
+```
+
+### 5-4. Claude Code hooks + 전역 설정
+
+RTK hook 파일과 settings.json은 git repo에 없어서 수동 복원 필요.
+
+```bash
+# hook 디렉토리 생성
+mkdir -p ~/.claude/hooks
+
+# RTK PreToolUse hook 설치 (rtk가 설치된 경우 자동 생성 가능)
+rtk install-hook   # 또는 수동으로 아래 내용으로 파일 생성
+
+# ~/.claude/hooks/rtk-rewrite.sh 내용은 RTK 공식 문서 참조
+# (claude code `rtk setup` 명령으로 자동 설치되기도 함)
+```
+
+`~/.claude/settings.json` 내용:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/nachoigpt/.claude/hooks/rtk-rewrite.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "extraKnownMarketplaces": {
+    "obsidian-skills": {
+      "source": {
+        "source": "github",
+        "repo": "kepano/obsidian-skills"
+      }
+    }
+  },
+  "skipDangerousModePermissionPrompt": true
+}
+```
+
+> **주의:** `command` 경로의 `nachoigpt`를 실제 사용자명으로 교체.
+
+### 5-5. Claude Code 전역 CLAUDE.md 설정
+
+```bash
+# ~/.claude/CLAUDE.md — RTK.md 불러오기
+cat > ~/.claude/CLAUDE.md << 'EOF'
+@RTK.md
+EOF
+
+# ~/.claude/RTK.md — RTK 사용 지침
+# RTK 공식 문서 참조 또는 기존 파일 복사
+# (이 repo 내에는 포함 안 됨 — 개인 설정)
+```
+
+### 5-6. Claude Code obsidian-skills 플러그인 설치
+
+```bash
+# settings.json에 extraKnownMarketplaces 등록 후
+claude
+# Claude Code 내에서: /install obsidian-skills
+# 또는 marketplace에서 직접 설치
 ```
 
 ---
@@ -556,7 +657,85 @@ curl -I http://136.113.193.83/guacamole/
 
 ---
 
-## Step 12: 검증 체크리스트
+## Step 12: Obsidian AppImage 설치 + Vault 설정
+
+> XFCE4 GUI 환경에서 연구 노트를 관리하는 로컬 Obsidian 설치.
+> VNC → Guacamole로 접속 후 XFCE4 데스크탑에서 Obsidian GUI 사용.
+
+### 12-1. AppImage 다운로드
+
+```bash
+mkdir -p ~/Applications
+
+# Obsidian 1.x AppImage 다운로드 (GitHub Releases에서 최신 버전 확인)
+# https://github.com/obsidianmd/obsidian-releases/releases
+# 현재 설치 버전: 1.12.7
+wget -O ~/Applications/Obsidian.AppImage \
+  "https://github.com/obsidianmd/obsidian-releases/releases/download/v1.12.7/Obsidian-1.12.7.AppImage"
+
+chmod +x ~/Applications/Obsidian.AppImage
+```
+
+### 12-2. 첫 실행 (vault 등록)
+
+```bash
+# XFCE4 VNC 세션에서 터미널 열고 실행
+DISPLAY=:1 ~/Applications/Obsidian.AppImage --no-sandbox &
+
+# 또는 직접 파일 더블클릭 (XFCE4 데스크탑)
+```
+
+첫 실행 시 Vault 설정:
+1. **Open folder as vault** 선택
+2. 경로: `/opt/drone-bombard/Drone-Bombard-Simulation/notes`
+3. Vault 이름: `drone-bombard-research`
+
+### 12-3. Community Plugin 설치 (Dataview)
+
+1. **Settings** → **Community Plugins** → "Turn on community plugins"
+2. **Browse** → `Dataview` 검색 → Install → Enable
+3. Dataview v0.5.70 (또는 최신)
+
+### 12-4. 외관 설정
+
+1. **Settings** → **Appearance**
+   - Font: **Nanum Gothic** (한글 렌더링)
+   - Interface font: Nanum Gothic
+
+2. **Graph View** 색상 그룹 설정 (`notes/.obsidian/graph.json`에 이미 저장됨 — 자동 적용):
+   - `experiments/` → 초록
+   - `errors/` → 빨강
+   - `research/` → 파랑
+   - `sessions/` → 보라
+
+### 12-5. XFCE4 자동시작 등록
+
+```bash
+mkdir -p ~/.config/autostart
+
+cat > ~/.config/autostart/obsidian.desktop << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=Obsidian
+Exec=/home/nachoigpt/Applications/Obsidian.AppImage --no-sandbox
+Hidden=false
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
+EOF
+```
+
+> **주의:** `nachoigpt`를 실제 사용자명으로 교체.
+
+### 12-6. 데스크탑 아이콘 등록 (선택)
+
+```bash
+cp ~/.config/autostart/obsidian.desktop ~/Desktop/
+chmod +x ~/Desktop/obsidian.desktop
+```
+
+---
+
+## Step 13: 검증 체크리스트
 
 ```bash
 # 1. NVIDIA GPU 확인
@@ -583,6 +762,17 @@ docker exec drone-bombard-harmonic bash -c \
    source /root/ros2_ws/install/setup.bash && \
    source /workspace/ros2_ws/install/setup.bash && \
    ros2 pkg list | grep rl_navigation"
+
+# 7. Claude Code + RTK 확인
+claude --version             # 2.1.x
+rtk --version                # rtk 0.36.0
+rtk gain                     # 통계 출력 (에러 없으면 정상)
+cat ~/.claude/settings.json | grep rtk-rewrite   # hook 등록 확인
+
+# 8. Obsidian 실행 확인 (VNC 세션에서)
+DISPLAY=:1 ~/Applications/Obsidian.AppImage --no-sandbox &
+# → XFCE4에 Obsidian 창 뜨면 성공
+# → drone-bombard-research vault 자동 열림 확인
 ```
 
 ---
@@ -660,6 +850,8 @@ docker compose up -d          # initdb.sql 재적용하며 재생성
 | VNC 비밀번호 불일치 (10초 끊김) | VNC DES 8자 한도 초과 | vncpasswd는 8자까지만 유효, Guacamole DB에 동일 값 등록 확인 |
 | `px4_msgs` import 에러 (silent crash) | source 순서 오류 | `/root/ros2_ws` → `/workspace/ros2_ws` 순서 필수 |
 | `docker: permission denied` | docker 그룹 미등록 | `sudo usermod -aG docker $USER && newgrp docker` |
+| RTK hook `[rtk] WARNING: jq is not installed` | jq 미설치 | `sudo apt-get install -y jq` |
+| Obsidian AppImage 실행 안 됨 | FUSE 미설치 | `sudo apt-get install -y libfuse2` 또는 `--appimage-extract-and-run` 옵션 사용 |
 
 ---
 
