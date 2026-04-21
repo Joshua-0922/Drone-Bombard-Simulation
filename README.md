@@ -709,4 +709,127 @@ Outputs written to `/workspace/ros2_ws/rl_eval_results/`:
 - `drop_error_dist.png` — miss distance histogram
 - `episode_rewards.png` — per-episode reward curve
 - `trajectory_top.png` — 2D overhead trajectory of final episode
+
+---
+
+## 12. VM 접속 가이드 (팀원용)
+
+### VM 정보
+
+| 항목 | 값 |
+|------|----|
+| VM 이름 | `g2-standard-16-nvidia-l4-dev` |
+| Zone | `us-central1-a` |
+| GCP 프로젝트 | `charming-league-481306-d8` |
+| GPU | NVIDIA L4 |
+| 타입 | Spot VM (선점 시 자동 재시작) |
+
+### 접속 방법
+
+**방법 1 — gcloud SSH (권장)**
+```bash
+gcloud compute ssh g2-standard-16-nvidia-l4-dev \
+  --zone=us-central1-a --project=charming-league-481306-d8
+```
+
+**방법 2 — Guacamole 웹 GUI (브라우저)**
+```
+https://<VM_EXTERNAL_IP>
+기본 계정: guacadmin / guacadmin (최초 로그인 후 변경 필수)
+```
+VM 외부 IP 확인: `gcloud compute instances describe g2-standard-16-nvidia-l4-dev --zone=us-central1-a --format="value(networkInterfaces[0].accessConfigs[0].natIP)"`
+
+**방법 3 — VNC 직접 (SSH 터널)**
+```bash
+gcloud compute ssh g2-standard-16-nvidia-l4-dev \
+  --zone=us-central1-a -- -L 5901:localhost:5901
+# 이후 VNC 클라이언트로 localhost:5901 접속
+```
+
+모든 팀 공용 작업 경로: `/opt/drone-bombard/`
+
+---
+
+## 13. Spot VM 무인 학습 자동화
+
+### 아키텍처 개요
+
+```
+[Spot VM — Training]
+    │
+    ├── SIGTERM handler (train_sac.py)
+    │       └── 선점 30초 전 경고 → sac_drop_preempt.zip + _replay.pkl 저장
+    │
+    └── VM TERMINATED
+            ↓
+[Cloud Scheduler, 5분 주기]
+            ↓
+[Cloud Function: drone-watchdog]
+    ├── TERMINATED + training_active=true + operation=preempted → 재시작
+    ├── TERMINATED + training_active=false → 수동 종료, 재시작 안 함
+    ├── Cooldown 15분 미만 → skip
+    └── 연속 3회 초과 → 중단 + Cloud Logging 경고
+            ↓
+[VM 재시작 → startup.sh 자동 실행]
+    └── train_managed.sh → 최신 체크포인트 탐지 → 학습 재개
+```
+
+### VM 수동 종료 (중요!)
+
+> ⚠️ **GCP 콘솔 또는 `gcloud compute instances stop` 직접 사용 금지!**
+> watchdog이 선점으로 오인하여 자동 재시작할 수 있습니다.
+
+반드시 아래 스크립트 사용:
+```bash
+bash infra/stop.sh
+```
+
+이 스크립트는:
+1. `drone_training_active=false` 메타데이터 설정 (watchdog 재시작 방지)
+2. 학습 프로세스에 SIGTERM 전송 → `sac_drop_preempt.zip` 저장
+3. VM 종료
+
+### 체크포인트 구조
+
+| 타입 | 경로 | 용도 |
+|------|------|------|
+| 선점 저장 | `rl_checkpoints/sac_drop_preempt.zip` + `_replay.pkl` | **자동 resume 1순위** |
+| 정기 저장 | `rl_checkpoints/sac_drop_*_steps.zip` | 자동 resume 2순위 (최신 기준) |
+| Best model | `rl_checkpoints/best_model/best_model.zip` | 저장 전용 — 자동 resume 대상 아님 |
+| Milestone | `rl_checkpoints/archive/sac_drop_milestone_*.zip` | 아카이브 전용 |
+
+> **best_model에서 학습 재시작하려면 수동으로:**
+> WandB 결과를 보고 판단 후 `infra/stop.sh`로 종료 → 직접 `train_managed.sh --fresh --resume best_model/best_model.zip` 실행
+
+### 학습 모니터링
+
+```bash
+# VM 로그 (부팅 및 startup.sh 실행 결과)
+sudo cat /var/log/drone-bombard-startup.log
+
+# 학습 로그 (컨테이너 내부)
+docker exec drone-bombard-harmonic tail -f /tmp/production_train.log
+
+# 컨테이너 로그
+docker logs -f drone-bombard-harmonic
+
+# WandB: https://wandb.ai/nayoonho0922-seoul-national-university/drone-bombard-sac
+```
+
+### 인프라 배포 (최초 1회)
+
+```bash
+bash infra/deploy.sh
+```
+
+포함 내용: GPU 가용성 확인 → 디스크 스냅샷 → VM 마이그레이션 → Cloud Function 배포 → Cloud Scheduler 설정
+
+### 재시작 카운터 수동 리셋 (watchdog 중단 시)
+
+연속 3회 재시작 실패로 watchdog이 멈췄을 때:
+```bash
+gcloud compute instances add-metadata g2-standard-16-nvidia-l4-dev \
+  --zone=us-central1-a --project=charming-league-481306-d8 \
+  --metadata watchdog_restart_count=0
+```
 - `speed_vs_accuracy.png` — drop speed vs miss distance scatter
