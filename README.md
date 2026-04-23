@@ -217,30 +217,29 @@ docker rm drone-bombard-harmonic
 1. https://console.cloud.google.com 접속
 2. 개인 Google 계정 로그인
 3. 프로젝트 선택
-4. Compute Engine -> VM -> SSH 버튼 클릭
+4. Compute Engine → VM → SSH 버튼 클릭
 
 ### 9.2 로컬 환경에서 접속
 #### 9.2.1 로컬 PC에서 최초 1회 설정
-```
+```bash
 gcloud auth login
 gcloud config set project charming-league-481306-d8
 ```
 * Google 계정 로그인
 
 #### 9.2.2 VM 접속 명령
+```bash
+gcloud compute ssh l4-spot \
+  --zone asia-east1-a
 ```
-gcloud compute ssh l4-dev-spot \
-  --zone us-central1-a
-```
-* l4-dev-spot : VM 이름
-* us-central1-a : VM이 생성된 zone
+* `l4-spot` : 현재 VM 이름
+* `asia-east1-a` : VM이 생성된 zone
 
 #### 9.2.3 VM 접속 확인
+```bash
+hostname    # l4-spot
+nvidia-smi  # NVIDIA L4가 보이면 정상
 ```
-hostname
-nvidia-smi
-```
-* GPU : nvidia-l4가 보이면 정상
 
 
 ## 10. 프로젝트 원격 데스크톱 접속 가이드
@@ -248,10 +247,27 @@ nvidia-smi
 프로젝트의 Ubuntu VM에 GUI로 접속
 PC, 태블릿, 휴대폰 어디서든 웹 브라우저만 있으면 접속 가능
 
+> ⚠️ **Spot VM 특성상 선점(preemption) 후 재기동 시 외부 IP가 바뀔 수 있습니다.**
+> IP 변경 시 Discord `#vm-status` 채널에서 최신 IP를 확인하세요.
+> 현재 외부 IP: `gcloud compute instances describe l4-spot --zone=asia-east1-a --format="value(networkInterfaces[0].accessConfigs[0].natIP)"`
+
 ### 1. 접속 정보
-- **접속 URL:** https://136.113.193.83 (HTTP 접속 시 자동 HTTPS 리다이렉트)
+- **접속 URL:** https://130.211.241.166 (HTTP 접속 시 자동 HTTPS 리다이렉트)
 - **ID/PW:** (개별 전달받은 계정 사용) Discord / ide-server-cloud 참조
 - ⚠️ **자체 서명 SSL 인증서** 사용 — 브라우저에서 "연결이 안전하지 않음" 경고가 뜨면 **고급 → 계속 진행** 클릭 (1회만)
+
+#### 접속 전 확인 — GCP 방화벽 (포트 443)
+브라우저에서 접속이 안 될 때는 GCP VPC 방화벽에 HTTPS(443) 규칙이 없는 경우입니다.
+아래 명령으로 한 번만 추가하면 됩니다 (팀 관리자가 설정):
+```bash
+gcloud compute firewall-rules create allow-https-novnc \
+  --direction=INGRESS \
+  --action=ALLOW \
+  --rules=tcp:443 \
+  --source-ranges=0.0.0.0/0 \
+  --target-tags=l4-spot \
+  --project=charming-league-481306-d8
+```
 
 ### 2. 아키텍처
 
@@ -277,7 +293,7 @@ PC, 태블릿, 휴대폰 어디서든 웹 브라우저만 있으면 접속 가�
 ### 3. 접속 방법
 
 #### 3.1 정상 접속 (VNC + Guacamole 모두 실행 중인 경우)
-1. **https://136.113.193.83** 접속 → SSL 경고 무시 후 진행
+1. **https://130.211.241.166** 접속 → SSL 경고 무시 후 진행
 2. Guacamole 로그인
 3. **[모든연결]** 목록에서 **"VM-XFCE4"** 클릭
 4. 잠시 기다리면 XFCE4 Ubuntu Desktop 화면 나타남
@@ -718,31 +734,40 @@ Outputs written to `/workspace/ros2_ws/rl_eval_results/`:
 
 | 항목 | 값 |
 |------|----|
-| VM 이름 | `g2-standard-16-nvidia-l4-dev` |
-| Zone | `us-central1-a` |
+| VM 이름 | `l4-spot` |
+| Zone | `asia-east1-a` |
 | GCP 프로젝트 | `charming-league-481306-d8` |
 | GPU | NVIDIA L4 |
-| 타입 | Spot VM (선점 시 자동 재시작) |
+| 타입 | Spot VM (선점 시 자동 재시작, IP 변경 가능) |
+| 현재 외부 IP | `130.211.241.166` (변경될 수 있음) |
+
+> **IP 확인 명령:**
+> ```bash
+> gcloud compute instances describe l4-spot \
+>   --zone=asia-east1-a --project=charming-league-481306-d8 \
+>   --format="value(networkInterfaces[0].accessConfigs[0].natIP)"
+> ```
 
 ### 접속 방법
 
 **방법 1 — gcloud SSH (권장)**
 ```bash
-gcloud compute ssh g2-standard-16-nvidia-l4-dev \
-  --zone=us-central1-a --project=charming-league-481306-d8
+gcloud compute ssh l4-spot \
+  --zone=asia-east1-a --project=charming-league-481306-d8
 ```
 
 **방법 2 — Guacamole 웹 GUI (브라우저)**
 ```
-https://<VM_EXTERNAL_IP>
-기본 계정: guacadmin / guacadmin (최초 로그인 후 변경 필수)
+https://130.211.241.166
+계정: Discord / ide-server-cloud 채널 참조
 ```
-VM 외부 IP 확인: `gcloud compute instances describe g2-standard-16-nvidia-l4-dev --zone=us-central1-a --format="value(networkInterfaces[0].accessConfigs[0].natIP)"`
+- SSL 경고 시 **고급 → 계속 진행** 클릭
+- Spot VM 선점 후 재기동 시 IP가 바뀔 수 있으니 위 IP 확인 명령으로 최신 IP 확인
 
 **방법 3 — VNC 직접 (SSH 터널)**
 ```bash
-gcloud compute ssh g2-standard-16-nvidia-l4-dev \
-  --zone=us-central1-a -- -L 5901:localhost:5901
+gcloud compute ssh l4-spot \
+  --zone=asia-east1-a -- -L 5901:localhost:5901
 # 이후 VNC 클라이언트로 localhost:5901 접속
 ```
 
@@ -828,8 +853,8 @@ bash infra/deploy.sh
 
 연속 3회 재시작 실패로 watchdog이 멈췄을 때:
 ```bash
-gcloud compute instances add-metadata g2-standard-16-nvidia-l4-dev \
-  --zone=us-central1-a --project=charming-league-481306-d8 \
+gcloud compute instances add-metadata l4-spot \
+  --zone=asia-east1-a --project=charming-league-481306-d8 \
   --metadata watchdog_restart_count=0
 ```
 - `speed_vs_accuracy.png` — drop speed vs miss distance scatter
