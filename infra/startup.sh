@@ -79,6 +79,19 @@ fi
 # 컨테이너 안정화 대기
 sleep 5
 
+# --- [4-1] WandB API 키 설정 ---
+WANDB_ENV=/opt/drone-bombard/.wandb.env
+if [ -f "$WANDB_ENV" ]; then
+  WANDB_KEY=$(grep WANDB_API_KEY "$WANDB_ENV" | cut -d= -f2)
+  if [ -n "$WANDB_KEY" ]; then
+    docker exec drone-bombard-harmonic bash -c "wandb login $WANDB_KEY" &>/dev/null \
+      && log "WandB 로그인 완료" \
+      || log "WARNING: WandB 로그인 실패"
+  fi
+else
+  log "WARNING: $WANDB_ENV 없음 — WandB 인증 스킵"
+fi
+
 # --- [5] GPU 접근 확인 ---
 if docker exec drone-bombard-harmonic nvidia-smi -L &>/dev/null; then
   log "GPU 확인 완료"
