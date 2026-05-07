@@ -386,8 +386,7 @@ source install/setup.bash
 Launch 파일 하나로 전체 스택을 기동합니다.
 
 ```bash
-cd /workspace/ros2_ws && source install/setup.bash
-ros2 launch mission_manager drone_mission.launch.py
+cd /workspace/ros2_ws && ./run_drone_mission.sh
 ```
 
 자동 기동 순서:

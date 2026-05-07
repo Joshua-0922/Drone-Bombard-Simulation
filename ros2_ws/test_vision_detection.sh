@@ -6,7 +6,7 @@ echo "================================================"
 echo ""
 
 cd /workspace/ros2_ws
-source install/setup.bash
+source /workspace/ros2_ws/source_container_env.sh
 
 # Clean up any previous processes
 pkill -9 -f "px4|gazebo|MicroXRCE" 2>/dev/null
@@ -38,7 +38,7 @@ gz model -m iris_downward_depth_camera -f /opt/PX4-Autopilot/Tools/simulation/ga
 sleep 2
 
 cd /workspace/ros2_ws
-source install/setup.bash
+source /workspace/ros2_ws/source_container_env.sh
 
 echo "Step 5: Starting vision detection node..."
 ros2 run vision_detection xmarker_detector > /tmp/vision.log 2>&1 &

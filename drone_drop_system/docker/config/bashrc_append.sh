@@ -1,12 +1,11 @@
-# ROS 2 환경 설정 (워크스페이스 우선)
-if [ -f /workspace/ros2_ws/install/setup.bash ]; then
-    source /workspace/ros2_ws/install/setup.bash
-else
+# ROS 2 환경 설정 (Humble -> prebuilt px4_msgs -> mounted workspace)
+if [ -f /workspace/ros2_ws/source_container_env.sh ]; then
+    source /workspace/ros2_ws/source_container_env.sh
+elif [ -f /opt/ros/humble/setup.bash ]; then
     source /opt/ros/humble/setup.bash
 fi
 
-
-alias setup= "source /workspace/ros2_ws/install/setup.bash"
+alias setup="source /workspace/ros2_ws/source_container_env.sh"
 
 alias roshumble="source /opt/ros/humble/setup.bash"
 

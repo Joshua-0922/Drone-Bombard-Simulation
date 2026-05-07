@@ -25,7 +25,7 @@
 # Published by gz::sim::systems::OdometryPublisher in payload.sdf
 # ------------------------------------------------------------------
 - ros_topic_name: "/drone/payload/position"
-  gz_topic_name: "/model/payload_cylinder/odometry"
+  gz_topic_name: "/model/payload_0/odometry"
   ros_type_name: "nav_msgs/msg/Odometry"
   gz_type_name: "gz.msgs.Odometry"
   direction: GZ_TO_ROS
@@ -41,24 +41,30 @@
   direction: ROS_TO_GZ
 
 # ------------------------------------------------------------------
-# Camera and IMU bridges are intentionally omitted for RL training.
-# Re-add when running vision-guided missions:
-#
-# - ros_topic_name: "/camera/rgb/image_raw"
-#   gz_topic_name: "/x500_bombard/down_camera/image_raw"
-#   ros_type_name: "sensor_msgs/msg/Image"
-#   gz_type_name: "gz.msgs.Image"
-#   direction: GZ_TO_ROS
-#
-# - ros_topic_name: "/camera/rgb/camera_info"
-#   gz_topic_name: "/x500_bombard/down_camera/camera_info"
-#   ros_type_name: "sensor_msgs/msg/CameraInfo"
-#   gz_type_name: "gz.msgs.CameraInfo"
-#   direction: GZ_TO_ROS
-#
-# - ros_topic_name: "/imu/data"
-#   gz_topic_name: "/world/x_marker_world/model/x500_bombard/link/base_link/sensor/imu_sensor/imu"
-#   ros_type_name: "sensor_msgs/msg/Imu"
-#   gz_type_name: "gz.msgs.IMU"
-#   direction: GZ_TO_ROS
+# Camera and IMU bridges: re-enabled for vision-guided missions
+# ------------------------------------------------------------------
+- ros_topic_name: "/camera/rgb/image_raw"
+  gz_topic_name: "/x500_bombard/down_camera/image_raw"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/camera/rgb/camera_info"
+  gz_topic_name: "/x500_bombard/down_camera/camera_info"
+  ros_type_name: "sensor_msgs/msg/CameraInfo"
+  gz_type_name: "gz.msgs.CameraInfo"
+  direction: GZ_TO_ROS
+
+# Depth bridge (if depth sensor is available in model)
+- ros_topic_name: "/camera/depth/image_raw"
+  gz_topic_name: "/x500_bombard/down_camera/depth/image_raw"
+  ros_type_name: "sensor_msgs/msg/Image"
+  gz_type_name: "gz.msgs.Image"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/imu/data"
+  gz_topic_name: "/world/x_marker_world/model/x500_bombard/link/base_link/sensor/imu_sensor/imu"
+  ros_type_name: "sensor_msgs/msg/Imu"
+  gz_type_name: "gz.msgs.IMU"
+  direction: GZ_TO_ROS
 # ------------------------------------------------------------------

@@ -56,9 +56,9 @@
             filename="gz-sim-contact-system"/>
 
     <!-- Sensor systems: handle IMU, baro, GPS, magnetometer for PX4 SITL -->
-    <!-- NOTE: gz-sim-sensors-system (camera/ogre2 rendering) is intentionally
-         omitted for RL training — no camera sensor exists in x500_bombard RL
-         model variant, so removing it eliminates GPU rendering overhead entirely. -->
+    <!-- Sensors (camera/ogre2 rendering) enabled for vision runs -->
+    <plugin name="gz::sim::systems::Sensors"
+            filename="gz-sim-sensors-system"/>
     <plugin name="gz::sim::systems::Imu"
             filename="gz-sim-imu-system"/>
     <plugin name="gz::sim::systems::AirPressure"
@@ -290,6 +290,14 @@
          Pre-spawning all 4 at t=0 causes ODE AABB crash: motor plugins for all 4
          drones activate simultaneously at physics step 1, generating numerical
          instability. Dynamic spawn (PX4 inserts after Gazebo is running) is stable. -->
+
+    <!-- For local testing without PX4 SITL, spawn a single x500_bombard instance so
+         camera sensors are available for vision nodes. Remove for full PX4 runs. -->
+    <include>
+      <uri>model://x500_bombard</uri>
+      <name>x500_bombard</name>
+      <pose>0 0 0.3 0 0 0</pose>
+    </include>
 
     <!-- ============================================================
          World origin coordinate axes (RGB = XYZ convention)
