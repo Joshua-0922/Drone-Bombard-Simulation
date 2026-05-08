@@ -1,0 +1,80 @@
+# Drone Bombard Simulation — Isaac Sim + Isaac Lab 컨테이너
+#
+# 요구사항:
+#   - NVIDIA Driver >= 535
+#   - Docker + NVIDIA Container Toolkit (nvidia-docker2)
+#
+# 빌드:
+#   docker build -f docker/Dockerfile.isaac -t drone-bombard-isaac .
+#
+# 실행 (학습):
+#   docker run --gpus all --rm -it \
+#     -v $(pwd)/logs:/workspace/logs \
+#     -v $(pwd)/isaac_lab_tasks:/workspace/isaac_lab_tasks \
+#     drone-bombard-isaac \
+#     python /workspace/isaac_lab_tasks/drone_bombard/scripts/train.py \
+#       --num_envs 1024 --wandb --headless
+#
+# OOM 대응: num_envs 를 4096 → 1024 → 256 순서로 줄여서 시작
+
+FROM nvcr.io/nvidia/isaac-sim:4.2.0
+
+# 환경 변수
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    OMNI_KIT_ACCEPT_EULA=YES \
+    WORKSPACE=/workspace
+
+WORKDIR ${WORKSPACE}
+
+# 시스템 패키지
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    wget \
+    vim \
+    htop \
+    && rm -rf /var/lib/apt/lists/*
+
+# Isaac Lab 설치
+# nvcr.io/nvidia/isaac-sim:4.2.0 에 포함된 Python 환경 사용
+RUN /isaac-sim/python.sh -m pip install --upgrade pip
+
+RUN /isaac-sim/python.sh -m pip install \
+    isaac-lab \
+    isaaclab-rl \
+    && echo "Isaac Lab 설치 완료"
+
+# RL / 학습 의존성
+RUN /isaac-sim/python.sh -m pip install \
+    "stable-baselines3[extra]>=2.0" \
+    wandb>=0.16 \
+    gymnasium>=0.29 \
+    tensorboard>=2.14 \
+    scikit-learn \
+    pandas \
+    matplotlib
+
+# skrl (GPU-native SAC 전환용, 선택)
+RUN /isaac-sim/python.sh -m pip install skrl
+
+# 프로젝트 코드 복사
+COPY isaac_lab_tasks/ ${WORKSPACE}/isaac_lab_tasks/
+
+# 패키지 설치 (editable)
+RUN /isaac-sim/python.sh -m pip install -e ${WORKSPACE}/isaac_lab_tasks/
+
+# 로그 디렉토리 생성
+RUN mkdir -p ${WORKSPACE}/logs
+
+# 헬스체크: Isaac Sim Python 환경 검증
+HEALTHCHECK --interval=60s --timeout=30s --start-period=120s --retries=3 \
+    CMD /isaac-sim/python.sh -c "import isaaclab; print('OK')" || exit 1
+
+# 기본 진입점: 학습 스크립트
+ENTRYPOINT ["/isaac-sim/python.sh"]
+CMD ["${WORKSPACE}/isaac_lab_tasks/drone_bombard/scripts/train.py", \
+     "--num_envs", "1024", \
+     "--headless", \
+     "--total_timesteps", "5000000"]
