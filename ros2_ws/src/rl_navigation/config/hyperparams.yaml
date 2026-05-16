@@ -49,6 +49,10 @@ reward:
   w_heading: 1.0            # weight for heading alignment (cos delta_yaw)
   speed_gate_enabled: true  # false = disable speed gate → reproduces Spiral Milking (ablation Exp 007a)
 
+  # --- d_impact shaping (Layer 3 addition) ---
+  w_impact: 2.0             # weight for CCIP predicted miss distance reward: w_impact * exp(-k_impact * d_impact)
+  k_impact: 0.05            # decay constant (smaller = nonzero gradient at longer range)
+
   # --- Stability/efficiency (Layer 2) ---
   w_time: 0.01              # per-step time penalty
   w_ang_vel: 0.05           # penalty weight for ||omega||^2

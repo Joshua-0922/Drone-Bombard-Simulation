@@ -388,6 +388,9 @@ class DroneDropEnv(gym.Env):
         self._cfg_drop_wait_timeout = r.get('drop_wait_timeout', 10.0)
         # Ablation flag: disable speed gate to reproduce Spiral Milking reward hack
         self._cfg_speed_gate = r.get('speed_gate_enabled', True)
+        # d_impact shaping (Layer 3 addition): reward for reducing CCIP predicted miss distance
+        self._cfg_w_impact = r.get('w_impact', 0.0)
+        self._cfg_k_impact = r.get('k_impact', 0.05)
 
         # obs[0-14]: pos(3)+vel(3)+ang_vel(3)+vision(3)+attached(1)+rel_target(2)
         # obs[15]:   d_impact / pos_scale  (CCIP predicted miss distance)
@@ -800,7 +803,12 @@ class DroneDropEnv(gym.Env):
         # speed_gate_enabled=false reproduces Spiral Milking reward hack (ablation).
         speed_gate = min(speed_xy / 2.0, 1.0) if self._cfg_speed_gate else 1.0
         r3_orient = self._cfg_w_heading * cos_heading * speed_gate
-        r3 = r3_dist + r3_orient
+
+        # d_impact shaping: exp(-k_impact * d_impact) gives nonzero gradient at any distance.
+        # Rewards the agent for achieving a trajectory where releasing now would land near target.
+        r3_impact = self._cfg_w_impact * math.exp(-self._cfg_k_impact * d_impact)
+
+        r3 = r3_dist + r3_orient + r3_impact
 
         # Advance d_xy_prev for next step
         self.d_xy_prev = d_xy
@@ -815,6 +823,7 @@ class DroneDropEnv(gym.Env):
         info['rew_ctrl'] = r2
         info['rew_dist'] = r3_dist
         info['rew_orient'] = r3_orient
+        info['rew_impact'] = r3_impact
         info['rew_drop'] = 0.0
 
         return reward, False, info
@@ -1207,7 +1216,8 @@ class DroneDropEnv(gym.Env):
 
         # mission_manager (no PX4 topics — only /drone/cmd/* and /mission/state)
         proc = subprocess.Popen(
-            ['ros2', 'run', 'mission_manager', 'mission_manager_node'],
+            ['ros2', 'run', 'mission_manager', 'mission_manager_node',
+             '--ros-args', '-p', 'rl_mode:=true'],
             env=ep_env, stdout=ep_log, stderr=subprocess.STDOUT,
             preexec_fn=os.setsid,
         )
