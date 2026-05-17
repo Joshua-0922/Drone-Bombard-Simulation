@@ -464,15 +464,15 @@ class DroneDropEnv(gym.Env):
         # 2. Kill previous episode processes.
         self._kill_episode()
 
-        # 3. Teleport drone + payload back to upright spawn position.
-        #    Root cause: PX4 auto-arms during SAC init (~70s) and flies
-        #    without an OFFBOARD position controller → drone drifts and
-        #    flips (roll=π).  An inverted drone pushes DOWN with props so
-        #    TAKEOFF never reaches altitude → perpetual CRUISE timeouts.
-        #    Teleporting before each episode resets to known-good state.
-        #    EKF settles during the 5s drone_controller warmup + episode
-        #    node startup (~2s), so arm_ned_z is valid by arming time.
-        self._gz_reset_poses()
+        # 3. Reset drone + payload to spawn position.
+        #    If payload was dropped this episode, DetachableJoint is gone —
+        #    _gz_reset_poses() only teleports and cannot re-attach the joint.
+        #    Use _gz_world_reset() (model_only) which re-attaches the joint.
+        #    If no drop occurred, the faster teleport path is sufficient.
+        if self.dropped:
+            self._gz_world_reset()   # re-attaches DetachableJoint
+        else:
+            self._gz_reset_poses()   # fast teleport (joint still intact)
 
         # 4. Start fresh episode processes
         self._start_episode()
