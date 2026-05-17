@@ -416,24 +416,22 @@ pkill -f "gz sim" ; pkill -f "px4" ; pkill -f "MicroXRCEAgent" ; pkill -f "ros2"
 
 ---
 
-### 11.4 RL 학습용 2-레이어 실행 (권장)
+### 11.4 RL 학습 실행 (Self-Managed Infra)
 
-에피소드를 수만 번 반복하는 RL 학습에서는 프로세스를 **역할별로 분리**합니다.
+`DroneDropEnv`가 Gazebo, PX4, MicroXRCEAgent, ros_gz_bridge를 **모두 자동으로 관리**합니다.
+`infra.launch.py`는 **실행하지 마세요** — 별도로 띄우면 PX4 모델명 불일치로 학습이 실패합니다.
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  INFRA LAYER  (학습 세션 내내 유지)              │
-│  infra.launch.py                                 │
-│  - MicroXRCEAgent  (DDS 브릿지, 완전 무상태)    │
-│  - Gazebo Harmonic (물리 엔진; 에피소드 간 리셋)│
-│  - ros_gz_bridge   (토픽 포워더)                │
-│  - xmarker_detector (YOLO 모델 상주)            │
+│  DroneDropEnv._start_infra()  (학습 시작 시 1회) │
+│  - MicroXRCEAgent  (DDS 브릿지)                 │
+│  - Gazebo Harmonic (물리 엔진)                   │
+│  - ros_gz_bridge   (토픽 포워더, 인스턴스별)     │
+│  - PX4 SITL        (gz_x500_bombard_rN 에어프레임)│
 └─────────────────────────────────────────────────┘
              ↕  에피소드마다 재시작
 ┌─────────────────────────────────────────────────┐
-│  EPISODE LAYER  (DroneDropEnv.reset()가 자동 관리)│
-│  episode.launch.py                               │
-│  - PX4 SITL         (t=2s, Gazebo 이미 기동 중) │
+│  DroneDropEnv.reset()  (에피소드 자동 관리)      │
 │  - mission_manager  (FSM 커맨더)                │
 │  - drone_controller (PX4 브릿지)                │
 │  - drop_calculator  (착탄 오차 계산)            │
@@ -445,34 +443,34 @@ pkill -f "gz sim" ; pkill -f "px4" ; pkill -f "MicroXRCEAgent" ; pkill -f "ros2"
 | 단계 | 시간 |
 |------|-----|
 | 에피소드 프로세스 종료 | ~1.5 s |
-| Gazebo 월드 리셋 | ~0.5 s |
-| PX4 재기동 및 드론 스폰 | ~3 s |
+| 드론·페이로드 포즈 리셋 | ~0.5 s |
+| 에피소드 노드 기동 | ~2 s |
 | ARM + Offboard 진입 | ~2 s |
 | 10 m 고도 도달 후 CRUISE 진입 | ~5 s |
-| **합계** | **~12 s** |
+| **합계** | **~11 s** |
 
-#### Step 1 — Infra Layer 기동 (1회)
+#### Step 1 — 스테일 프로세스 정리 (학습 세션 시작 전 1회)
 
 ```bash
-cd /workspace/ros2_ws && source install/setup.bash
-ros2 launch mission_manager infra.launch.py          # headless=true 기본값
-ros2 launch mission_manager infra.launch.py headless:=false  # GUI 포함
+bash /workspace/ros2_ws/start_infra_clean.sh
 ```
 
-Gazebo가 완전히 로드될 때까지(~25 s) 기다린 후 학습을 시작합니다.
-
-#### Step 2 — SAC 학습 시작 (별도 터미널)
+#### Step 2 — SAC 학습 시작 (터미널 1개)
 
 ```bash
-cd /workspace/ros2_ws && source install/setup.bash
+# source 순서 중요: /opt/ros → /root → /workspace 순서 필수
+# 순서 틀리면 px4_msgs import 에러로 에피소드 노드 silent crash
+source /opt/ros/humble/setup.bash
+source /root/ros2_ws/install/setup.bash
+source /workspace/ros2_ws/install/setup.bash
+export GZ_SIM_RESOURCE_PATH=/workspace/gazebo_models:/opt/PX4-Autopilot/Tools/simulation/gz/models:/opt/PX4-Autopilot/Tools/simulation/gz/worlds
 ros2 run rl_navigation train_sac
 ```
 
-`DroneDropEnv.reset()` 가 호출될 때마다 자동으로:
-1. 이전 에피소드 프로세스 종료 (`SIGTERM` → 프로세스 그룹)
-2. Gazebo 월드 리셋 (`gz service`)
-3. `episode.launch.py` 재기동
-4. CRUISE 상태까지 대기
+`DroneDropEnv.__init__()` 실행 시 자동으로:
+1. Gazebo + PX4 + MicroXRCEAgent + bridge 기동 (~90s 초기화 대기)
+2. 에피소드마다 mission_manager / drone_controller / drop_calculator 재시작
+3. CRUISE 상태까지 대기 후 학습 시작
 
 체크포인트는 `/workspace/ros2_ws/rl_checkpoints/`에 5,000 스텝마다 저장됩니다.
 
@@ -564,9 +562,9 @@ rviz2
 ### 11.8 전체 미션 시퀀스
 
 ```
-[INFRA]  Gazebo 기동 → x_marker_world 로드
-[INFRA]  t=16s ros_gz_bridge 기동
-[INFRA]  t=22s YOLOv8 노드 기동
+[DroneDropEnv] Gazebo 기동 → x_marker_world 로드
+[DroneDropEnv] t=10s ros_gz_bridge 기동
+[DroneDropEnv] t=20s PX4 SITL 기동 → x500_bombard_rN_N 스폰
 
 --- 에피소드 시작 (reset() 호출) ---
 [EPISODE] Gazebo 월드 리셋 → 드론·페이로드 초기 위치 복원
@@ -692,10 +690,16 @@ ros2 run rl_navigation train_sac \
 ### Training
 
 ```bash
-# Terminal 1 — start persistent infra (once per session)
-ros2 launch mission_manager infra.launch.py
+# 스테일 프로세스 정리 (세션 시작 전 1회)
+bash /workspace/ros2_ws/start_infra_clean.sh
 
-# Terminal 2 — start SAC training (episode.launch.py managed automatically)
+# SAC 학습 시작 — Gazebo/PX4/bridge 모두 자동 관리됨
+# source 순서 중요: /opt/ros → /root → /workspace 순서 필수
+# 순서 틀리면 px4_msgs import 에러로 에피소드 노드 silent crash
+source /opt/ros/humble/setup.bash
+source /root/ros2_ws/install/setup.bash
+source /workspace/ros2_ws/install/setup.bash
+export GZ_SIM_RESOURCE_PATH=/workspace/gazebo_models:/opt/PX4-Autopilot/Tools/simulation/gz/models:/opt/PX4-Autopilot/Tools/simulation/gz/worlds
 ros2 run rl_navigation train_sac
 
 # With explicit config path
@@ -709,6 +713,8 @@ ros2 run rl_navigation train_sac \
 # Monitor (TensorBoard + WandB both active)
 tensorboard --logdir /workspace/ros2_ws/rl_logs/sac_drop
 ```
+
+> ⚠️ `infra.launch.py`는 실행하지 마세요. `DroneDropEnv`가 인프라를 자동 관리합니다.
 
 Checkpoints saved to `/workspace/ros2_ws/rl_checkpoints/` every 5,000 steps (model + replay buffer).
 
