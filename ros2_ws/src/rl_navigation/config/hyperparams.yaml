@@ -39,7 +39,7 @@ reward:
   g: 9.81                   # gravity (m/s^2)
 
   # --- Auto-drop (Phase 1 CCIP: fires when predicted impact point ≤ threshold) ---
-  auto_drop_threshold: 5.0  # fire drop when CCIP d_impact <= this (m); widened from 0.5 for curriculum (jekyun_reward_design1)
+  auto_drop_threshold: 2.0  # fire drop when CCIP d_impact <= this (m); reduced from 5.0 (too wide → agent drops immediately after CRUISE)
   drop_wait_timeout: 10.0   # seconds to wait for actual physics landing result from drop_calculator
 
   # --- Approach shaping (Layer 3) ---

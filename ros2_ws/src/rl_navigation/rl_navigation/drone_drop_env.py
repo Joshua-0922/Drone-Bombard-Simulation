@@ -1323,10 +1323,10 @@ class DroneDropEnv(gym.Env):
             if rclpy.ok():
                 self._node.get_logger().warning('gz world reset timed out')
         # Settle: physics registers joint re-attachment AND PX4 EKF absorbs the
-        # pose snap.  3 s here + 2 s arm delay (40 ticks x 20 Hz in drone_controller)
-        # = 5 s total before arming — sufficient for EKF to reconverge after the
-        # world-reset position discontinuity.
-        time.sleep(3.0)
+        # pose snap.  5 s here + 2 s arm delay (40 ticks x 20 Hz in drone_controller)
+        # = 7 s total before arming — increased from 3s to prevent next episode
+        # starting before DetachableJoint is fully re-attached.
+        time.sleep(5.0)
 
     def _wait_for_cruise(self):
         """Poll /mission/state until CRUISE or timeout."""
