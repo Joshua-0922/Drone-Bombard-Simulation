@@ -37,9 +37,9 @@
          infra.launch.py together; verify DDS sync stays stable.
     ============================================================ -->
     <physics type="ode">
-      <max_step_size>0.01</max_step_size>
+      <max_step_size>0.004</max_step_size>
       <real_time_factor>1</real_time_factor>
-      <real_time_update_rate>100</real_time_update_rate>
+      <real_time_update_rate>250</real_time_update_rate>
     </physics>
 
     <!-- ============================================================
@@ -56,9 +56,11 @@
             filename="gz-sim-contact-system"/>
 
     <!-- Sensor systems: handle IMU, baro, GPS, magnetometer for PX4 SITL -->
-    <!-- Sensors (camera/ogre2 rendering) enabled for vision runs -->
-    <plugin name="gz::sim::systems::Sensors"
-            filename="gz-sim-sensors-system"/>
+    <!-- NOTE: gz-sim-sensors-system (ogre2 camera rendering) intentionally
+         omitted for RL training. x500_bombard RL variant has no camera sensor;
+         keeping it active causes GPU rendering overhead → physics timestep
+         instability → Motor Aliasing → ODE AABB crash.
+         Re-enable only for vision-based runs on a GPU VM with use_vision=True. -->
     <plugin name="gz::sim::systems::Imu"
             filename="gz-sim-imu-system"/>
     <plugin name="gz::sim::systems::AirPressure"
@@ -290,14 +292,6 @@
          Pre-spawning all 4 at t=0 causes ODE AABB crash: motor plugins for all 4
          drones activate simultaneously at physics step 1, generating numerical
          instability. Dynamic spawn (PX4 inserts after Gazebo is running) is stable. -->
-
-    <!-- For local testing without PX4 SITL, spawn a single x500_bombard instance so
-         camera sensors are available for vision nodes. Remove for full PX4 runs. -->
-    <include>
-      <uri>model://x500_bombard</uri>
-      <name>x500_bombard</name>
-      <pose>0 0 0.3 0 0 0</pose>
-    </include>
 
     <!-- ============================================================
          World origin coordinate axes (RGB = XYZ convention)

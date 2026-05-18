@@ -465,12 +465,16 @@ class DroneDropEnv(gym.Env):
         self._kill_episode()
 
         # 3. Reset drone + payload to spawn position.
-        #    If payload was dropped this episode, DetachableJoint is gone —
-        #    _gz_reset_poses() only teleports and cannot re-attach the joint.
-        #    Use _gz_world_reset() (model_only) which re-attaches the joint.
+        #    If payload was dropped this episode, DetachableJoint is gone.
+        #    _gz_world_reset(model_only) caused ODE AABB integer overflow crash
+        #    because residual payload velocity after drop destabilises physics.
+        #    Fix: full infra restart (kill Gazebo+PX4 and restart) — DetachableJoint
+        #    is re-created cleanly from SDF. Slower (~30s) but crash-free.
         #    If no drop occurred, the faster teleport path is sufficient.
         if self.dropped:
-            self._gz_world_reset()   # re-attaches DetachableJoint
+            self._obs_ready.clear()  # ensure _start_infra() waits for fresh PX4 data
+            self._kill_infra()
+            self._start_infra()
         else:
             self._gz_reset_poses()   # fast teleport (joint still intact)
 
@@ -478,20 +482,29 @@ class DroneDropEnv(gym.Env):
         self._start_episode()
 
         # 6. Wait for CRUISE state (blocks until takeoff + climb complete).
-        #    Retry once: if PX4 fails to arm in the first window (EKF race,
-        #    brief physics glitch) restarting episode nodes usually recovers.
-        #    Without retry, the episode starts in TAKEOFF → crash penalty fires
-        #    for 500 steps, polluting the replay buffer.
-        self._wait_for_cruise()
-        with self._state_lock:
-            _reached_cruise = (self._node.mission_state == 'CRUISE')
-        if not _reached_cruise:
-            self._node.get_logger().warn(
-                '[RL Env] CRUISE timeout — retrying episode once')
-            self._kill_episode()
-            time.sleep(1.0)
-            self._start_episode()
+        #    On timeout: full infra restart (kills Gazebo+PX4, re-spawns fresh),
+        #    then start episode directly — no pose reset needed because PX4
+        #    re-spawns the drone at the correct position.
+        #    Retries up to 3 times before giving up; this episode is never
+        #    returned to SB3 so the replay buffer stays clean.
+        for _cruise_attempt in range(3):
             self._wait_for_cruise()
+            with self._state_lock:
+                _reached_cruise = (self._node.mission_state == 'CRUISE')
+            if _reached_cruise:
+                break
+            self._node.get_logger().warn(
+                f'[RL Env] CRUISE timeout (attempt {_cruise_attempt + 1}/3)'
+                ' — full infra restart, discarding episode')
+            self._kill_episode()
+            self._kill_infra()
+            self._start_infra()
+            self._start_episode()
+        else:
+            # All 3 attempts failed — log and try a full reset from scratch
+            self._node.get_logger().error(
+                '[RL Env] CRUISE timeout after 3 attempts — forcing full reset')
+            return self.reset(seed=seed, options=options)
 
         # 7. Seed d_xy_prev from the initial CRUISE position (no kinematic prediction)
         with self._state_lock:
