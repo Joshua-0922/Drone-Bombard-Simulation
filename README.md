@@ -455,7 +455,17 @@ pkill -f "gz sim" ; pkill -f "px4" ; pkill -f "MicroXRCEAgent" ; pkill -f "ros2"
 bash /workspace/ros2_ws/start_infra_clean.sh
 ```
 
-#### Step 2 — SAC 학습 시작 (터미널 1개)
+#### Step 2 — 빌드 (소스 코드 변경 후 또는 최초 세팅 시)
+
+> `build/`, `install/`은 Git에서 관리하지 않으므로, clone 또는 pull 후 반드시 빌드해야 합니다.
+
+```bash
+cd /workspace/ros2_ws
+colcon build --packages-select rl_navigation
+source install/setup.bash
+```
+
+#### Step 3 — SAC 학습 시작 (터미널 1개)
 
 ```bash
 # source 순서 중요: /opt/ros → /root → /workspace 순서 필수
@@ -482,7 +492,7 @@ ros2 run rl_navigation train_sac --resume /workspace/ros2_ws/rl_checkpoints/sac_
 tensorboard --logdir /workspace/ros2_ws/rl_logs/sac_drop
 ```
 
-#### Step 3 — 평가
+#### Step 4 — 평가
 
 ```bash
 ros2 run rl_navigation evaluate \

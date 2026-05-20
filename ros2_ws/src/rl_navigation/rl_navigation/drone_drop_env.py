@@ -417,6 +417,9 @@ class DroneDropEnv(gym.Env):
         # --- Infra state ---
         self._infra_procs = []        # Popen handles for infra processes
 
+        # --- Reset recursion guard ---
+        self._reset_depth = 0
+
         # --- Start ROS2 ---
         if not rclpy.ok():
             rclpy.init()
@@ -428,7 +431,7 @@ class DroneDropEnv(gym.Env):
             px4_topic_prefix=self._px4_ns,
         )
         self._spin_thread = threading.Thread(
-            target=rclpy.spin, args=(self._node,), daemon=True)
+            target=self._spin_loop, daemon=True, name='Thread-2 (spin)')
         self._spin_thread.start()
 
         # --- Self-managed infrastructure ---
@@ -441,6 +444,15 @@ class DroneDropEnv(gym.Env):
     def reset(self, *, seed=None, options=None):
         """Reset simulation and return initial observation."""
         super().reset(seed=seed)
+
+        # Guard against infinite recursion when CRUISE is permanently unreachable
+        # (e.g. spin thread died). Allow at most 2 nested retries total.
+        self._reset_depth += 1
+        if self._reset_depth > 2:
+            self._reset_depth = 0
+            raise RuntimeError(
+                '[RL Env] reset() called recursively more than 2 times. '
+                'Spin thread may be dead or infra is unrecoverable. Aborting.')
 
         # 1. Clear episode state
         self._step_count = 0
@@ -460,6 +472,15 @@ class DroneDropEnv(gym.Env):
         with self._state_lock:
             self._node.payload_attached = True
             self._node.mission_state = 'IDLE'  # avoid stale CRUISE from last episode
+
+        # Ensure spin thread is alive before proceeding
+        if not self._spin_thread.is_alive():
+            self._node.get_logger().error(
+                '[RL Env] Spin thread is dead — restarting...')
+            self._spin_thread = threading.Thread(
+                target=self._spin_loop, daemon=True, name='Thread-2 (spin)')
+            self._spin_thread.start()
+            time.sleep(1.0)
 
         # 2. Kill previous episode processes.
         self._kill_episode()
@@ -482,9 +503,11 @@ class DroneDropEnv(gym.Env):
         self._start_episode()
 
         # 6. Wait for CRUISE state (blocks until takeoff + climb complete).
-        #    On timeout: full infra restart (kills Gazebo+PX4, re-spawns fresh),
-        #    then start episode directly — no pose reset needed because PX4
-        #    re-spawns the drone at the correct position.
+        #    Tiered recovery on timeout:
+        #      Attempt 1: episode-only restart if Gazebo+PX4 still healthy (fast, ~5s).
+        #                 Covers most cases: drone_controller/mission_manager issue.
+        #      Attempt 2+: full infra restart (kills Gazebo+PX4, re-spawns fresh, ~80s).
+        #                  Used when infra itself is unhealthy or fast path failed.
         #    Retries up to 3 times before giving up; this episode is never
         #    returned to SB3 so the replay buffer stays clean.
         for _cruise_attempt in range(3):
@@ -493,18 +516,41 @@ class DroneDropEnv(gym.Env):
                 _reached_cruise = (self._node.mission_state == 'CRUISE')
             if _reached_cruise:
                 break
-            self._node.get_logger().warn(
-                f'[RL Env] CRUISE timeout (attempt {_cruise_attempt + 1}/3)'
-                ' — full infra restart, discarding episode')
-            self._kill_episode()
-            self._kill_infra()
-            self._start_infra()
-            self._start_episode()
+
+            # Tiered recovery decision
+            _try_fast_path = (
+                _cruise_attempt == 0
+                and self._check_infra_healthy(self._instance_id)
+            )
+
+            if _try_fast_path:
+                self._node.get_logger().warn(
+                    f'[RL Env] CRUISE timeout (attempt {_cruise_attempt + 1}/3)'
+                    ' — episode-only restart (infra healthy, fast path)')
+                self._kill_episode()
+                with self._state_lock:
+                    self._node.mission_state = 'IDLE'
+                self._gz_reset_poses()   # teleport drone+payload to spawn
+                self._start_episode()
+            else:
+                self._node.get_logger().warn(
+                    f'[RL Env] CRUISE timeout (attempt {_cruise_attempt + 1}/3)'
+                    ' — full infra restart')
+                self._kill_episode()
+                self._kill_infra()
+                self._obs_ready.clear()  # ensure _start_infra() waits for fresh PX4 data
+                with self._state_lock:
+                    self._node.mission_state = 'IDLE'
+                self._start_infra()
+                self._start_episode()
         else:
-            # All 3 attempts failed — log and try a full reset from scratch
+            # All 3 attempts failed — attempt one full reset from scratch.
+            # _reset_depth guard above prevents infinite recursion.
             self._node.get_logger().error(
                 '[RL Env] CRUISE timeout after 3 attempts — forcing full reset')
             return self.reset(seed=seed, options=options)
+
+        self._reset_depth = 0  # success — clear depth counter
 
         # 7. Seed d_xy_prev from the initial CRUISE position (no kinematic prediction)
         with self._state_lock:
@@ -919,6 +965,32 @@ class DroneDropEnv(gym.Env):
             ['gz', 'model', '--list'],
             capture_output=True, text=True, timeout=5.0)
         return self._model_name in result.stdout
+
+    def _spin_loop(self):
+        """Resilient spin loop: catches exceptions and restarts rclpy.spin.
+
+        rclpy.spin() can throw if the underlying DDS/RMW layer encounters an
+        error (e.g. Gazebo crashes, network issues). Running it bare in a
+        thread means the thread silently dies and no more ROS2 callbacks are
+        processed, causing mission_state to freeze and CRUISE timeout loops.
+
+        This wrapper catches those exceptions and re-enters spin so the thread
+        stays alive as long as the node and rclpy context are healthy.
+        """
+        while rclpy.ok():
+            try:
+                rclpy.spin(self._node)
+                break  # spin() returned cleanly (node was destroyed)
+            except Exception as exc:  # noqa: BLE001
+                if rclpy.ok():
+                    try:
+                        self._node.get_logger().error(
+                            f'[RL Env] Spin thread exception: {exc!r} — restarting spin')
+                    except Exception:  # noqa: BLE001
+                        pass
+                    time.sleep(0.5)
+                else:
+                    break
 
     def _start_infra(self):
         """Launch shared Gazebo (instance 0 only), per-instance MicroXRCEAgent
@@ -1345,6 +1417,11 @@ class DroneDropEnv(gym.Env):
         """Poll /mission/state until CRUISE or timeout."""
         deadline = time.time() + self._cfg_cruise_timeout
         while time.time() < deadline:
+            if not self._spin_thread.is_alive():
+                if rclpy.ok():
+                    self._node.get_logger().error(
+                        '[RL Env] Spin thread died during _wait_for_cruise — aborting wait')
+                return  # caller will detect mission_state != 'CRUISE' and retry
             with self._state_lock:
                 state = self._node.mission_state
             if state == 'CRUISE':
