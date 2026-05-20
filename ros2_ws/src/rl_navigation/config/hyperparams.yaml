@@ -46,11 +46,11 @@ reward:
   k1_potential: 1.0         # UNUSED — kept for reference. Was: exp(-k1*d) potential (saturated at d>10m)
   w_dist: 0.3                # linear distance reward weight: r3_dist = w_dist*(d_prev - d_now)
                              # v2: reduced from 1.0 to suppress orbit-and-wait strategy
-  w_heading: 1.0            # weight for heading alignment (cos delta_yaw)
+  w_heading: 0.4            # weight for heading alignment (cos delta_yaw)
   speed_gate_enabled: true  # false = disable speed gate → reproduces Spiral Milking (ablation Exp 007a)
 
   # --- d_impact shaping (Layer 3 addition) ---
-  w_impact: 2.0             # weight for CCIP predicted miss distance reward: w_impact * exp(-k_impact * d_impact)
+  w_impact: 0.2             # weight for CCIP predicted miss distance reward: w_impact * exp(-k_impact * d_impact)
   k_impact: 0.05            # decay constant (smaller = nonzero gradient at longer range)
 
   # --- Stability/efficiency (Layer 2) ---

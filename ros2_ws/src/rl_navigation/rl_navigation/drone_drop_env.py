@@ -455,6 +455,8 @@ class DroneDropEnv(gym.Env):
                 'Spin thread may be dead or infra is unrecoverable. Aborting.')
 
         # 1. Clear episode state
+        # Save dropped state BEFORE clearing — used below to decide infra restart path.
+        _prev_dropped = self.dropped
         self._step_count = 0
         self.dropped = False
         self._episode_reward = 0.0
@@ -492,7 +494,7 @@ class DroneDropEnv(gym.Env):
         #    Fix: full infra restart (kill Gazebo+PX4 and restart) — DetachableJoint
         #    is re-created cleanly from SDF. Slower (~30s) but crash-free.
         #    If no drop occurred, the faster teleport path is sufficient.
-        if self.dropped:
+        if _prev_dropped:
             self._obs_ready.clear()  # ensure _start_infra() waits for fresh PX4 data
             self._kill_infra()
             self._start_infra()
@@ -642,7 +644,7 @@ class DroneDropEnv(gym.Env):
 
             # Drop attempt bonus: reward the act of dropping regardless of accuracy.
             # Encourages the agent to attempt drops and gain Layer 4 experience.
-            reward = 20.0
+            reward = 120.0
 
             # Base precision reward: w_drop_base * exp(-k2 * d_error)
             reward += self._cfg_w_drop_base * math.exp(
@@ -684,7 +686,7 @@ class DroneDropEnv(gym.Env):
         if self._step_count >= self._cfg_max_steps:
             truncated = True
             if not self.dropped:
-                reward -= 150.0   # v2: Mission failure penalty increased from -50 to -150
+                reward -= 120.0   # v3: Mission failure penalty (orbit-milking deterrent)
 
         # --- Update action memory ---
         self.action_prev = np.array(action, dtype=np.float32)
@@ -1240,7 +1242,15 @@ class DroneDropEnv(gym.Env):
                 f'[Instance {iid}] PX4 ready — infra up')
 
     def _kill_infra(self):
-        """Kill all infrastructure processes in reverse order."""
+        """Kill all infrastructure processes.
+
+        When infra was reused (self._infra_procs == []), there are no tracked
+        handles, so we fall back to pkill to ensure Gazebo+PX4 are actually
+        terminated before the next _start_infra() call.
+        """
+        iid = self._instance_id
+
+        # Kill tracked procs first (if any)
         for proc in reversed(self._infra_procs):
             if proc.poll() is None:
                 try:
@@ -1253,13 +1263,27 @@ class DroneDropEnv(gym.Env):
                         pass
         self._infra_procs = []
 
+        # Always pkill by name to catch reused (untracked) processes.
+        # This ensures Gazebo+PX4 are truly dead before the next fresh start,
+        # even when _start_infra() previously took the "reusing" path.
+        if iid == 0:
+            for pattern in ['gz sim', 'parameter_bridge']:
+                subprocess.run(['pkill', '-f', pattern],
+                               capture_output=True, check=False)
+        subprocess.run(
+            ['pkill', '-f', f'MicroXRCEAgent.*{self._uxrce_port}'],
+            capture_output=True, check=False)
+        subprocess.run(['pkill', '-f', 'bin/px4'],
+                       capture_output=True, check=False)
+
         # Clean PX4 lock/socket files for this instance
-        iid = self._instance_id
         for path in [f'/tmp/px4_lock-{iid}', f'/tmp/px4-sock-{iid}']:
             try:
                 os.remove(path)
             except FileNotFoundError:
                 pass
+        # Allow processes time to fully terminate before next start
+        time.sleep(2.0)
 
     # ------------------------------------------------------------------
     # Episode lifecycle helpers
