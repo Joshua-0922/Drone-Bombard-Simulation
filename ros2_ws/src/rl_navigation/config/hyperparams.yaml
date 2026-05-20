@@ -39,13 +39,13 @@ reward:
   g: 9.81                   # gravity (m/s^2)
 
   # --- Auto-drop (Phase 1 CCIP: fires when predicted impact point ≤ threshold) ---
-  auto_drop_threshold: 2.0  # fire drop when CCIP d_impact <= this (m); reduced from 5.0 (too wide → agent drops immediately after CRUISE)
+  auto_drop_threshold: 4.0  # fire drop when CCIP d_impact <= this (m); v2: widened from 2.0 to increase drop experience frequency
   drop_wait_timeout: 10.0   # seconds to wait for actual physics landing result from drop_calculator
 
   # --- Approach shaping (Layer 3) ---
   k1_potential: 1.0         # UNUSED — kept for reference. Was: exp(-k1*d) potential (saturated at d>10m)
-  w_dist: 1.0               # linear distance reward weight: r3_dist = w_dist*(d_prev - d_now)
-                             # (reduced from 10.0: linear is unbounded, exponential was bounded by 1)
+  w_dist: 0.3                # linear distance reward weight: r3_dist = w_dist*(d_prev - d_now)
+                             # v2: reduced from 1.0 to suppress orbit-and-wait strategy
   w_heading: 1.0            # weight for heading alignment (cos delta_yaw)
   speed_gate_enabled: true  # false = disable speed gate → reproduces Spiral Milking (ablation Exp 007a)
 
@@ -59,8 +59,8 @@ reward:
   w_action_smooth: 0.05     # penalty weight for ||action_t - action_{t-1}||^2
 
   # --- Terminal drop accuracy (Layer 4) ---
-  k2_precision: 5.0         # precision decay constant for drop reward
-  w_drop_base: 50.0         # base weight for drop accuracy reward
+  k2_precision: 0.3          # v2: precision decay constant (reduced from 5.0 → meaningful reward at 2-10m error)
+  w_drop_base: 100.0         # v2: base weight for drop accuracy reward (increased from 50.0)
   r_success_jackpot: 100.0  # bonus for landing within success_threshold
   success_threshold: 0.1    # distance threshold for jackpot (m)
   penalty_instability: 50.0 # subtracted if drone is unstable at drop
@@ -75,7 +75,7 @@ reward:
 wandb:
   project: "drone-bombard-sac"
   entity: "nayoonho0922-seoul-national-university"  # team entity (personal entities disabled)
-  run_name: "L4-AutoDrop-v1"            # Auto-generated if null
+  run_name: "L4-AutoDrop-v2"            # Auto-generated if null
   tags: ["sac", "spot-vm", "l4-gpu"]
   save_model_artifact: true
   log_freq: 1000            # gradient_save_freq for WandbCallback (increased to avoid blocking training loop)

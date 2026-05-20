@@ -504,6 +504,136 @@ ros2 run rl_navigation evaluate \
 
 ---
 
+### 보상 함수 구조 및 설계 이력
+
+#### 보상 레이어 개요
+
+드론의 투하 정책 학습을 위해 보상 함수를 4개의 레이어로 구성합니다.
+
+| 레이어 | 적용 시점 | 역할 |
+|--------|-----------|------|
+| **Layer 1 — 안전** | 매 스텝 | 비정상 비행 억제 (에피소드 종료 없음) |
+| **Layer 2 — 안정/효율** | 매 스텝 | 불필요한 기동 억제, 빠른 임무 수행 유도 |
+| **Layer 3 — 접근** | 매 스텝 | 타겟 방향으로 비행하도록 유도 |
+| **Layer 4 — 투하 정확도** | 투하 시 (에피소드 종료) | 정확한 위치에서 투하하도록 유도 |
+
+**에피소드 종료 조건:**
+- `d_impact ≤ auto_drop_threshold` → 자동 투하 → Layer 4 보상 후 `terminated`
+- 최대 스텝(500) 초과 → 미투하 패널티 후 `truncated`
+
+**CCIP(Continuously Computed Impact Point)**: 현재 위치·속도로 지금 투하했을 때의 착탄 예측 지점을 매 스텝 실시간 계산.
+
+$$d_{impact} = \sqrt{(x_p - x_{target})^2 + (y_p - y_{target})^2}$$
+
+$$x_p = x + v_x \cdot t_f, \quad t_f = \frac{v_z + \sqrt{v_z^2 + 2gz}}{g}$$
+
+---
+
+#### 각 레이어 계산식
+
+**Layer 1 — 안전 패널티**
+
+```
+R1 = penalty_crash      if altitude < min_altitude (after step 20)
+   + penalty_overspeed  if speed > 20 m/s
+```
+
+**Layer 2 — 안정/효율 패널티**
+
+$$R_2 = -w_{time} \cdot 5 - w_{\omega} \cdot \|\omega\|^2 - w_{smooth} \cdot \|\Delta a\|^2$$
+
+- $w_{time}$: 시간 패널티 가중치 (스텝당 고정 비용)
+- $\|\omega\|^2$: 각속도 크기 제곱 (기체 불안정도)
+- $\|\Delta a\|^2$: 연속 스텝 간 액션 변화량 제곱 (급격한 조작 억제)
+
+**Layer 3 — 접근 보상**
+
+$$R_3 = w_{dist} \cdot (d_{prev} - d_{now}) + w_{heading} \cdot \cos(\theta) \cdot \text{gate}(v_{xy}) + w_{impact} \cdot e^{-k_{impact} \cdot d_{impact}}$$
+
+- $d_{prev} - d_{now}$: 타겟까지 거리 감소량 (접근할수록 양수)
+- $\cos(\theta)$: 드론 진행 방향과 타겟 방향 사이 각도의 코사인 (헤딩 정렬)
+- $\text{gate}(v_{xy}) = \min(v_{xy}/2, 1)$: 속도 게이트 (정지 상태에서 헤딩 보상 수집 방지)
+- $e^{-k_{impact} \cdot d_{impact}}$: CCIP 예측 오차 감소 보상
+
+**Layer 4 — 투하 정확도 보상 (에피소드 종료)**
+
+$$R_4 = w_{drop} \cdot e^{-k_2 \cdot d_{error}} + r_{jackpot} \cdot \mathbf{1}[d_{error} \leq 0.1m] + r_{attempt} - \text{penalty}_{instability}$$
+
+- $d_{error}$: Gazebo 물리 시뮬레이션에서 측정한 **실제** 착탄 오차 (m)
+- $e^{-k_2 \cdot d_{error}}$: 오차가 작을수록 높은 보상
+- $r_{jackpot}$: 0.1m 이내 착탄 시 추가 보너스
+- $r_{attempt}$: 투하 시도 자체에 대한 보너스 (v2 추가)
+- $\text{penalty}_{instability}$: 투하 시 각속도/기울기 초과 시 차감
+
+**미투하 패널티 (스텝 초과 시)**
+
+```
+truncation_penalty = -N   (투하 없이 500 스텝 초과)
+```
+
+---
+
+#### v1 설정 (초기)
+
+```yaml
+# Layer 3
+w_dist: 1.0
+w_heading: 1.0
+w_impact: 2.0
+k_impact: 0.05
+
+# Layer 4
+auto_drop_threshold: 2.0   # CCIP 예측 오차 ≤ 2m 시 자동 투하
+k2_precision: 5.0
+w_drop_base: 50.0
+r_success_jackpot: 100.0
+# 미투하 패널티: -50
+# drop attempt bonus: 없음
+```
+
+#### v1 학습 결과 및 문제점 (333K steps 기준)
+
+| 지표 | 결과 |
+|------|------|
+| `success_rate` 피크 | 118K steps에서 2.56%, 이후 1.0%까지 하락 및 정체 |
+| `ep_rew_mean` | -455까지 개선 후 다시 -939로 악화 |
+| `ep_len_mean` | 430 → 442로 증가 (투하 없이 에피소드 끝까지 소모) |
+
+**근본 원인**: `k2_precision=5.0`에서 2m 오차 투하 시 Layer 4 보상:
+
+$$R_4 = 50 \cdot e^{-5 \times 2} = 50 \times 0.0000454 \approx 0$$
+
+투하해도 보상이 거의 0이어서 agent가 맴돌며 Layer 3 보상만 수집하는 전략을 선택.
+
+#### v2 변경 사항 및 이유
+
+```yaml
+# Layer 3
+w_dist: 0.3          # 1.0 → 0.3: 맴돌기 전략으로 얻는 보상 축소
+
+# Layer 4
+auto_drop_threshold: 4.0   # 2.0 → 4.0: 투하 경험 빈도 증가
+                            # (8m는 너무 극단적, 4m로 시작하여 효과 관찰)
+k2_precision: 0.3    # 5.0 → 0.3: 먼 거리 투하도 의미 있는 보상
+w_drop_base: 100.0   # 50 → 100: 투하 보상 전체 스케일 상향
+# 미투하 패널티: -50 → -150
+# drop attempt bonus: +20 추가
+```
+
+**k2 변경 효과 (오차별 Layer 4 보상 비교)**
+
+| 오차 | v1: $50 \cdot e^{-5d}$ | v2: $100 \cdot e^{-0.3d} + 20$ |
+|------|------------------------|--------------------------------|
+| 0.1m | 50×0.607 = **30.4** (+100 jackpot) | 100×0.970 + 20 = **117** (+100 jackpot) |
+| 0.5m | 50×0.082 = **4.1** | 100×0.861 + 20 = **106** |
+| 2.0m | 50×0.000045 ≈ **0** | 100×0.549 + 20 = **75** |
+| 5.0m | ≈ **0** | 100×0.223 + 20 = **42** |
+| 10m | ≈ **0** | 100×0.050 + 20 = **25** |
+
+v2에서는 먼 거리에서 투하해도 의미 있는 보상이 주어져 agent가 투하 경험을 쌓고, 점차 더 정확한 위치에서 투하하도록 수렴하는 것을 기대합니다.
+
+---
+
 ### 11.5 수동 실행 (개별 컴포넌트 — 디버깅용)
 
 **공통 환경 변수:**

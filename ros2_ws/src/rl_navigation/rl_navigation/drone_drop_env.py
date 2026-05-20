@@ -640,8 +640,12 @@ class DroneDropEnv(gym.Env):
 
             d_error = actual_error   # real Gazebo physics result, NOT kinematic
 
+            # Drop attempt bonus: reward the act of dropping regardless of accuracy.
+            # Encourages the agent to attempt drops and gain Layer 4 experience.
+            reward = 20.0
+
             # Base precision reward: w_drop_base * exp(-k2 * d_error)
-            reward = self._cfg_w_drop_base * math.exp(
+            reward += self._cfg_w_drop_base * math.exp(
                 -self._cfg_k2_precision * d_error)
 
             # Jackpot: bonus for high-precision drop
@@ -680,7 +684,7 @@ class DroneDropEnv(gym.Env):
         if self._step_count >= self._cfg_max_steps:
             truncated = True
             if not self.dropped:
-                reward -= 50.0   # Mission failure: timed out without dropping
+                reward -= 150.0   # v2: Mission failure penalty increased from -50 to -150
 
         # --- Update action memory ---
         self.action_prev = np.array(action, dtype=np.float32)
