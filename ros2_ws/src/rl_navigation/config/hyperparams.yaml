@@ -44,13 +44,15 @@ reward:
 
   # --- Approach shaping (Layer 3) ---
   k1_potential: 1.0         # UNUSED — kept for reference. Was: exp(-k1*d) potential (saturated at d>10m)
-  w_dist: 0.3                # linear distance reward weight: r3_dist = w_dist*(d_prev - d_now)
-                             # v2: reduced from 1.0 to suppress orbit-and-wait strategy
-  w_heading: 0.4            # weight for heading alignment (cos delta_yaw)
+  w_dist: 0.5                # linear distance reward weight: r3_dist = w_dist*(d_prev - d_now)
+                             # v3: increased from 0.3 (v2 실패로 인한 복구)
+  w_heading: 0.7            # weight for heading alignment (cos delta_yaw)
+                             # v3: increased from 0.4 (per-step 보상 복구)
   speed_gate_enabled: true  # false = disable speed gate → reproduces Spiral Milking (ablation Exp 007a)
 
   # --- d_impact shaping (Layer 3 addition) ---
-  w_impact: 0.2             # weight for CCIP predicted miss distance reward: w_impact * exp(-k_impact * d_impact)
+  w_impact: 0.4             # weight for CCIP predicted miss distance reward: w_impact * exp(-k_impact * d_impact)
+                             # v3: increased from 0.2 (CCIP 신호 복구)
   k_impact: 0.05            # decay constant (smaller = nonzero gradient at longer range)
 
   # --- Stability/efficiency (Layer 2) ---
@@ -66,6 +68,10 @@ reward:
   penalty_instability: 50.0 # subtracted if drone is unstable at drop
   limit_ang_vel: 2.0        # rad/s — instability threshold for angular velocity
   limit_tilt: 0.26          # rad (~15 deg) — instability threshold for roll/pitch
+  
+  # --- Episode termination penalties ---
+  drop_attempt_bonus: 150.0 # v3: bonus for attempting drop (increased from 120 for better balance)
+  truncation_penalty: -80.0 # v3: penalty for timeout without drop (reduced from -120)
 
   # --- Layer 1 penalties (no hard termination; episode continues) ---
   penalty_crash: -10.0      # altitude below min_altitude after step 20

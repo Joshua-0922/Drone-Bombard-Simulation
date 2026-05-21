@@ -644,7 +644,8 @@ class DroneDropEnv(gym.Env):
 
             # Drop attempt bonus: reward the act of dropping regardless of accuracy.
             # Encourages the agent to attempt drops and gain Layer 4 experience.
-            reward = 120.0
+            # v3: increased from 120 to 150 for better balance of per-step vs drop rewards
+            reward = 150.0
 
             # Base precision reward: w_drop_base * exp(-k2 * d_error)
             reward += self._cfg_w_drop_base * math.exp(
@@ -686,7 +687,7 @@ class DroneDropEnv(gym.Env):
         if self._step_count >= self._cfg_max_steps:
             truncated = True
             if not self.dropped:
-                reward -= 120.0   # v3: Mission failure penalty (orbit-milking deterrent)
+                reward -= 80.0    # v3: Mission failure penalty reduced from -120 (over-aggressive)
 
         # --- Update action memory ---
         self.action_prev = np.array(action, dtype=np.float32)
