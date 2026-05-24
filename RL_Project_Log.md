@@ -61,6 +61,8 @@
 
 # 2. Recent Progress
 
+- **2026-05-22:** Isaac Lab Phase 1 — `isaac_lab_tasks/` (`--task Isaac-DroneDrop-v0`, payload kinematic_sync/fixed_joint, 보상 패리티, smoke/benchmark 스크립트). 학습은 ROS2 없이 GPU 텐서 경로.
+
 - **4-Enhancement Architecture Upgrade (2026-03-21):**
   - **Task 4 — TAKEOFF skip:** `_gz_reset_poses()` now teleports drone to `cruise_altitude` (5.0m). `mission_manager_node` gains `skip_takeoff` ROS parameter → bypasses TAKEOFF state, directly enters CRUISE once armed. Saves 10-20s per episode reset. `cruise_poll_timeout` reduced 60→20s.
   - **Task 2 — Curriculum learning:** 4-stage progression (Close 3-8m, Medium 8-20m, Full 20-50m, Vision 20-50m). Auto-advances when `success_rate > threshold` over `advance_window` episodes. Stage-specific `max_steps` and `use_vision` toggle. Stage 4 masks `rel_x, rel_y` for pure vision-based navigation. `CurriculumCallback` logs stage to WandB.

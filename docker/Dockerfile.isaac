@@ -1,0 +1,93 @@
+# Drone Bombard Simulation — Isaac Sim + Isaac Lab 컨테이너
+#
+# 요구사항:
+#   - NVIDIA Driver >= 535
+#   - Docker + NVIDIA Container Toolkit
+#   - NGC 계정 및 API Key (nvcr.io 이미지 pull 용)
+#     docker login nvcr.io  (Username: $oauthtoken / Password: <NGC API Key>)
+#
+# 빌드:
+#   cd Drone-Bombard-Simulation
+#   docker build -f docker/Dockerfile.isaac -t drone-bombard-isaac .
+#
+# Smoke Test (num_envs=1):
+#   docker run --gpus all --rm \
+#     -v $(pwd)/isaac_lab_tasks:/workspace/isaac_lab_tasks \
+#     drone-bombard-isaac \
+#     /isaac-sim/python.sh /workspace/isaac_lab_tasks/drone_bombard/scripts/smoke_test.py --headless
+#
+# Train:
+#   docker run --gpus all --rm \
+#     -v $(pwd)/isaac_lab_tasks:/workspace/isaac_lab_tasks \
+#     -v $(pwd)/logs:/workspace/logs \
+#     drone-bombard-isaac \
+#     --task Isaac-DroneDrop-v0 --num_envs 1024 --headless --total_timesteps 5000000
+#
+# 본격 학습 (num_envs=1024):
+#   docker run --gpus all -d --name drone-bombard-isaac \
+#     --env-file /opt/drone-bombard/.wandb.env \
+#     -v $(pwd)/isaac_lab_tasks:/workspace/isaac_lab_tasks \
+#     -v $(pwd)/logs:/workspace/logs \
+#     drone-bombard-isaac \
+#     --num_envs 1024 --headless --wandb --total_timesteps 5000000
+#
+# OOM 대응: 4096 → 1024 → 256 순서로 줄여서 시작
+
+FROM nvcr.io/nvidia/isaac-sim:4.2.0
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    OMNI_KIT_ACCEPT_EULA=YES \
+    WORKSPACE=/workspace
+
+WORKDIR ${WORKSPACE}
+
+# 시스템 패키지
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    curl \
+    vim \
+    htop \
+    && rm -rf /var/lib/apt/lists/*
+
+# pip 업그레이드
+RUN /isaac-sim/python.sh -m pip install --upgrade pip
+
+# Isaac Lab 설치 (공식 방법: GitHub 소스에서 각 서브패키지 직접 설치)
+# nvcr.io/nvidia/isaac-sim:4.2.0 에 Isaac Sim 이 포함되어 있으므로
+# IsaacLab 리포를 클론해서 필요한 서브패키지만 설치한다.
+RUN git clone --depth 1 --branch main \
+    https://github.com/isaac-sim/IsaacLab.git /opt/IsaacLab
+
+RUN /isaac-sim/python.sh -m pip install \
+    -e /opt/IsaacLab/source/isaaclab \
+    -e /opt/IsaacLab/source/isaaclab_assets \
+    -e /opt/IsaacLab/source/isaaclab_tasks
+
+# isaaclab_rl (SB3 / skrl 래퍼) — 필수
+RUN /isaac-sim/python.sh -m pip install -e /opt/IsaacLab/source/isaaclab_rl
+
+# RL / 학습 의존성
+RUN /isaac-sim/python.sh -m pip install \
+    "stable-baselines3[extra]>=2.3" \
+    wandb \
+    tensorboard \
+    scikit-learn \
+    pandas \
+    matplotlib
+
+# GPU-native RL (skrl — 향후 SAC → skrl 전환 시 사용)
+RUN /isaac-sim/python.sh -m pip install skrl
+
+# 프로젝트 코드 복사 및 패키지 설치
+COPY isaac_lab_tasks/ ${WORKSPACE}/isaac_lab_tasks/
+RUN /isaac-sim/python.sh -m pip install -e ${WORKSPACE}/isaac_lab_tasks/
+
+# 로그 디렉토리
+RUN mkdir -p ${WORKSPACE}/logs
+
+# 진입점: Isaac Sim Python 인터프리터로 train.py 실행
+ENTRYPOINT ["/isaac-sim/python.sh", \
+            "${WORKSPACE}/isaac_lab_tasks/drone_bombard/scripts/train.py"]
+CMD ["--num_envs", "1024", "--headless", "--total_timesteps", "5000000"]
