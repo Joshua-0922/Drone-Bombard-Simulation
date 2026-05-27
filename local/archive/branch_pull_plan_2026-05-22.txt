@@ -1,0 +1,361 @@
+================================================================================
+ Branch Pull / Re-apply 진행 계획 (2026-05-22 작성)
+================================================================================
+
+배경
+  - 200k N1=B v2 학습 도중 wandb API 로 19 drops 분석한 결과,
+    drop_error_actual_m 이 17/19 회 정확히 14.8661m 로 동일.
+  - CCIP 예측 (발사 시 d_impact ≈ 1m) vs 실제 (~14.87m) → 약 14m 의
+    systematic offset = 시뮬레이션 구조적 문제 (RL 정책으로 해결 불가).
+  - 사용자가 다른 branch 에서 동일 코드를 돌렸을 때 이 문제가 *없음* 을
+    확인 → 그 branch 의 코드로 교체 결정.
+
+작업 흐름
+  1. 200k 학습은 그대로 끝까지 진행 (사용자 결정, 2026-05-22 자정 전후 시점)
+  2. 학습 종료 후 이 문서 따라 단계적으로 진행
+  3. 새 branch pull + 분석 + 우리 결정사항 re-apply + 모든 history 문서 갱신
+
+
+================================================================================
+ PHASE 1.  학습 종료 + 백업 + 변경 inventory 작성
+================================================================================
+
+────────────────────────────────────────────────────────────────────────
+ 1-1. 현재 v2 학습 종료
+────────────────────────────────────────────────────────────────────────
+
+200k 완주 후 자연 종료 또는 그 전에 SIGINT graceful kill.
+  - SIGINT 우선 (memory: feedback_train_sac_graceful_kill 패턴)
+  - sac_drop_preempt.zip + replay.pkl 자동 저장
+  - Gazebo / PX4 orphan 정리
+
+명령 예시:
+  docker exec drone-bombard-harmonic bash -c "
+    kill -INT <train_sac_PID> ; sleep 5 ;
+    pkill -9 -f 'gz sim' ; pkill -9 -f 'px4_sitl_default/bin/px4'
+  "
+
+
+────────────────────────────────────────────────────────────────────────
+ 1-2. 모든 변경 history 자료 통독 — "우리가 만진 것" 의 *완전한* 추출
+────────────────────────────────────────────────────────────────────────
+
+단순 현재 파일 상태만이 아니라, 변경 *경과* 와 *결정 history* 까지 알 수 있는
+자료 전부 읽고 정리:
+
+  대상 자료
+  ─────────────────────────────────────────────────────────────────────
+  □ /home/juns/conversation_backup_2026-05-21.txt
+      (이전 세션 전체 대화, 480KB — 5/19~5/21 의 변경사항 history)
+  □ /home/juns/meeting_notes_2026-05-20.txt
+      (5/20-21 회의록, 624줄 — H1/H2/H3/M1/M2/L4/L6 등 적용 history)
+  □ /home/juns/meeting_notes_2026-05-22.txt
+      (이번 세션 회의록, 532줄 — N1=B 도입/격상, speed_gate, callback,
+       v1→v2, 14m offset 발견 history)
+  □ /home/juns/drone_sim_fresh_training_start_guide.txt
+      (학습 실행 가이드 — 명령, 환경 설정)
+  □ /home/juns/A_phased_curriculum_도입방안.md
+      (A 도입의 phased 절차)
+  □ /home/juns/parameter_조절_의사결정_guide.md  (v2)
+      (3D 진단 매트릭스 + 처방 가이드)
+  □ /home/juns/Downloads/N1_drop_sparse_AB방안.md
+      (A vs B 원래 trade-off 분석)
+  □ /home/juns/.claude/projects/-home-juns/memory/*.md  (전체 6개)
+      (auto-load 메모리 — 변경 history 의 condensed reference)
+  □ git log / git diff (현재 branch — Drone-Bombard-Simulation repo)
+      cd /home/juns/Drone-Bombard-Simulation
+      git log --oneline -50    : commit history
+      git status               : uncommitted changes
+      git diff HEAD            : 변경된 라인 전부
+
+
+────────────────────────────────────────────────────────────────────────
+ 1-3. 전체 코드 변경 inventory 문서 작성
+────────────────────────────────────────────────────────────────────────
+
+위 자료 종합 후 한 문서로 정리:
+  /home/juns/change_inventory_pre_pull_2026-05-22.md
+
+포함 항목 (각 변경마다)
+  - file path (src 와 install 양쪽)
+  - 변경된 라인 또는 변경 내용
+  - 변경 의도 / 결정 근거
+  - 어느 세션 / 어느 회의의 결정이었는지
+  - 새 branch 에 *반드시 re-apply 해야 할 것* / *이미 있을 수도 있는 것* 분류
+
+알려진 우리의 변경 (이 문서 시점에서 최소한 잡힌 것)
+  ─ Code ────────────────────────────────────────────────────────
+  □ drone_drop_env.py L826 — r3_impact 에 * speed_gate
+  □ drone_drop_env.py L1131 — px4 stderr 캡처 patch 원복 (5/20 작업)
+  □ train_sac.py L56/L85-86/L116 — env/mean_rew_impact 콜백
+  □ train_sac.py L61/L93/L134 — env/total_drop_count 누적 카운터 (v2)
+
+  ─ Config ──────────────────────────────────────────────────────
+  □ hyperparams.yaml
+      - training.total_timesteps 200000
+      - training.max_checkpoints_kept, checkpoint_freq, env_stagger 등
+      - sac.buffer_size 100k → 500k (M1)
+      - sac.gamma 0.99 → 0.995 (H3)
+      - sac.gradient_steps 1 → 4 (M2)
+      - reward.w_drop_base 50 → 20 (H1)
+      - reward.r_success_jackpot 100 → 30 (H1)
+      - reward.penalty_instability 50 → 15 (H1)
+      - reward.w_impact 2 → 8 (N1=B v2)
+      - reward.k_impact 0.05 → 0.03 (N1=B v2)
+      - reward.auto_drop_threshold 2.0 (그대로, A 후 변경 예정)
+      - environment.use_vision false (RL 학습용)
+      - wandb.entity nayoonho0922-seoul-national-university (5/22 변경)
+      - wandb.mode online (v2 시작 시 선택)
+
+  ─ World / Launch ──────────────────────────────────────────────
+  □ x_marker_world.sdf (RL 학습 전용, Sensors 플러그인 없음)
+  □ x_marker_world_vision.sdf (비전 전용, 신규 생성)
+  □ drone_mission.launch.py L196/L204/L321 (world 경로)
+
+  ─ PX4 SITL ────────────────────────────────────────────────────
+  □ ROMFS → build/.../rootfs 의 4016~4019 airframe cp
+      (memory: project_px4_airframe_sync — 컨테이너 라이프타임만 유효)
+
+  ─ 인프라 ──────────────────────────────────────────────────────
+  □ /home/juns/wandb_incremental_sync.sh (5/20 작성)
+      ※ v2 부터 online 모드라 사용 안 함, 하지만 보존
+
+  ─ Archive 보존된 체크포인트 ──────────────────────────────────
+  □ archive/n1_d_baseline_2026-05-21/  (N1=D 베이스라인)
+  □ archive/n1_b_w5_k05_2026-05-22/    (v1 16k preempt)
+  □ archive/dry_run_2026-05-21/         (dry-run 산출물)
+  □ (200k 완주 후) archive/n1_b_v2_w8_k03_FINAL_2026-05-22 또는 미완 시
+                  archive/n1_b_v2_w8_k03_partial_<step>_2026-05-22/
+
+
+────────────────────────────────────────────────────────────────────────
+ 1-4. 백업 — host 의 별도 폴더로 cp (Option A 채택)
+────────────────────────────────────────────────────────────────────────
+
+백업 위치
+  /home/juns/backup_pre_pull_2026-05-22/
+
+백업 대상 (전체 inventory)
+  ─ 호스트 bind-mount 코드 (src) ─────────────────────────────────
+  □ /home/juns/Drone-Bombard-Simulation/  (전체 repo, .git 포함)
+      → /home/juns/backup_pre_pull_2026-05-22/Drone-Bombard-Simulation/
+
+  ─ 컨테이너 측 build artifacts (install) ───────────────────────
+  □ /workspace/ros2_ws/install/  (docker cp)
+      → /home/juns/backup_pre_pull_2026-05-22/install/
+  □ /workspace/ros2_ws/rl_checkpoints/  (archive 포함 전체)
+      → /home/juns/backup_pre_pull_2026-05-22/rl_checkpoints/
+  □ /workspace/ros2_ws/wandb/  (offline-run-* 폴더들)
+      → /home/juns/backup_pre_pull_2026-05-22/wandb/
+
+  ─ 호스트 측 문서 및 가이드 ────────────────────────────────────
+  □ /home/juns/meeting_notes_*.txt
+  □ /home/juns/*.md  (A_phased_curriculum, parameter_조절, 기타)
+  □ /home/juns/drone_sim_*.txt  (가이드 문서)
+  □ /home/juns/Downloads/N1_drop_sparse_AB방안.md
+  □ /home/juns/conversation_backup_2026-05-21.txt
+  □ /home/juns/branch_pull_plan_2026-05-22.txt  (이 문서)
+  □ /home/juns/change_inventory_pre_pull_2026-05-22.md  (1-3 산출물)
+  □ /home/juns/wandb_incremental_sync.sh
+
+  ─ Claude 메모리 (auto-load) ──────────────────────────────────
+  □ /home/juns/.claude/projects/-home-juns/memory/*.md  (전체 6개)
+      → /home/juns/backup_pre_pull_2026-05-22/memory/
+
+  ─ 호스트 측 PX4/Gazebo 모델 (사용 중인 경우) ────────────────
+  □ (컨테이너 외부에 mount 된 게 있다면 — 일반적으로 컨테이너 내부)
+
+
+────────────────────────────────────────────────────────────────────────
+ 1-5. inventory 검증 + 사용자 확인
+────────────────────────────────────────────────────────────────────────
+
+Phase 1 산출물 (사용자에게 보여드릴 것):
+  - /home/juns/change_inventory_pre_pull_2026-05-22.md  (전체 변경 목록)
+  - 백업 폴더 ls -la 출력 (백업 완료 검증)
+  - du -sh 백업 폴더 (용량 확인)
+
+사용자 확인 후 Phase 2 진입.
+
+
+
+================================================================================
+ PHASE 2.  Pull 후 분석 — 우리 변경분과의 전체 diff (CCIP 만이 아닌 *전체*)
+================================================================================
+
+────────────────────────────────────────────────────────────────────────
+ 2-1. 사용자가 pull 실행
+────────────────────────────────────────────────────────────────────────
+
+사용자가 직접 git checkout / git pull
+  cd /home/juns/Drone-Bombard-Simulation
+  git checkout <new_branch>   # 또는 git pull
+  # 만약 충돌 발생하면 백업 폴더 참조 가능
+
+(우리는 백업 떠놨으니 안전. 충돌 무시하고 진행 가능.)
+
+
+────────────────────────────────────────────────────────────────────────
+ 2-2. 전체 코드 비교 (CCIP / drop_calculator 만이 아닌 *전체*)
+────────────────────────────────────────────────────────────────────────
+
+비교 대상 (전부 비교 — 어느 한 부분만이 아님)
+  □ src/rl_navigation/  (RL 학습 패키지 전체)
+      - drone_drop_env.py (CCIP, reward, env 로직)
+      - train_sac.py (콜백, 학습 루프)
+      - baseline_ccip.py
+      - 기타 utility / helper
+
+  □ src/mission_manager/  (mission launch 등)
+      - drone_mission.launch.py
+      - infra.launch.py
+      - 기타
+
+  □ src/drop_*/ , src/사이드 패키지들  (drop_calculator 포함)
+      ※ 14m offset 의 원인이 여기일 가능성 큼
+
+  □ config/
+      - hyperparams.yaml
+      - ros_gz_bridge.yaml
+
+  □ worlds / models
+      - x_marker_world*.sdf
+      - x500_bombard/model.sdf
+
+  □ PX4 관련 파일 (있다면)
+
+비교 방법
+  cd /home/juns/Drone-Bombard-Simulation
+  git diff <backup_branch>..<new_branch> -- <path>
+  또는 backup 폴더와 직접 diff -ru
+
+
+────────────────────────────────────────────────────────────────────────
+ 2-3. 14m offset 의 원인 식별
+────────────────────────────────────────────────────────────────────────
+
+새 branch 에서 다음 항목 비교 (이 중 어느 것이 새 branch 에서 다를 가능성)
+  - CCIP 의 _predict_impact_point() 계산식
+  - drop_calculator 의 ballistic simulation
+  - DetachableJoint 의 separation impulse 처리
+  - 페이로드의 공기저항 / drag 모델
+  - 분리 명령 → 실제 분리까지의 latency 처리
+
+새 branch 의 drop_error 가 어떻게 0 또는 매우 작은지 확인.
+이 발견은 회의록에 *중요한 디버깅 case study* 로 기록.
+
+
+────────────────────────────────────────────────────────────────────────
+ 2-4. 우리 변경분 vs 새 branch — 3가지로 분류
+────────────────────────────────────────────────────────────────────────
+
+  (A) 새 branch 에 이미 있는 우리 변경 → re-apply 불필요
+      예: speed_gate 가 이미 적용되어 있을 수도
+
+  (B) 새 branch 에 없는 우리 변경 → re-apply 필요
+      예: w_impact=8 같은 hyperparameter 결정
+
+  (C) 새 branch 의 새 기능 → 채택 여부 결정
+      예: 새 branch 가 추가한 신호, 새 reward 항 등
+
+각각 항목별로 의사결정.
+
+
+
+================================================================================
+ PHASE 3.  Re-apply + 문서/메모리 전면 갱신
+================================================================================
+
+────────────────────────────────────────────────────────────────────────
+ 3-1. 우리 결정사항 re-apply
+────────────────────────────────────────────────────────────────────────
+
+분류 (B) 의 변경분을 새 base 위에 적용:
+  - yaml 의 hyperparameter (N1=B v2 + H1/H2/H3/M1/M2 등)
+  - 필요한 코드 (callback 추가 등)
+  - install/share 미러
+  - wandb entity 설정
+
+(C) 의 새 branch 기능은 사용자 협의 후 채택.
+
+
+────────────────────────────────────────────────────────────────────────
+ 3-2. 모든 history 문서 갱신
+────────────────────────────────────────────────────────────────────────
+
+다음 문서 전부 갱신 (14m offset 발견 + branch 교체 사실 반영):
+
+  □ /home/juns/meeting_notes_2026-05-22.txt
+    - 추가 section: 1-13 "14m offset 발견 + branch 교체"
+    - PART 2/3 의 현재 상태 갱신
+
+  □ /home/juns/parameter_조절_의사결정_guide.md
+    - 새 차원 추가: "CCIP-Sim Mismatch" 의 진단/처방
+    - 단, 새 branch 에서 해결됐다면 케이스 study 로만 기록
+
+  □ /home/juns/A_phased_curriculum_도입방안.md
+    - 14m offset 이 해결됐다는 전제 갱신
+    - drop_error 가 의미 있는 지표가 됨 명시
+
+  □ 메모리 ─────────────────────────────────────────────────────
+  □ project_n1b_200k_training.md  → 갱신 또는 신규 메모리 분리
+      (예: project_branch_switch_2026-05-22.md 신설)
+  □ MEMORY.md 인덱스 갱신
+  □ 새 메모리: feedback_simulation_offset_diagnosis.md
+      "CCIP 예측 vs 실제 drop 의 systematic offset 진단법" — 회기적 learning
+
+
+────────────────────────────────────────────────────────────────────────
+ 3-3. 새 학습 사이클 시작 결정
+────────────────────────────────────────────────────────────────────────
+
+새 base + 우리 결정사항 적용 후:
+  - dry-run 짧게 (silent crash 확인)
+  - 정상 동작 확인 후 200k (또는 단축) 학습 새로 시작
+  - N1=B v2 의 효과를 14m offset 없는 환경에서 다시 측정
+  - 이제 drop_error 가 *진짜 정밀도 지표* 로 작동
+
+
+
+================================================================================
+ PHASE 별 추정 시간
+================================================================================
+
+  Phase 1  (백업 + inventory)        : ~30~60분
+  Phase 2  (pull + 전체 분석)        : ~60~90분
+  Phase 3  (re-apply + 문서 갱신)    : ~30~60분
+  ─────────────────────────────────────────
+  총                                : ~2~3.5 시간
+
+
+
+================================================================================
+ 핵심 원칙 (Phase 전체에 걸쳐)
+================================================================================
+
+  1. 백업 먼저, 그 다음 pull.  돌이킬 수 없는 작업 전에 안전망 구축.
+  2. 부분이 아닌 *전체* 비교. CCIP 만이 아니라 모든 코드 / config / 문서.
+  3. 우리가 만진 것의 완전한 목록 작성 — 한 줄도 누락 없이.
+  4. 모든 history 문서 갱신 — 14m offset 의 발견 → 해결까지 case study 로 기록.
+  5. 새 base 에서 어떤 게 다른지 분류 — A (이미 있음) / B (재적용 필요) / C (새 기능).
+  6. RL 학습 시작 전 dry-run 으로 silent crash 회피.
+
+
+
+================================================================================
+ 다음 행동 (다음 대화 시작 시)
+================================================================================
+
+  1. 200k 학습이 완료됐는지 확인
+  2. 이 문서를 다시 읽고 Phase 1 부터 진행
+  3. 추가로 다음 2개 가이드 문서도 함께 읽기:
+       /home/juns/parameter_조절_의사결정_guide.md
+       /home/juns/A_phased_curriculum_도입방안.md
+       (학습 결과 진단에 사용)
+  4. wandb 의 최종 수치 확보 (학습 완주 후 자동 sync 됨)
+
+
+
+================================================================================
+ 끝
+================================================================================

@@ -62,7 +62,7 @@
       <parent_link>payload_mount</parent_link>
       <child_model>payload_0</child_model>
       <child_link>payload_link</child_link>
-      <topic>/x500_0/drop</topic>
+      <detach_topic>/x500_0/drop</detach_topic>
     </plugin>
 
   </model>

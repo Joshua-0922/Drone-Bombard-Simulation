@@ -1,0 +1,457 @@
+================================================================================
+ Issue #014 — DetachableJoint 디버깅 전체 기록
+================================================================================
+생성일 : 2026-05-26
+상태   : 진행 중
+관련   : #013
+
+
+================================================================================
+ 1. 배경
+================================================================================
+
+Issue #013에서 DetachableJoint SDF 태그를 <topic> → <detach_topic>으로
+수정하고 "GUI에서 payload 낙하 확인"이라고 기록했음.
+그러나 Round 1 학습(run r5zp3k1c) 결과 drop_error가 여전히 ~14.87m
+(spawn→target 거리와 정확히 일치) → payload가 실제로 분리되지 않은 것으로 의심.
+
+사용자는 이전에 GUI에서 payload가 드론에 붙어서 cruise하는 것을 확인했고,
+drop되는 것도 확인했다고 주장.
+
+
+================================================================================
+ 2. 디버깅 과정 (시간순)
+================================================================================
+
+
+--- 2-1. 학습 데이터 분석 ---
+
+run r5zp3k1c (Round 1, SDF 수정 후 첫 학습) drop episode 분석:
+  15건 drop, drop_error 범위: 14.26 ~ 15.09m (1건 20.39m 제외)
+  SDF 수정 전 학습(xk7rw5e1)과 동일한 패턴
+
+spawn→target 거리 계산:
+  sqrt(11² + 10²) = 14.87m
+  drop_error 평균 15.01m — spawn→target과 거의 일치
+
+의미: drop_error가 payload 낙하 위치가 아닌 다른 것을 측정 중
+
+
+--- 2-2. drop episode 상세 분석 (drop_0008, 110 step) ---
+
+drop_0008_step393_err14.30m.npz 분석:
+  action[4] range: -0.992 ~ 0.999
+  action[4] > 0.5 count: 24회
+  첫 manual drop 시도: step 5 (min_drop_step=10이라 무시)
+  step 10부터 반복적으로 action[4] > 0.5
+
+step별 데이터:
+  Step   0: pos=(0.1, 0.0, 4.8) attached=1 d_xy=14.8
+  Step  10: pos=(0.1, 0.0, 4.8) attached=1 action[4]=0.585
+  Step  50: pos=(0.2, 0.0, 4.8) attached=1
+  Step 109: pos=(0.5, 0.3, 4.7) attached=0 ← 마지막 step에서만 변경
+
+관찰:
+  - 드론이 110 step 동안 0.5m밖에 이동 안 함 (거의 제자리)
+  - action[4] > 0.5가 step 10부터 반복되는데 attached가 step 109까지 1
+  - step 10에서 manual drop 조건 충족했는데 왜 attached 유지?
+
+의문: publish_drop()이 호출됐지만 Gazebo에서 payload 분리가 안 된 것
+
+
+--- 2-3. SDF 확인 ---
+
+컨테이너 내 8개 model.sdf 전부 <detach_topic> 태그 확인 → 수정됨
+Host 측 8개 model.sdf도 동일 → 수정됨
+
+install 미러 상태: src와 install의 drone_drop_env.py md5 불일치 발견 →
+미러링 수행 → 일치 확인
+
+
+--- 2-4. 프로그래밍 방식 payload 위치 테스트 (drone_drop_env.py) ---
+
+env = DroneDropEnv(config_path=...)
+obs, _ = env.reset()
+
+결과:
+  drone pos: (0.03, -0.02, 4.72)
+  payload pos: (0.92, 0.54, 0.0)  ← 바닥!
+
+드론은 4.72m 고도, payload는 z=0. payload가 드론에 붙어있지 않음.
+
+
+--- 2-5. publish_drop() 후 payload 위치 변화 ---
+
+env._node.publish_drop() 호출
+
+결과:
+  payload BEFORE: (-1.17e-17, -1.11e-17, 0.0)
+  payload AFTER:  (-1.17e-17, -1.12e-17, 0.0)
+  obs[12] attached: 1.0 → 0.0 (코드상 변경됨)
+
+payload 위치 변화 없음. 코드에서 attached flag는 변경되지만
+실제 물리에서 payload는 움직이지 않음.
+
+
+--- 2-6. ROS2 Empty 토픽 직접 전송 ---
+
+ros2 topic pub --once /payload/drop_cmd std_msgs/msg/Empty "{}"
+
+결과:
+  payload 위치: (4.06, 4.31, 0.0) ← 이전과 다른 값이지만 여전히 z=0
+
+payload가 바닥에서 미끄러지듯 이동. 드론에서 분리되어 낙하한 것이 아님.
+
+
+--- 2-7. SDF 수정 전후 비교 ---
+
+git diff로 확인:
+  변경: <topic>/x500_0/drop</topic> → <detach_topic>/x500_0/drop</detach_topic>
+  이 한 줄만 변경됨. joint 연결과 무관한 변경.
+
+<topic> 태그로 원복 후 테스트:
+  결과 동일 — payload 바닥, joint 미형성
+
+결론: SDF 태그 변경이 원인이 아님
+
+
+--- 2-8. 원본 x500_bombard 모델 사용 시도 ---
+
+drone_drop_env.py 수정:
+  self._px4_sim_model = 'gz_x500_bombard' (r0 제거)
+  self._model_name = f'x500_bombard_{instance_id}'
+  self._drop_topic = 'x500_bombard'
+
+결과: 동일 — payload 바닥
+
+
+--- 2-9. Gazebo paused start 시도 ---
+
+gz sim 시작 시 -r 플래그 제거 (paused 상태로 시작)
+PX4 spawn 후 gz service로 unpause
+
+결과: 동일 — payload 바닥
+
+
+--- 2-10. infra.launch.py로 시작 시도 ---
+
+RUN_SIMULATION.md 방식:
+  ros2 launch mission_manager infra.launch.py headless:=true enable_vision:=false
+
+첫 시도: MicroXRCE port 8888 bind error + PX4 exit 255
+  원인: 이전 프로세스 잔존
+
+컨테이너 재시작 후 재시도:
+  PX4 로그: "INFO [gz_bridge] world: x_marker_world, model name: x500_bombard_0"
+  PX4 로그: "INFO [commander] Ready for takeoff!"
+  모델 목록: x500_bombard_0 + payload_0~3 확인
+
+  payload 위치: (0, 0, 0) — 여전히 바닥
+
+gz topic으로 직접 drop:
+  gz topic -t /x500_bombard/drop -m gz.msgs.Empty -p "unused: true"
+  결과: payload 위치 변화 없음
+
+
+--- 2-11. 원본 x500_bombard 모델 detach_topic 수정 ---
+
+원본 /workspace/gazebo_models/x500_bombard/model.sdf도 <topic> 사용 중이었음
+<detach_topic>으로 수정
+
+컨테이너 재시작 후 infra.launch.py로 시작:
+  토픽 확인:
+    /x500_bombard/drop ← 존재
+    /model/payload_0/detachable_joint/state ← 존재
+    /model/x500_bombard/detachable_joint/attach ← 존재
+
+  attach 명령 전송: 변화 없음
+  state 토픽 읽기: publish 안 됨 (timeout)
+
+
+--- 2-12. world SDF에 드론 pre-spawn 시도 ---
+
+world SDF에 추가:
+  <include>
+    <uri>model://x500_bombard</uri>
+    <name>x500_bombard</name>
+    <pose>0 0 0.24 0 0 0</pose>
+  </include>
+
+PX4를 PX4_GZ_MODEL_NAME=x500_bombard로 시작 (spawn 대신 기존 모델 연결)
+
+결과:
+  모델 목록: x500_bombard (suffix 없이) + payload_0~3
+  토픽: /x500_bombard/drop, /model/payload_0/detachable_joint/state 존재
+  payload 위치: (0, 0, 0) — 여전히 바닥
+  attach 명령: 변화 없음
+
+
+--- 2-13. Gazebo verbose 로그 분석 (-v 4) ---
+
+DetachableJoint 관련 로그:
+  [DetachableJoint.cc:137] Detach topic is: /x500_bombard/drop
+  [DetachableJoint.cc:143] DetachableJoint subscribing to messages on [/x500_bombard/drop]
+  [DetachableJoint.cc:160] Attach topic is: /model/x500_bombard/detachable_joint/attach
+  [DetachableJoint.cc:195] Output topic is: /model/payload_0/detachable_joint/state
+  [SystemManager.cc:80] Loaded system [gz::sim::systems::DetachableJoint] for entity [40]
+
+Configure 단계는 성공. 토픽 구독도 성공.
+그러나 "joint created" 또는 "attached" 같은 PreUpdate 로그 없음.
+→ GetChildModelAndLinkEntities()가 child_model을 찾지 못하고 silent fail
+
+
+--- 2-14. 공식 Gazebo 예제 테스트 ---
+
+/usr/share/gz/gz-sim8/worlds/detachable_joint.sdf 실행
+
+결과:
+  B1 BEFORE detach: pose z = 0.500000 (vehicle 위에 붙어있음!)
+  B1 AFTER detach:  pose z = 0.249999 (바닥으로 떨어짐!)
+
+공식 예제에서 DetachableJoint 정상 작동 확인.
+
+
+--- 2-15. 공식 예제와 우리 모델의 차이 분석 ---
+
+공식 예제:
+  - vehicle_blue: inline 정의 (SDF 내에 직접 링크/조인트 정의)
+  - B1: world 레벨 별도 모델
+  - vehicle_blue와 B1이 같은 world SDF에서 동시 로드
+
+우리 모델:
+  - x500_bombard: <include merge="true"><uri>model://x500</uri></include> 사용
+  - payload_0: world 레벨 별도 모델
+  - drone은 world SDF에 pre-spawn 또는 PX4가 나중에 spawn
+
+차이점:
+  1. <include merge="true"> — 우리만 사용
+  2. 모델 로드 타이밍 — 우리는 PX4 dynamic spawn (또는 pre-spawn)
+
+Entity 매핑 확인:
+  Entity 24: payload_0
+  Entity 40: x500_bombard
+  Entity 79: payload_mount (Link, x500_bombard 내)
+  Entity 25: payload_link (Link, payload_0 내)
+
+  payload_mount z = 0.14m (절대 좌표)
+  payload_0 spawn z = 0.14m (world SDF)
+  위치 일치 확인
+
+  Drone joints 목록: rotor_0~3, magnetometer, camera, payload_mount_joint
+  DetachableJoint로 생성된 joint 없음!
+
+결론:
+  DetachableJoint 플러그인이 Configure까지는 성공하지만
+  PreUpdate에서 실제 joint를 생성하지 못함.
+  <include merge="true">가 원인일 가능성 높음.
+
+
+--- 2-16. drop_error 변동 문제 ---
+
+사용자 지적: "payload가 항상 같은 위치면 drop_error도 항상 같아야 하는데,
+실제로는 14.26~15.09m로 변동한다. 뭔가 움직이고 있다는 뜻."
+
+관찰:
+  payload가 바닥에서 미세하게 drift (물리 settling)
+  spawn 시 z=0.14 → 바닥 z=0으로 떨어지면서 x,y 방향으로 소폭 이동
+  (0, 0, 0.14) → (0.9, 0.5, 0.0) 또는 (1.2, 1.4, 0.0)
+  이 drift가 drop_error 변동의 원인
+
+  예외 outlier (20.39m): 큰 drift 또는 다른 에피소드 상태
+
+
+================================================================================
+ 3. 현재 상태
+================================================================================
+
+확인된 사실:
+  - DetachableJoint 플러그인 로드: 성공
+  - 토픽 등록 (detach, attach, state): 성공
+  - 실제 joint 생성: 실패
+  - 공식 예제: 정상 작동
+  - 우리 모델: <include merge="true"> 사용 — 이것이 유력한 원인
+
+미해결:
+  - <include merge="true">가 DetachableJoint와 호환되지 않는지 확인 필요
+  - inline 정의로 변경하면 해결되는지 테스트 필요
+  - 사용자가 이전에 GUI에서 payload 부착을 확인한 정확한 환경 불명
+
+
+--- 2-17. 최소 테스트로 merge include 원인 확인 ---
+
+테스트 A: inline 모델 (parent_box + child_ball + DetachableJoint)
+  parent_box: inline 정의, static=true, z=1.0
+  child_ball: inline 정의, z=0.9
+
+  결과:
+    BEFORE drop: child z = 0.900000 (parent에 붙어있음!)
+    AFTER drop:  child z = 0.050000 (바닥으로 떨어짐!)
+    → DetachableJoint 정상 작동
+
+테스트 B: parent를 <include merge="true">로 변경 (나머지 동일)
+  parent_box:
+    <include merge="true">
+      <uri>/tmp/test_parent_model</uri>
+    </include>
+    + DetachableJoint 플러그인
+
+  결과:
+    BEFORE drop: child z = 0.050000 (처음부터 바닥!)
+    AFTER drop:  child z = 0.050000 (변화 없음)
+    → joint가 형성되지 않음. child가 처음부터 바닥에 떨어짐.
+
+결론:
+  <include merge="true">가 DetachableJoint를 깨뜨림.
+  merge include로 parent 모델을 포함하면 DetachableJoint가
+  parent_link를 찾지 못해 joint가 형성되지 않음.
+
+  이것이 프로젝트 시작부터 payload가 드론에 안 붙었던 근본 원인.
+  x500_bombard가 <include merge="true"><uri>model://x500</uri></include>
+  사용 → DetachableJoint 무력화.
+
+
+================================================================================
+ 4. 근본 원인
+================================================================================
+
+Gazebo Harmonic(gz-sim8)의 DetachableJoint 플러그인은
+<include merge="true">로 포함된 모델의 link를 parent_link로 사용할 수 없음.
+
+Configure 단계에서 토픽 등록은 성공하지만,
+PreUpdate에서 GetChildModelAndLinkEntities()가 parent_link를
+찾지 못해 joint 생성이 silent fail.
+
+해결: merge include 제거, x500 + x500_base 내용을 inline으로 합침.
+
+
+================================================================================
+ 5. 해결
+================================================================================
+
+  x500_bombard/model.sdf에서:
+    변경 전: <include merge="true"><uri>model://x500</uri></include>
+             (x500도 <include merge="true"><uri>model://x500_base</uri></include>)
+    변경 후: x500_base + x500의 모든 내용을 inline으로 직접 포함
+
+  영향 파일: x500_bombard/model.sdf (원본)
+  r0~r3 변형은 이후 동일 패턴 적용.
+
+
+================================================================================
+ 6. 추가 테스트 기록
+================================================================================
+
+--- 6-1. 최소 테스트 결과 ---
+
+테스트 A (inline): parent z=1.0, child z=0.9
+  BEFORE: child z=0.90 (붙어있음) → AFTER: child z=0.05 (떨어짐) ✓
+
+테스트 B (merge include): 동일 구조, parent를 merge include로 변경
+  BEFORE: child z=0.05 (처음부터 바닥) → AFTER: z=0.05 (변화 없음) ✗
+
+결론: <include merge="true">가 DetachableJoint를 깨뜨림 확정.
+
+
+--- 6-2. x500_bombard inline 변환 + pre-spawn 테스트 ---
+
+x500_bombard/model.sdf를 inline으로 재작성:
+  x500_base (links, joints, sensors) + x500 (motor plugins) +
+  magnetometer + camera + payload_mount + DetachableJoint
+  → merge include 완전 제거
+
+world SDF에 drone pre-spawn 추가:
+  <include>
+    <uri>model://x500_bombard</uri>
+    <name>x500_bombard</name>
+    <pose>0 0 0.24 0 0 0</pose>
+  </include>
+
+infra.launch.py로 테스트:
+  모델 목록: x500_bombard + x500_bombard_0 (2개 — pre-spawn + PX4 spawn)
+  payload BEFORE: z = 0.347 (공중! 드론에 붙어있음!)
+  payload AFTER:  z = 0.261 (떨어지기 시작!)
+  → DetachableJoint 정상 작동 ✓
+
+
+--- 6-3. PX4 dynamic spawn 단독 테스트 ---
+
+world SDF에서 drone pre-spawn 제거, PX4 dynamic spawn만 사용
+
+결과:
+  payload z = 0.0025 (바닥) — joint 미형성
+  → PX4 dynamic spawn에서는 여전히 안 됨
+
+원인: PX4가 드론을 나중에 spawn하면 payload는 이미 바닥에 떨어진 뒤.
+      DetachableJoint가 joint를 형성하려 할 때 parent_link와
+      child_link가 물리적으로 너무 멀리 떨어져 있어서 실패.
+
+
+--- 6-4. 최종 해결: inline + pre-spawn + PX4_GZ_MODEL_NAME ---
+
+inline SDF + world pre-spawn 조합이 작동.
+PX4는 PX4_GZ_MODEL_NAME으로 기존 모델에 연결 (spawn 안 함).
+drone_drop_env.py를 이 방식으로 수정 필요.
+
+변경 사항:
+  1. x500_bombard/model.sdf: merge include → inline (완료)
+  2. world SDF: drone pre-spawn 추가
+  3. drone_drop_env.py: PX4_SIM_MODEL → PX4_GZ_MODEL_NAME
+  4. drone_drop_env.py: world SDF에 드론 include 추가하는 로직
+
+
+================================================================================
+ 7. 추가 테스트 — PX4 연결이 joint를 깨뜨리는 문제
+================================================================================
+
+
+--- 7-1. PX4 없이 Gazebo만 → payload 부착 확인 ---
+
+injected SDF (/tmp/x_marker_world_rl_0.sdf)를 Gazebo만으로 로드:
+  gz sim -r -s /tmp/x_marker_world_rl_0.sdf
+
+결과:
+  drone x500_bombard_0: z = 0.227 (정상)
+  payload_0: z = 0.347 (공중! joint 작동!)
+
+PX4 없이 Gazebo만 띄우면 DetachableJoint 정상 작동 확인.
+
+
+--- 7-2. PX4_GZ_MODEL_NAME으로 연결 시 → joint 파괴 ---
+
+drone_drop_env.py 수정:
+  PX4_SIM_MODEL 제거 → PX4_GZ_MODEL_NAME=x500_bombard_0
+  world SDF에 drone inject (pre-spawn)
+  Gazebo -r (즉시 실행)
+
+결과:
+  drone: (0.02, 0.05, 4.71) — PX4 연결 + takeoff 성공
+  payload: z=0.0 — 바닥. joint 파괴됨.
+
+
+--- 7-3. Gazebo paused 시작 + PX4 연결 후 unpause → 실패 ---
+
+Gazebo를 -r 없이 paused로 시작
+PX4 연결 후 5초 대기
+gz service로 unpause
+
+결과:
+  payload: z=0.0 — 여전히 바닥.
+
+
+--- 7-4. 현재 확인된 사실 ---
+
+  - Gazebo만 (PX4 없이): inline SDF + pre-spawn → joint 정상 ✓
+  - PX4_GZ_MODEL_NAME으로 연결: joint 파괴 ✗
+  - PX4_SIM_MODEL로 spawn: joint 형성 안 됨 (타이밍) ✗
+  - infra.launch.py + PX4_SIM_MODEL: pre-spawn + 두 번째 드론 spawn
+    → pre-spawn 드론의 joint 작동, PX4는 두 번째 드론 제어
+
+  PX4가 모델에 연결/spawn할 때 Gazebo ECM에 변경을 가해
+  DetachableJoint가 무력화되는 것으로 추정.
+
+
+================================================================================
+ 8. 해결 방안 분석
+================================================================================
+
+(아래 별도 작성)

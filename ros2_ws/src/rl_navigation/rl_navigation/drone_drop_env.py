@@ -321,15 +321,14 @@ class DroneDropEnv(gym.Env):
         self._uxrce_port = 8888 + instance_id
         # PX4 -i N publishes to /px4_N/fmu/* topics; instance 0 uses /fmu/*
         self._px4_ns = f'/px4_{instance_id}' if instance_id > 0 else ''
-        # Method A: per-instance model names.
-        # PX4_SIM_MODEL=gz_x500_bombard_rN → rcS matches airframe 4016_gz_x500_bombard_r0.
-        # PX4 gz_bridge strips "gz_" prefix → spawns model "x500_bombard_rN" in Gazebo,
-        # then appends "_N" (instance suffix) → final Gazebo entity name: x500_bombard_rN_N.
-        # Payloads are pre-spawned as payload_N.
-        # Drop topic is /x500_N/drop (hardcoded in DetachableJoint SDF).
-        self._px4_sim_model = f'gz_x500_bombard_r{instance_id}'   # PX4_SIM_MODEL env var
-        self._model_name = f'x500_bombard_r{instance_id}_{instance_id}'  # Gazebo entity name
-        self._drop_topic = f'x500_{instance_id}'                   # drop gz-topic prefix
+        # Pre-spawn drone in world SDF + PX4 connects via PX4_GZ_MODEL_NAME.
+        # Issue #014: <include merge="true"> breaks DetachableJoint in gz-sim8.
+        # Inline x500_bombard model is pre-spawned in world SDF so drone+payload
+        # load simultaneously → DetachableJoint forms joint correctly.
+        # PX4 uses PX4_GZ_MODEL_NAME (no spawn, connects to existing model).
+        self._gz_model_name = f'x500_bombard_{instance_id}'        # name in world SDF <include>
+        self._model_name = f'x500_bombard_{instance_id}'           # Gazebo entity name
+        self._drop_topic = 'x500_bombard'                          # drop gz-topic prefix
         self._payload_name = f'payload_{instance_id}'       # Paired payload model name
 
         # Set ROS_DOMAIN_ID before rclpy.init() so DDS uses the right domain
@@ -354,9 +353,17 @@ class DroneDropEnv(gym.Env):
         self._cfg_action_vy_scale = cfg_env.get('action_vy_scale', 5.0)
         self._cfg_action_vz_scale = cfg_env.get('action_vz_scale', 3.0)
         self._cfg_action_yaw_scale = cfg_env.get('action_yaw_scale', 1.0)
-        self._cfg_max_steps = cfg_env.get('max_steps', 500)
+        # P2 (junsang_v4): action 변화량 hard clip (가속도 제한)
+        self._cfg_action_rate_limit = cfg_env.get('action_rate_limit', 0.2)
+        self._cfg_max_steps = cfg_env.get('max_steps', 800)
         self._cfg_min_altitude = cfg_env.get('min_altitude', 2.0)
-        self._cfg_min_alt_start = cfg_env.get('min_altitude_start_step', 20)
+        self._cfg_min_alt_start = cfg_env.get('min_altitude_start_step', 1)
+        self._cfg_ground_contact_alt = cfg_env.get('ground_contact_altitude', 0.5)
+        self._cfg_max_distance = cfg_env.get('max_distance', 100.0)
+        self._cfg_max_altitude = cfg_env.get('max_altitude', 25.0)
+        self._cfg_stagnation_window = int(cfg_env.get('stagnation_window', 200))
+        self._cfg_stagnation_min_progress = cfg_env.get('stagnation_min_progress', 2.0)
+        self._cfg_stagnation_start_step = int(cfg_env.get('stagnation_start_step', 200))
         self._cfg_obs_wait = cfg_env.get('obs_wait_timeout', 0.15)
         self._cfg_cruise_timeout = cfg_env.get('cruise_poll_timeout', 60.0)
         self._cfg_sim_speed_factor = int(cfg_env.get('sim_speed_factor', 1))
@@ -366,24 +373,36 @@ class DroneDropEnv(gym.Env):
         # --- Reward constants (4-Layer Hierarchical) ---
         r = cfg_reward
         self._cfg_g = r.get('g', 9.81)
-        self._cfg_auto_drop_threshold = r.get('auto_drop_threshold', 0.5)
+        self._cfg_auto_drop_threshold = r.get('auto_drop_threshold', 3.0)
+        self._cfg_random_drop_start_step = r.get('random_drop_start_step', 600)
+        self._cfg_random_drop_prob = r.get('random_drop_prob', 0.005)
         self._cfg_k1_potential = r.get('k1_potential', 1.0)
-        self._cfg_k2_precision = r.get('k2_precision', 5.0)
-        self._cfg_w_dist = r.get('w_dist', 10.0)
-        self._cfg_w_heading = r.get('w_heading', 1.0)
+        self._cfg_k2_precision = r.get('k2_precision', 0.2)
+        self._cfg_w_dist = r.get('w_dist', 1.0)
+        self._cfg_w_heading = r.get('w_heading', 0.7)
         self._cfg_w_time = r.get('w_time', 0.01)
         self._cfg_w_ang_vel = r.get('w_ang_vel', 0.05)
         self._cfg_w_action_smooth = r.get('w_action_smooth', 0.05)
-        self._cfg_w_drop_base = r.get('w_drop_base', 50.0)
-        self._cfg_r_success_jackpot = r.get('r_success_jackpot', 100.0)
-        self._cfg_success_threshold = r.get('success_threshold', 0.1)
+        self._cfg_w_drop_base = r.get('w_drop_base', 100.0)
+        self._cfg_r_success_jackpot = r.get('r_success_jackpot', 50.0)
+        self._cfg_success_threshold = r.get('success_threshold', 5.0)
+        self._cfg_jackpot_threshold = r.get('jackpot_threshold', 0.1)
         self._cfg_penalty_instability = r.get('penalty_instability', 50.0)
         self._cfg_limit_ang_vel = r.get('limit_ang_vel', 2.0)
         self._cfg_limit_tilt = r.get('limit_tilt', 0.26)
-        # Layer 1 penalties (no hard termination)
-        self._cfg_penalty_crash = r.get('penalty_crash', -10.0)
-        self._cfg_penalty_overspeed = r.get('penalty_overspeed', -8.0)
+        self._cfg_limit_inverted_tilt = r.get('limit_inverted_tilt', 1.047)
+        self._cfg_penalty_bad_attitude = r.get('penalty_bad_attitude', -30.0)
+        self._cfg_drop_attempt_bonus = r.get('drop_attempt_bonus', 30.0)
+        self._cfg_k_drop_proximity = r.get('k_drop_proximity', 0.15)
+        self._cfg_truncation_penalty = r.get('truncation_penalty', -15.0)
+        self._cfg_penalty_crash = r.get('penalty_crash', -50.0)
+        self._cfg_penalty_overspeed = r.get('penalty_overspeed', -30.0)
         self._cfg_penalty_target_lost = r.get('penalty_target_lost', -10.0)
+        self._cfg_penalty_out_of_range = r.get('penalty_out_of_range', -30.0)
+        self._cfg_penalty_max_altitude = r.get('penalty_max_altitude', -30.0)
+        self._cfg_penalty_stagnation = r.get('penalty_stagnation', -15.0)
+        self._cfg_w_prediction = r.get('w_prediction', 20.0)
+        self._cfg_k_prediction = r.get('k_prediction', 0.1)
         # Layer 4: time to wait for actual physics landing result from drop_calculator
         self._cfg_drop_wait_timeout = r.get('drop_wait_timeout', 10.0)
         # Ablation flag: disable speed gate to reproduce Spiral Milking reward hack
@@ -413,6 +432,7 @@ class DroneDropEnv(gym.Env):
         self._episode_procs = []      # Popen handles for episode nodes
         self.d_xy_prev = 0.0          # 2D horizontal distance to target at previous step
         self.action_prev = np.zeros(5, dtype=np.float32)
+        self._d_xy_history = {}       # step→d_xy for stagnation detection
 
         # --- Infra state ---
         self._infra_procs = []        # Popen handles for infra processes
@@ -460,6 +480,7 @@ class DroneDropEnv(gym.Env):
         self._step_count = 0
         self.dropped = False
         self._episode_reward = 0.0
+        self._d_xy_history = {}
         self._obs_ready.clear()
         self._drop_error_event.clear()
         self.action_prev = np.zeros(5, dtype=np.float32)
@@ -566,6 +587,14 @@ class DroneDropEnv(gym.Env):
         """Apply action, advance one control step, return (obs, reward, term, trunc, info)."""
         self._step_count += 1
 
+        # --- P2 (junsang_v4): action rate limit (가속도 hard clip) ---
+        # action_prev 는 reset() 에서 zeros 로 초기화됨. step 당 |Δa| ≤ rate_limit.
+        action = np.clip(
+            np.asarray(action, dtype=np.float32),
+            self.action_prev - self._cfg_action_rate_limit,
+            self.action_prev + self._cfg_action_rate_limit,
+        )
+
         # --- Decode and apply velocity command ---
         vx = float(action[0]) * self._cfg_action_vx_scale
         vy = float(action[1]) * self._cfg_action_vy_scale
@@ -613,46 +642,49 @@ class DroneDropEnv(gym.Env):
         truncated = False
         info = {}
 
-        # --- Drop decision: CCIP auto-drop when predicted impact ≤ threshold ---
-        # Uses kinematic prediction (_predict_impact_point) so the drone does NOT
-        # need to fly directly overhead — a fly-by trajectory at the right distance
-        # and speed already achieves d_impact ≤ 0.5m.
-        # Phase 1 curriculum: manual drop disabled. action[4] is kept as a
-        # dummy dimension (always ignored) for checkpoint compatibility.
-        # manual_drop = float(action[4]) > 0.0
-        if d_impact <= self._cfg_auto_drop_threshold and not self.dropped:
+        # --- Drop decision: auto + random exploration ---
+        # action[4] ignored (manual drop disabled — causes "drop ASAP" exploit).
+        # auto_drop: d_impact ≤ threshold → precision drop near target.
+        # random_drop: step ≥ start, 0.5% per step → diverse drop experience
+        #              at various d_xy. Agent can't control → learns to fly only.
+        random_drop = (self._step_count >= self._cfg_random_drop_start_step
+                       and np.random.random() < self._cfg_random_drop_prob)
+        if (random_drop or d_impact <= self._cfg_auto_drop_threshold) and not self.dropped:
             # ============================================================
             # Layer 4: Terminal drop accuracy reward (ACTUAL physics result)
+            # Issue #014 해결: inline SDF + pre-spawn + PX4_GZ_MODEL_NAME
+            # → DetachableJoint 정상 작동 → 실제 payload 낙하.
             # ============================================================
             self._node.publish_drop()
             self.dropped = True
 
-            # Wait for actual physics-based landing result from drop_calculator.
-            # drop_calculator tracks /drone/payload/position until z <= 0.04m,
-            # then publishes actual miss distance to /rl/drop_error.
-            # At 5m altitude, payload falls ~1s; 10s timeout gives ample margin.
             got_result = self._drop_error_event.wait(
                 timeout=self._cfg_drop_wait_timeout)
-            actual_error = 99.0   # penalty if timeout (no landing detected)
+            actual_error = 99.0
             if got_result:
                 try:
                     actual_error = self._drop_error_queue.get_nowait()
                 except queue.Empty:
-                    pass  # race: event set but queue empty → keep 99.0
+                    pass
+            d_error = actual_error
 
-            d_error = actual_error   # real Gazebo physics result, NOT kinematic
-
-            # Drop attempt bonus: reward the act of dropping regardless of accuracy.
-            # Encourages the agent to attempt drops and gain Layer 4 experience.
-            # v3: increased from 120 to 150 for better balance of per-step vs drop rewards
-            reward = 150.0
+            # Drop attempt bonus: scaled by proximity to target.
+            # Dropping far away gives ~0, dropping close gives full bonus.
+            reward = self._cfg_drop_attempt_bonus * math.exp(
+                -self._cfg_k_drop_proximity * d_xy)
 
             # Base precision reward: w_drop_base * exp(-k2 * d_error)
             reward += self._cfg_w_drop_base * math.exp(
                 -self._cfg_k2_precision * d_error)
 
+            # Prediction bonus: reward CCIP accuracy (Issue #010)
+            prediction_gap = abs(d_impact - d_error)
+            reward += self._cfg_w_prediction * math.exp(
+                -self._cfg_k_prediction * prediction_gap)
+            info['prediction_gap'] = prediction_gap
+
             # Jackpot: bonus for high-precision drop
-            if d_error <= self._cfg_success_threshold:
+            if d_error <= self._cfg_jackpot_threshold:
                 reward += self._cfg_r_success_jackpot
                 info['jackpot'] = True
 
@@ -665,7 +697,8 @@ class DroneDropEnv(gym.Env):
                 info['instability_penalty'] = True
 
             info['drop_error_actual_m'] = d_error
-            info['is_success'] = bool(d_error <= 0.5)
+            info['is_success'] = bool(d_error <= self._cfg_success_threshold)
+            info['drop_trigger'] = 'random' if random_drop else 'auto'
             info['layer4_reward'] = reward
             # Reward component keys (consistent schema with non-terminal steps)
             info['rew_drop'] = reward      # full Layer 4 reward
@@ -683,11 +716,60 @@ class DroneDropEnv(gym.Env):
             reward, terminated, info = self._compute_reward(
                 pos, vel, ang, pix, d_xy, d_impact, action)
 
-        # --- Truncation on step limit ---
-        if self._step_count >= self._cfg_max_steps:
+            # --- P11/P9 (junsang_v4): step 별 safety 검사 + truncated 결정 ---
+            # 우선순위: crash > overspeed > ang_vel > inverted
+            # crash/overspeed 는 _compute_reward 안에서 이미 penalty add + info['crash'/'overspeed']
+            # 표기 — 여기선 truncate_reason 만 결정 (truncate=True 트리거).
+            truncate_reason = None
+            if info.get('crash'):
+                truncated = True
+                truncate_reason = 'crash'
+            elif info.get('overspeed'):
+                truncated = True
+                truncate_reason = 'overspeed'
+            elif np.linalg.norm(ang) > self._cfg_limit_ang_vel:
+                info['bad_attitude'] = 'ang_vel'
+                reward += self._cfg_penalty_bad_attitude
+                truncated = True
+                truncate_reason = 'ang_vel'
+            elif (abs(roll) > self._cfg_limit_inverted_tilt
+                  or abs(pitch) > self._cfg_limit_inverted_tilt):
+                info['bad_attitude'] = 'inverted'
+                reward += self._cfg_penalty_bad_attitude
+                truncated = True
+                truncate_reason = 'inverted'
+
+            if not truncated and d_xy > self._cfg_max_distance:
+                reward += self._cfg_penalty_out_of_range
+                truncated = True
+                truncate_reason = 'out_of_range'
+
+            if not truncated and pos[2] > self._cfg_max_altitude:
+                reward += self._cfg_penalty_max_altitude
+                truncated = True
+                truncate_reason = 'max_altitude'
+
+            if not truncated:
+                self._d_xy_history[self._step_count] = d_xy
+                if self._step_count >= self._cfg_stagnation_start_step:
+                    past_step = self._step_count - self._cfg_stagnation_window
+                    if past_step in self._d_xy_history:
+                        past_d_xy = self._d_xy_history[past_step]
+                        if past_d_xy - d_xy < self._cfg_stagnation_min_progress:
+                            reward += self._cfg_penalty_stagnation
+                            truncated = True
+                            truncate_reason = 'stagnation'
+
+            if truncate_reason:
+                info['truncate_reason'] = truncate_reason
+
+        # --- Truncation on step limit (timeout) ---
+        if not terminated and not truncated and self._step_count >= self._cfg_max_steps:
             truncated = True
             if not self.dropped:
-                reward -= 80.0    # v3: Mission failure penalty reduced from -120 (over-aggressive)
+                # P8 (junsang_v4): yaml truncation_penalty 사용 (이전 hardcoded -80)
+                reward += self._cfg_truncation_penalty
+            info['truncate_reason'] = 'timeout'
 
         # --- Update action memory ---
         self.action_prev = np.array(action, dtype=np.float32)
@@ -802,7 +884,10 @@ class DroneDropEnv(gym.Env):
         speed = float(np.linalg.norm(vel))
         conf = float(pix[2])   # vision confidence; 0.0 = no detection
 
-        if self._step_count > self._cfg_min_alt_start and altitude < self._cfg_min_altitude:
+        if altitude < self._cfg_ground_contact_alt:
+            info['crash'] = True
+            reward += self._cfg_penalty_crash
+        elif self._step_count > self._cfg_min_alt_start and altitude < self._cfg_min_altitude:
             info['crash'] = True
             reward += self._cfg_penalty_crash
 
@@ -1119,19 +1204,36 @@ class DroneDropEnv(gym.Env):
                 pass
 
             worlds_dir = os.path.join(models_dir, 'worlds')
-            # Generate temp SDF with configured real_time_factor (RTF > 1 for faster training)
-            world_sdf = os.path.join(worlds_dir, 'x_marker_world.sdf')
+            # Read base world SDF and inject drone pre-spawn.
+            # Issue #014: drone must be pre-spawned so DetachableJoint
+            # forms joint with payload before physics starts.
+            base_sdf_path = os.path.join(worlds_dir, 'x_marker_world.sdf')
+            with open(base_sdf_path, 'r') as _f:
+                _sdf = _f.read()
+
+            # Inject drone include before </world> tag
+            iid_y = iid * 150
+            drone_include = (
+                f'\n    <!-- Pre-spawned drone (injected by drone_drop_env.py) -->\n'
+                f'    <include>\n'
+                f'      <uri>model://x500_bombard</uri>\n'
+                f'      <name>{self._gz_model_name}</name>\n'
+                f'      <pose>0 {iid_y} 0.24 0 0 0</pose>\n'
+                f'    </include>\n'
+            )
+            _sdf = _sdf.replace('</world>', drone_include + '  </world>')
+
             if self._cfg_sim_speed_factor != 1:
-                with open(world_sdf, 'r') as _f:
-                    _sdf = _f.read().replace(
-                        '<real_time_factor>1</real_time_factor>',
-                        f'<real_time_factor>{self._cfg_sim_speed_factor}</real_time_factor>')
-                world_sdf = f'/tmp/x_marker_world_rtf{self._cfg_sim_speed_factor}.sdf'
-                with open(world_sdf, 'w') as _f:
-                    _f.write(_sdf)
+                _sdf = _sdf.replace(
+                    '<real_time_factor>1</real_time_factor>',
+                    f'<real_time_factor>{self._cfg_sim_speed_factor}</real_time_factor>')
+
+            world_sdf = f'/tmp/x_marker_world_rl_{iid}.sdf'
+            with open(world_sdf, 'w') as _f:
+                _f.write(_sdf)
             gz_log = open(f'/tmp/gz_{iid}.log', 'w')
             gz = subprocess.Popen(
-                ['gz', 'sim', '-r', '-s', world_sdf],
+                ['gz', 'sim', '-s', world_sdf],
                 env=infra_env,
                 stdout=gz_log, stderr=subprocess.STDOUT,
                 preexec_fn=os.setsid,
@@ -1186,18 +1288,15 @@ class DroneDropEnv(gym.Env):
         )
         time.sleep(5)
 
-        # 3. PX4 SITL — spawn drone model dynamically (not pre-spawned in world SDF).
-        #    Method A: payloads are pre-spawned but DRONES are spawned by PX4.
-        #    Pre-spawning all 4 drones causes ODE crash at physics step 1 (all
-        #    motor plugins activate simultaneously). PX4_SIM_MODEL spawn inserts
-        #    the drone after Gazebo is running — proven stable in Phase 1.5.
-        iid_y = self._instance_id * 150
+        # 3. PX4 SITL — connect to pre-spawned drone model via PX4_GZ_MODEL_NAME.
+        #    Issue #014: drone is pre-spawned in world SDF (injected above)
+        #    so DetachableJoint forms joint with payload at load time.
+        #    PX4 connects to existing model instead of spawning a new one.
         px4_env = infra_env.copy()
         px4_env.update({
             'PX4_GZ_STANDALONE': '1',
             'PX4_GZ_WORLD': 'x_marker_world',
-            'PX4_SIM_MODEL': self._px4_sim_model,  # gz_x500_bombard_rN → spawns x500_bombard_rN_N
-            'PX4_GZ_MODEL_POSE': f'0,{iid_y},0.5,0,0,0',  # 0.5m above ground to prevent geometry overlap on spawn
+            'PX4_GZ_MODEL_NAME': self._gz_model_name,  # connect to pre-spawned model
             'PX4_SIM_SPEED_FACTOR': str(self._cfg_sim_speed_factor),
             'PX4_UXRCE_DDS_PORT': str(self._uxrce_port),
         })
@@ -1228,6 +1327,21 @@ class DroneDropEnv(gym.Env):
 
         self._infra_procs = [p for p in [uxrce, gz, bridge, px4] if p is not None]
         # Note: bridge is always non-None (per-instance); gz is None for iid > 0
+
+        # Unpause Gazebo — must happen after PX4 process starts so PX4's
+        # gz_bridge can connect to the pre-spawned model. PX4 needs sim time
+        # to flow for sensor initialization. Short sleep ensures PX4 has
+        # connected before physics starts; PX4 motor controller prevents
+        # drone from falling immediately.
+        if iid == 0:
+            time.sleep(3)
+            subprocess.run(
+                ['gz', 'service', '-s', '/world/x_marker_world/control',
+                 '--reqtype', 'gz.msgs.WorldControl',
+                 '--reptype', 'gz.msgs.Boolean',
+                 '--timeout', '5000',
+                 '--req', 'pause: false'],
+                env=infra_env, capture_output=True, timeout=10)
 
         # Wait for PX4 readiness (obs_ready set by _on_local_pos callback)
         self._node.get_logger().info(

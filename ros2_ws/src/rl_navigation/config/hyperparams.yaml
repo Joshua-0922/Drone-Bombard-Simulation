@@ -1,21 +1,23 @@
 training:
-  total_timesteps: 1000000
+  total_timesteps: 150000   # Round 1 — Issue #001+#002+#003+#006 동시 적용
   checkpoint_freq: 5000
-  max_checkpoints_kept: 5        # keep only last 5 rolling checkpoints
+  max_checkpoints_kept: 5
   checkpoint_dir: "/workspace/ros2_ws/rl_checkpoints"
-  num_envs: 1              # Stable single-env (multi-env Gazebo lockstep overhead > benefit)
-  env_stagger_secs: 10    # 10s stagger between SubprocVecEnv instance inits
+  num_envs: 1
+  env_stagger_secs: 10
+  eval_freq: 10000
+  eval_episodes: 3
 
 sac:
   learning_rate: 3.0e-4
-  buffer_size: 100000
+  buffer_size: 500000
   batch_size: 256
   tau: 0.005
-  gamma: 0.99
+  gamma: 0.995
   learning_starts: 1000
-  gradient_steps: 1         # SAC gradient updates per env step (Week 3 HP tuning: try 2)
+  gradient_steps: 1
   net_arch: [256, 256]
-  device: "cuda"            # L4 GPU; change to "cpu" if no GPU available
+  device: "cuda"
 
 environment:
   target_enu_x: 11.0
@@ -23,65 +25,83 @@ environment:
   pos_scale: 50.0
   vel_scale: 15.0
   ang_vel_scale: 3.14159265
-  action_vx_scale: 15.0
+  action_vx_scale: 8.0
   action_vy_scale: 5.0
   action_vz_scale: 3.0
   action_yaw_scale: 1.0
-  max_steps: 500
-  min_altitude: 2.0
-  min_altitude_start_step: 20
-  obs_wait_timeout: 0.02     # 20 ms — 10x safety margin at 500 Hz wall-clock (PX4_SIM_SPEED_FACTOR=10)
+  action_rate_limit: 0.2
+  max_steps: 800
+  min_altitude: 3.0
+  min_altitude_start_step: 1    # Issue #002: 10 → 1 (grace period 최소화)
+  ground_contact_altitude: 0.5  # Issue #002: 신규 — altitude < 0.5m → 무조건 crash
+  max_distance: 100.0           # Issue #002: 신규 — d_xy > 100m → out_of_range truncate
+  max_altitude: 25.0            # Round 2: 고도 상한 — 25m 초과 시 truncate
+  stagnation_window: 200        # Round 2: 정체 감지 — 200 step 동안
+  stagnation_min_progress: 2.0  # Round 2: d_xy 최소 2m 감소 필요
+  stagnation_start_step: 200    # Round 2: step 200 이후부터 체크
+  obs_wait_timeout: 0.02
   cruise_poll_timeout: 60.0
-  use_vision: false          # disable camera-based obs/termination for RL training
+  use_vision: false
 
 reward:
   # --- Physics ---
-  g: 9.81                   # gravity (m/s^2)
+  g: 9.81
 
-  # --- Auto-drop (Phase 1 CCIP: fires when predicted impact point ≤ threshold) ---
-  auto_drop_threshold: 4.0  # fire drop when CCIP d_impact <= this (m); v2: widened from 2.0 to increase drop experience frequency
-  drop_wait_timeout: 10.0   # seconds to wait for actual physics landing result from drop_calculator
+  # --- Drop trigger (hybrid: manual + auto safety net) ---
+  auto_drop_threshold: 3.0     # Issue #006: 10.0 → 3.0 (안전망, manual drop이 주력)
+  # manual drop 비활성 — action[4] 무시 ("drop ASAP" exploit 방지)
+  random_drop_start_step: 600  # Round 2: 150→600 (600 step 자유 접근 확보)
+  random_drop_prob: 0.005      # 매 step 0.5% 확률로 random drop
+  drop_wait_timeout: 10.0
 
   # --- Approach shaping (Layer 3) ---
-  k1_potential: 1.0         # UNUSED — kept for reference. Was: exp(-k1*d) potential (saturated at d>10m)
-  w_dist: 0.5                # linear distance reward weight: r3_dist = w_dist*(d_prev - d_now)
-                             # v3: increased from 0.3 (v2 실패로 인한 복구)
-  w_heading: 0.7            # weight for heading alignment (cos delta_yaw)
-                             # v3: increased from 0.4 (per-step 보상 복구)
-  speed_gate_enabled: true  # false = disable speed gate → reproduces Spiral Milking (ablation Exp 007a)
+  k1_potential: 1.0
+  w_dist: 1.0
+  w_heading: 0.7
+  speed_gate_enabled: true
 
   # --- d_impact shaping (Layer 3 addition) ---
-  w_impact: 0.4             # weight for CCIP predicted miss distance reward: w_impact * exp(-k_impact * d_impact)
-                             # v3: increased from 0.2 (CCIP 신호 복구)
-  k_impact: 0.05            # decay constant (smaller = nonzero gradient at longer range)
+  w_impact: 0.4
+  k_impact: 0.05
 
   # --- Stability/efficiency (Layer 2) ---
-  w_time: 0.01              # per-step time penalty
-  w_ang_vel: 0.05           # penalty weight for ||omega||^2
-  w_action_smooth: 0.05     # penalty weight for ||action_t - action_{t-1}||^2
+  w_time: 0.01
+  w_ang_vel: 0.05
+  w_action_smooth: 0.05
 
   # --- Terminal drop accuracy (Layer 4) ---
-  k2_precision: 0.3          # v2: precision decay constant (reduced from 5.0 → meaningful reward at 2-10m error)
-  w_drop_base: 100.0         # v2: base weight for drop accuracy reward (increased from 50.0)
-  r_success_jackpot: 100.0  # bonus for landing within success_threshold
-  success_threshold: 0.1    # distance threshold for jackpot (m)
-  penalty_instability: 50.0 # subtracted if drone is unstable at drop
-  limit_ang_vel: 2.0        # rad/s — instability threshold for angular velocity
-  limit_tilt: 0.26          # rad (~15 deg) — instability threshold for roll/pitch
-  
-  # --- Episode termination penalties ---
-  drop_attempt_bonus: 150.0 # v3: bonus for attempting drop (increased from 120 for better balance)
-  truncation_penalty: -80.0 # v3: penalty for timeout without drop (reduced from -120)
+  k2_precision: 0.2            # Round 2: 0.5 → 0.2 (10m 구간 gradient 확보)
+  w_prediction: 20.0           # Issue #010: CCIP 예측-실제 일치도 보상 가중치
+  k_prediction: 0.1            # Issue #010: prediction gap 감쇠 (0.1 = 완만, gap 12m에서도 신호 유지)
+  w_drop_base: 100.0
+  r_success_jackpot: 50.0      # Issue #003: 100 → 50 (스케일 축소)
+  success_threshold: 5.0            # total_success_count 기준 (중간 목표)
+  jackpot_threshold: 0.1            # total_jackpot_count 기준 (최종 목표)
+  penalty_instability: 50.0
+  limit_ang_vel: 2.0
+  limit_tilt: 0.26
 
-  # --- Layer 1 penalties (no hard termination; episode continues) ---
-  penalty_crash: -10.0      # altitude below min_altitude after step 20
-  penalty_overspeed: -8.0   # speed > 20 m/s
-  penalty_target_lost: -10.0 # vision confidence == 0 (only if use_vision: true)
+  # --- Step 별 안전 검사 ---
+  limit_inverted_tilt: 1.047
+  penalty_bad_attitude: -30.0   # Issue #003: -50 → -30 (스케일 축소)
+
+  # --- Episode termination penalties ---
+  drop_attempt_bonus: 30.0      # Issue #001+#003: 150 → 30 (precision 비중 상승)
+  k_drop_proximity: 0.15        # Round 2: 0.3 → 0.15 (10m 구간에서도 bonus 유지)
+  truncation_penalty: -15.0     # Issue #003: -30 → -15 (스케일 축소)
+
+  # --- Layer 1 penalties ---
+  penalty_crash: -50.0          # Issue #003: -100 → -50 (스케일 축소)
+  penalty_overspeed: -30.0      # Issue #003: -50 → -30 (스케일 축소)
+  penalty_target_lost: -10.0
+  penalty_out_of_range: -30.0   # Issue #002: 신규 — out_of_range truncate 페널티
+  penalty_max_altitude: -30.0   # Round 2: 고도 상한 초과 페널티
+  penalty_stagnation: -15.0     # Round 2: 정체 감지 페널티
 
 wandb:
   project: "drone-bombard-sac"
-  entity: "nayoonho0922-seoul-national-university"  # team entity (personal entities disabled)
-  run_name: "L4-AutoDrop-v2"            # Auto-generated if null
-  tags: ["sac", "spot-vm", "l4-gpu"]
+  entity: "nayoonho0922-seoul-national-university"
+  run_name: "round2_gradient_tuning"
+  tags: ["sac", "spot-vm", "l4-gpu", "round1"]
   save_model_artifact: true
-  log_freq: 1000            # gradient_save_freq for WandbCallback (increased to avoid blocking training loop)
+  log_freq: 1000

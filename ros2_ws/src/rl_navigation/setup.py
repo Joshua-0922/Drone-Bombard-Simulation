@@ -30,6 +30,7 @@ setup(
             'train_sac        = rl_navigation.train_sac:main',
             'evaluate         = rl_navigation.evaluate:main',
             'baseline_ccip    = rl_navigation.baseline_ccip:main',
+            'replay_drop      = rl_navigation.replay_drop_episode:main',
         ],
     },
 )

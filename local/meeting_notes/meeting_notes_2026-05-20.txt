@@ -1,0 +1,624 @@
+================================================================================
+ Drone-Bombard-Simulation 작업 정리 (회의용)
+ 세션 기간 : 2026-05-20 ~ 2026-05-21
+ 작업 환경 : drone-bombard-harmonic Docker 컨테이너 (로컬 전용, GitHub push 안 함)
+ 로컬 브랜치: junsang  (commit 29b1c9b — 로컬에만 존재)
+ 업데이트   : 권장값 (H1/H2/H3/M1/M2) 적용 + 10k smoke 검증 완료
+              + WandB 팀 entity 이전 (개인 free 만료 → SNU 팀) + 1k sync 검증
+================================================================================
+
+
+********************************************************************************
+* 변경 사항 한 줄 요약 (이번 최종 갱신)
+*   - Part 1 에 "권장값 적용 + 10k smoke 검증" 섹션 (1-5)
+*   - Part 1 에 "WandB 팀 entity 이전 + 1k sync 검증" 섹션 (1-7) 신규
+*   - Part 2 의 H1/H2/H3/M1/M2 는 이미 적용 완료 (회의에선 본 학습 승인용)
+*   - Part 2 에 새 안건 N1 (drop sparse signal) — 검증 중 발견
+*   - 가이드 STEP 6-2 의 wandb sync 명령에 날짜 필터 추가 (entity 변경 시 옛 run
+*     이 만료된 entity 로 sync 시도되는 함정 회피)
+********************************************************************************
+
+
+################################################################################
+#  PART 1.  내가 한 일 (발표용)
+################################################################################
+
+요약 한 줄
+---------
+끊겨있던 카메라 파이프라인을 살리고, PX4 SITL airframe 누락으로 90초 timeout만
+뱉으며 죽던 학습을 부팅시켜서 SAC 5,000-step smoke 학습을 끝까지 완주했습니다.
+
+
+─── 1-1. 카메라 파이프라인 복구 ─────────────────────────────────────────────────
+
+증상
+  - Gazebo 토픽은 존재하는데 데이터가 흐르지 않음
+  - YOLO detector 측에서 "waiting for image" 무한 출력
+  - payload 분리도 일어나지 않음
+
+원인
+  - World SDF (x_marker_world.sdf) 에 gz::sim::systems::Sensors 플러그인이
+    의도적으로 빠져 있었음 (RL 학습 안정성 / GPU 부담 회피 목적)
+  - 카메라 센서 자체는 모델 SDF 에 있어 토픽은 떴지만, 렌더 엔진이 돌지
+    않으니 프레임이 만들어지지 않는 상황
+
+해결 — World 파일 분리
+  - x_marker_world.sdf        : RL 학습 전용 (Sensors 플러그인 없음, 그대로 유지)
+  - x_marker_world_vision.sdf : 비전 미션 전용 (Sensors + ogre2 추가, 신규 생성)
+  - <world name="x_marker_world"> 는 두 파일 모두 동일하게 유지
+    → PX4_GZ_WORLD 환경변수, IMU bridge 토픽이 이 이름을 하드코딩하기 때문
+  - drone_mission.launch.py 의 world 경로 3군데 (lines 196, 204, 321) 수정
+
+선택 기록
+  ▶ [선택] World 분리 vs in-place 토글  →  분리 선택 ("더 좋은 방향으로 가자")
+
+
+─── 1-2. ROS2 install 캐시 함정 발견 ────────────────────────────────────────────
+
+발견
+  - src/ 편집 후 ros2 launch 했는데도 옛 동작 반복됨
+  - ros2 launch / ros2 run 은 src 가 아닌 install/ 의 카피본을 읽음
+  - colcon build 가 --symlink-install 없이 돌아간 상태였음 → 실제 파일 복사
+  - 디버그 한 사이클을 통째로 날린 후에야 원인 발견
+
+대응
+  - src 편집 후 install/ 쪽에 docker cp 로 동기화
+  - 향후 빌드 시 --symlink-install 권장
+  - 메모리에 영구 기록 (feedback_ros2_install_cache)
+
+
+─── 1-3. PX4 SITL airframe 등록 누락 발견 및 해결 ───────────────────────────────
+
+증상
+  - 학습 켜면 90초 후 "Timed out waiting for PX4 readiness" 만 출력하고 죽음
+  - PX4 stdout/stderr 가 /dev/null 로 흘러 silent failure
+  - 진짜 원인 안 보이는 상태로 시간 낭비
+
+진단
+  - drone_drop_env.py:1131 의 px4_log = open(os.devnull, 'w') 를 임시로
+    /tmp/px4.log 로 변경 → stderr 캡처
+  - 발견된 에러:
+      ERROR [init] Unknown model gz_x500_bombard_r0 (not found by name on
+                   /opt/PX4-Autopilot/build/px4_sitl_default/rootfs/etc/init.d-posix/airframes)
+      ERROR [px4] Startup script returned with return value: 256
+
+원인
+  - PX4 SITL 의 airframe 등록은 두 단계로 분리됨
+      * 소스(ROMFS): 4015 (base) + 4016~4019 (r0~r3, 멀티 인스턴스) — 모두 존재
+      * 런타임(build/.../rootfs): 기본 PX4 빌드는 4015 만 채워둠
+  - 학습 코드는 PX4_SIM_MODEL=gz_x500_bombard_r{instance_id} 사용
+    → r0 이 rootfs 에 없어 모든 학습 시도가 silent fail
+
+해결 옵션 비교
+  A. PX4 풀 재빌드 (make px4_sitl_default)         — 15~20분, 영구
+  B. ROMFS → rootfs 로 4016~4019 cp                — 즉시, 컨테이너 라이프타임만 유효
+  C. drone_drop_env.py 를 base 모델만 쓰도록 수정   — 즉시, 멀티 인스턴스 학습 못 함
+
+선택 기록
+  ▶ [선택] B 선택 (즉시 진행, 빠른 검증 우선)
+  ▶ [후속] 컨테이너 재생성 시 B 를 다시 적용하거나 A 로 영구화 필요 — 메모리에 기록
+
+
+─── 1-4. SAC 5,000-step Smoke 학습 완주 ─────────────────────────────────────────
+
+설정
+  total_timesteps : 5,000
+  use_vision      : false      (RL 학습용, 카메라 안 쓰는 모드)
+  device          : cuda (L4)
+  num_envs        : 1
+
+결과 지표 (학습 종료 시점)
+  episodes        : 12
+  fps             : 22 → 37 (warmup 후 가속)
+  duration        : 약 135초
+  n_updates       : 4499
+  ent_coef        : 1.0 → 0.376   (자동 temperature 감소, 정상 SAC 학습 신호)
+  ep_rew_mean     : -874 → -936 → -860
+
+환경 측 지표 (WandB Summary)
+  drop_count             : 1
+  drop_error_actual_m    : 23.95 m
+  mean_d_impact          : 29.02 m
+  mean_d_xy              : 28.59 m
+  mean_rew_drop          : 0       ← drop 시 보상 거의 못 받음
+  safety_violation_rate  : 1.0     ← 초기 탐색 단계
+  physics_glitch_count   : 1
+
+산출물
+  체크포인트  : /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip 외 2개
+  WandB Run  : https://wandb.ai/junsanglee64/drone-bombard-sac/runs/0rho5l9f
+
+선택 기록
+  ▶ [선택] use_vision  →  A 선택 (false, RL 학습 안정성 우선)
+  ▶ [선택] 학습 방식    →  C 선택 (notes 없이 그대로 실행)
+  ▶ [선택] 5k 중간에 patch 원복 vs 끝까지 두기  →  끝까지 두기 선택
+
+
+─── 1-5. 권장값 적용 + 10k Smoke 검증 (이번 갱신본 신규) ────────────────────────
+
+회의 전에 의사결정 항목 H1/H2/H3/M1/M2 의 권장값을 미리 적용하고 10k smoke 로
+효과를 검증함. 회의 자료의 "권장이 옳은지 데이터로 확인" 의도.
+
+적용한 변경
+  - H1  Reward scale 축소
+      w_drop_base       : 50.0 → 20.0
+      r_success_jackpot : 100  → 30
+      penalty_instability: 50  → 15
+  - H2  Drop action 제거
+      action_space : Box(5,) → Box(4,)
+      action[4] manual drop trigger 코드 경로 정리 (옛 주석 정리)
+  - H3  Gamma
+      0.99 → 0.995 (effective horizon ~100 → ~200)
+  - M1  Buffer
+      100,000 → 500,000
+  - M2  gradient_steps
+      1 → 4
+
+10k Smoke 결과 (run pwkujvev, offline)
+  학습 측 (SAC)
+    step      ep_rew_mean    critic_loss   actor_loss
+     2,000    -1,340         11.4          -21.9
+     4,000    -823           49.1          -17.2     ← critic 폭주 피크
+     5,540    -686           38.1          -22.6
+     7,381    -607           41.6          -67.1
+     9,133    -511           32.9          -82.3     ← critic 안정화
+    10,000    완주
+    n_updates : 32,528  (이전 5k smoke 의 4,499 대비 7.2배 — gradient_steps=4 정상)
+    ent_coef  : 0.174~0.221  (이전 5k 종료시 0.376 보다 더 결정론적)
+
+  환경 측 (WandB summary)
+    drop_error_actual_m : 14.87 m    ← 이전 5k 23.95m 대비 38% 개선
+    safety_violation_rate : 0.0       ← OK
+    drop_count : 1                    ← 여전히 sparse (남은 한계, N1 안건)
+    mean_rew_drop : 0                 ← drop 신호 평균에 묻힘
+
+핵심 발견 (회의용 데이터 포인트)
+  ✅ ep_rew_mean 단조 개선 (-1,340 → -511, Δ+829)
+     이전 5k smoke 는 같은 step 수에서 -874 → -936 평탄/악화 였음.
+  ✅ Drop 정밀도 38% 향상 (23.95m → 14.87m)
+  ✅ M2 gradient_steps=4 안전성 확인 (critic_loss 폭주 후 자동 안정화)
+  ⚠ drop_count = 1 두 번 연속 (5k, 10k 모두). H2 만으로 부족.
+
+산출물
+  /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip
+  /workspace/ros2_ws/rl_checkpoints/sac_drop_10000_steps.zip
+  WandB offline run : offline-run-20260520_074457-pwkujvev
+
+부수적 인프라 개선
+  - WandB Incremental Sync 도입 — /home/juns/wandb_incremental_sync.sh
+    학습은 WANDB_MODE=offline 로 돌고, 별도 프로세스가 10분마다 클라우드 sync.
+    원인: 이전 학습이 wandb internal service 데드락으로 3,612 step 손실됨.
+    효과: 학습 측은 IPC 완전 격리, 네트워크 끊김에도 학습 안 죽음.
+
+
+─── 1-6. 부수적 정리 작업 ──────────────────────────────────────────────────────
+
+  - 임시 patch (PX4 stderr 캡처) 원복: drone_drop_env.py:1131 (src + install)
+  - 1.3GB 까지 자랐던 /tmp/px4.log 삭제
+  - 메모리 파일 4개 작성 (Claude Code 메모리 — 다음 세션에 자동 로드됨):
+      * feedback_local_only.md          : 로컬 전용, GitHub push 금지
+      * project_drone_sim.md            : 컨테이너 구조와 파일 경로
+      * feedback_ros2_install_cache.md  : install/share 캐시 함정
+      * project_px4_airframe_sync.md    : PX4 airframe rootfs 동기화 (이번 세션 추가)
+  - 학습 실행 가이드 작성: /home/juns/drone_sim_training_guide.txt (10 섹션, 212줄)
+  - git 인증 처리 → one-shot flag (`git -c user.name=… user.email=…`) 선택,
+    글로벌 config 변경 없음. 로컬 commit 29b1c9b 생성 (push 안 함)
+
+
+─── 1-7. WandB 팀 Entity 이전 + 1k Sync 검증 (이번 갱신본 신규) ─────────────────
+
+배경
+  - 개인 entity (junsanglee64) 의 무료 tier 사용이 끝남 → 신규 run 업로드 제약
+  - 학원 팀 entity (nayoonho0922-seoul-national-university) 로 이전 필요
+
+실행 entity 식별
+  - 컨테이너 안에서 wandb.Api().viewer 로 접근 가능 entity 확인:
+      * username : junsanglee25
+      * teams    : ['nayoonho0922-seoul-national-university', 'junsanglee64']
+      * default  : nayoonho0922-seoul-national-university
+  - 후보 ('…-org' 접미사 형태)는 teams 목록에 없음 → 그대로 사용 안 함
+
+변경 적용
+  - hyperparams.yaml 의 wandb.entity:
+      "junsanglee64" → "nayoonho0922-seoul-national-university"
+  - src ↔ install/share 동기화 (ros2 launch 가 install 을 읽기 때문)
+
+1k Smoke (sync 검증 목적, 학습 신호 검증 아님)
+  - total_timesteps : 10000 → 1000  (entity 동작 확인용, 빠른 검증)
+  - WANDB_MODE=offline 으로 학습 → 종료 후 수동 sync
+  - 결과:
+      Syncing: https://wandb.ai/nayoonho0922-seoul-national-university/
+               drone-bombard-sac/runs/ftwlc80v ... done.
+  - 학습 데이터 866KB 정상 생성, 팀 entity 로 sync 성공
+
+발견 — 가이드 함정 (정정)
+  최초 sync 시도가 옛 5/20 run (junsanglee64 시절) 을 잘못 잡았음.  원인 분석:
+    - 가이드 STEP 6-2 의 글롭 (wandb sync wandb/offline-run-*) 자체는 OK
+    - 임시로 친 명령 (`ls -td | head -1` 으로 LATEST 잡기) 이 mtime 기준이라,
+      sync 가 폴더 mtime 을 갱신하면 옛 run 이 최신처럼 보임.
+    - 가이드의 글롭 방식은 이 문제 없음 — 모든 폴더 다 sync.
+
+  단, entity 변경 후엔 또 다른 함정 등장:
+    - 옛 run 들은 폴더 안 metadata 의 옛 entity (만료된 junsanglee64) 로 sync 됨
+    - 매 정기 sync 마다 만료된 entity 로 무한 재시도 → 로그 노이즈 / quota hit 위험
+    - 가이드 STEP 6-2 를 "오늘 시작된 run 만 sync" 로 수정해서 회피
+
+가이드 보강 (drone_sim_fresh_training_start_guide.txt)
+  - STEP 6-2 의 `wandb sync wandb/offline-run-*`
+        → `wandb sync wandb/offline-run-$(date -u +%Y%m%d)_*` 로 교체
+  - 자정 걸침 케이스용 어제 날짜 병행 명령 주석 추가
+  - WandB 대시보드 URL 들 (L383, L514) 새 entity 로 교체
+  - "entity 가 도중 변경되면 옛 run 은 옛 entity 로 sync 되는 함정" 경고 추가
+
+선택 기록
+  ▶ [선택] team entity slug  →  nayoonho0922-seoul-national-university 확정
+                                ('-org' 접미사 form 은 teams 목록에 없어 채택 안 함)
+  ▶ [선택] smoke 길이         →  1k (sync 검증만 목적, 학습 신호 안 봐도 OK)
+  ▶ [선택] sync 모드          →  Offline + incremental sync 유지 (이전 IPC 데드락 회피)
+  ▶ [선택] 가이드 sync 명령   →  오늘 날짜 타임스탬프 필터 추가
+
+
+
+################################################################################
+#  PART 2.  코드/하이퍼파라미터 결정 사항 (회의에서 의사결정용)
+################################################################################
+
+이 파트는 "어떤 값을 어떻게 바꿀지" 를 회의에서 결정 받기 좋도록 정리한 것입니다.
+각 항목은 [현재값 → 권장값 → 영향 → 옵션 → 결정 필요]  형식.
+
+우선순위 표기:
+  🔴 HIGH    : 본 학습 진입 전 결정 필요. SAC 수렴 속도/안정성 직접 영향.
+  🟡 MEDIUM  : 영향 크지만 본 학습 도중에도 조정 가능.
+  🟢 LOW     : 검토만, 다음 사이클로 미뤄도 OK.
+
+이번 갱신본 추가 표기:
+  ✅ 적용 완료 + 10k smoke 검증 (회의에선 본 학습 진행 승인 받기 위함)
+  ❓ 여전히 결정 필요
+  ⚠ 검증 중 새로 부각된 한계
+
+
+════════════════════════════════════════════════════════════════════════════════
+ ✅ H1.  Reward Scale 평탄화   [적용 완료 + 검증]
+════════════════════════════════════════════════════════════════════════════════
+적용 :  옵션 A — terminal 만 축소 (w_drop_base 50→20, jackpot 100→30, instability 50→15)
+검증 :  critic_loss 가 일시 폭주(49.1) 후 안정화(32.9)로 떨어짐. terminal spike
+         부담 완화 효과 확인. ep_rew_mean 단조 개선.
+회의 :  본 학습 진입 OK 받기.  더 줄일 필요 있는지 의견은 받되, 추가 변경은 보류 권장.
+
+----- 이하 원본 의사결정 자료 (참고용) -----
+
+현재 reward 분포
+  step reward          : r2 ≈ -0.05 ~ -0.5,  r3 ≈ 0.1 ~ 2
+  crash penalty        : -10
+  target_lost penalty  : -10
+  overspeed penalty    : -8
+  drop jackpot         : +100   ← terminal spike
+  instability penalty  : -50    ← terminal spike
+  w_drop_base*exp(…)   : 최대 +50
+
+문제
+  Critic 신경망 한 개가 ±0.5 영역과 ±100 영역을 동시에 fit 해야 함.
+  결과적으로:
+    - terminal spike 에 Q 추정이 끌려가 variance 증가
+    - actor 가 noisy Q 에 끌려 unstable
+    - 학습 초반에 더 두드러짐 (이번 5k 학습에서 actor_loss 가 -3 → -21
+      급변한 것도 이 영향일 가능성)
+
+옵션
+  A. terminal 만 축소
+       w_drop_base 50 → 20,  r_success_jackpot 100 → 30,
+       penalty_instability 50 → 15
+     [장점] 코드 변경 최소.  [단점] step reward 와 격차는 여전히 큼.
+
+  B. 전체 normalize
+       step reward 를 0.1~1 범위에 맞추고 terminal 도 동등 스케일로
+       (모든 가중치 등비례 조정)
+     [장점] 가장 깔끔.  [단점] 모든 reward 가중치 재튜닝 필요.
+
+  C. VecNormalize(norm_reward=True) 추가 (SB3 표준 래퍼)
+     [장점] 코드 한 줄.  [단점] running stats 가 학습 초반엔 noisy.
+
+▶ 권장: A 먼저 적용 후 10k smoke → 안 잡히면 B
+▶ 결정 필요: [ ] A   [ ] B   [ ] C   [ ] 현재 유지
+
+
+════════════════════════════════════════════════════════════════════════════════
+ ✅ H2.  Drop Action 설계 충돌   [적용 완료 + 검증]
+════════════════════════════════════════════════════════════════════════════════
+적용 :  옵션 A — action[4] 제거, action_space 5→4-d.  CCIP auto-drop 만 활성.
+검증 :  학습 안정. drop_error 23.95→14.87m (38% 개선).
+한계 :  drop_count 여전히 1 (이번 10k, 이전 5k 모두). H2 적용해도 "한 번의
+         drop 이 더 정확해진" 효과만, drop 신호 sparse 문제는 별개. → N1 안건으로.
+회의 :  본 학습 진입 OK + N1 의 후속 조치 방향 논의.
+
+----- 이하 원본 의사결정 자료 (참고용) -----
+
+현재
+  action[4] : manual drop trigger (continuous, > 0 이면 drop 발사)
+  하지만    : auto_drop_threshold = 2.0 — CCIP 가 알아서 drop
+  결과       : 두 시그널이 충돌, SAC 가 action[4] 의 gradient 를 거의 못 받음
+
+증거 (5k smoke 결과)
+  drop_count    : 1         ← 학습 동안 drop 1번뿐
+  mean_rew_drop : 0         ← drop reward signal 사실상 0
+  action[4] 의 gradient sample 수: 12개 에피소드 × 평균 1회 = ~12개
+
+옵션
+  A. action[4] 제거, drop 은 auto-only.  action space 4-d 로 축소.
+     [장점] 가장 깔끔, manual drop 시그널 noise 제거
+     [단점] policy 가 drop 타이밍을 학습하지 못함 — CCIP 알고리즘에 의존
+
+  B. auto_drop 비활성화, manual drop 만 사용
+     [장점] policy 가 진짜로 drop policy 를 학습
+     [단점] 초반 학습이 훨씬 어려워짐 (sparse reward), 본 학습 timestep 증가 필요
+
+  C. mixed action space (4 continuous + 1 discrete)
+     [장점] 가장 원래 의도에 맞음
+     [단점] SAC 는 native 지원 안 함 → SAC-Discrete 또는 PPO 로 알고리즘 변경 필요
+
+▶ 권장: A 먼저 (가장 안전, 빠른 검증).  CCIP 정확도가 충분하다는 전제하에 유효
+▶ 결정 필요: [ ] A   [ ] B   [ ] C   [ ] 현재 유지
+
+
+════════════════════════════════════════════════════════════════════════════════
+ ✅ H3.  Gamma vs Episode Length   [적용 완료 + 검증]
+════════════════════════════════════════════════════════════════════════════════
+적용 :  옵션 A — gamma 0.99 → 0.995 (effective horizon ≈ 200)
+검증 :  ep_rew_mean 곡선이 이전 평탄/악화 → 단조 개선으로 전환. 신호 더 분명히 전파.
+회의 :  본 학습 진입 OK 받기.  0.999 까지 올릴지는 본 학습 결과 보고 후속 결정.
+
+----- 이하 원본 의사결정 자료 (참고용) -----
+
+현재
+  gamma     : 0.99
+  max_steps : 500
+
+계산
+  0.99^500 ≈ 0.0066  (사실상 0)
+  0.99^100 ≈ 0.366   (100 step 앞 보상의 가중치)
+  → effective horizon ≈ 100 step
+
+문제
+  드론이 timestep 300 에서 drop 한다면, timestep 0~50 의 행동이 drop reward 에
+  미친 영향은 0.99^250 ≈ 0.08 ← 거의 0
+  → 장기 maneuvering 의 credit assignment 가 끊김
+
+옵션
+  A. gamma : 0.99 → 0.995   (effective horizon ≈ 200)
+  B. gamma : 0.99 → 0.999   (effective horizon ≈ 1000)
+  C. max_steps 단축          (500 → 200)  ← 환경 측에서 horizon 줄임
+
+주의
+  - gamma 올리면 Q variance 증가 → H1 (reward scale) 같이 적용해야 함
+  - max_steps 줄이면 한 에피소드 안에 drop 안 끝나는 경우 페널티 처리 필요
+
+▶ 권장: A (안전 마진). H1 적용 후 같이.  B 는 더 공격적이라 후속 실험으로.
+▶ 결정 필요: [ ] A   [ ] B   [ ] C   [ ] 현재 유지
+
+
+════════════════════════════════════════════════════════════════════════════════
+ ✅ M1.  Replay Buffer Size   [적용 완료]
+════════════════════════════════════════════════════════════════════════════════
+적용 :  옵션 A — 100,000 → 500,000.  RAM 증가량 미미 (10k smoke 정상 도달).
+회의 :  본 학습 1M step 진입 시 그대로 유지 권장.
+
+----- 이하 원본 의사결정 자료 (참고용) -----
+
+현재 : buffer_size = 100_000
+  - 5k smoke 에는 충분
+  - 본 학습 1M step → 마지막 100k 만 남음 → 초기 다양성 데이터 catastrophic forgetting
+
+옵션
+  A. 500_000   (50% 보존)
+  B. 1_000_000 (전체 보존, GPU 메모리 확인 필요)
+
+▶ 권장: A 부터. RAM 여유 있으면 B.
+▶ 결정 필요: [ ] A   [ ] B   [ ] 현재 유지
+
+
+════════════════════════════════════════════════════════════════════════════════
+ ✅ M2.  gradient_steps — 데이터 재사용   [적용 완료 + 검증]
+════════════════════════════════════════════════════════════════════════════════
+적용 :  옵션 B — 1 → 4
+검증 :  n_updates 가 step 대비 약 3.6배로 증가 (32,528 / 9,000 학습 step).
+         critic_loss 가 일시 폭주 (11.4→49.1) 했지만 다시 32.9 로 안정화 →
+         회의 노트에 적은 "공격적 gradient_steps의 critic stability 모니터링" 가설
+         이 정확. 안정화 확인.
+회의 :  본 학습 진입 OK. 8 까지 올리는 건 본 학습 결과 보고 후속 결정.
+
+----- 이하 원본 의사결정 자료 (참고용) -----
+
+현재 : gradient_steps = 1
+  - yaml 주석에 이미 "Week 3 HP tuning: try 2" 라고 적혀 있음
+  - off-policy 의 장점인 sample reuse 를 못 살리는 중
+  - 환경 step 이 비싼 우리 환경 (fps 22~37) 에서 특히 손해
+
+옵션
+  A. gradient_steps : 2
+  B. gradient_steps : 4   (일반적인 UTD ratio)
+  C. gradient_steps : 8   (공격적; critic stability 모니터링 필요)
+
+▶ 권장: B 부터. critic_loss 폭주 안 하면 유지, 폭주하면 A.
+▶ 결정 필요: [ ] A   [ ] B   [ ] C   [ ] 현재 유지
+
+
+════════════════════════════════════════════════════════════════════════════════
+ 🟡 M3.  total_timesteps — 본 학습 길이
+════════════════════════════════════════════════════════════════════════════════
+
+현재 : 5000 (smoke 용)
+이전 : 1_000_000
+
+회의에서 결정할 것
+  - 본 학습 어디까지 갈지: 200k / 500k / 1M / 2M
+  - fps 22~37 기준 1M step ≈ 7~12시간 (gradient_steps=4 면 더 길어짐)
+
+▶ 결정 필요: [ ] 200k   [ ] 500k   [ ] 1M   [ ] 2M   [ ] 그 외(__________)
+
+
+════════════════════════════════════════════════════════════════════════════════
+ 🟢 L1.  action_yaw_scale — 너무 작을 가능성
+════════════════════════════════════════════════════════════════════════════════
+
+현재 :  vx 15.0  /  vy 5.0  /  vz 3.0  /  yaw 1.0 rad/s
+의문 :  yaw 1.0 rad/s 는 매우 느린 회전. 빠른 maneuver 가 어려움
+        의도적 제약인지 미튜닝인지 확인 필요
+
+▶ 결정 필요: [ ] 그대로 1.0    [ ] 2.0    [ ] 3.0    [ ] 의도적이므로 유지
+
+
+════════════════════════════════════════════════════════════════════════════════
+ 🟢 L2.  num_envs — 멀티 인스턴스 학습
+════════════════════════════════════════════════════════════════════════════════
+
+현재 : num_envs = 1
+yaml 주석: "Stable single-env (multi-env Gazebo lockstep overhead > benefit)"
+
+의문
+  - 인프라 코드는 r0~r3 4개를 지원하도록 짜여 있음 (이번 세션의 PX4 airframe
+    rootfs 동기화도 이걸 위한 것)
+  - 그런데 실제로 SubprocVecEnv 로 4개 띄워서 wall-clock 측정한 적 있는지?
+  - "lockstep overhead 가 benefit 보다 크다" 는 결론이 어떤 실험 근거인지 불분명
+
+▶ 결정 필요:
+   [ ] num_envs=1 유지 (이미 검증된 결론)
+   [ ] num_envs=2 또는 4 로 wall-clock 재측정 (인프라 활용)
+   [ ] PX4 airframe r1~r3 자체 제거 검토 (멀티 안 쓰면 불필요)
+
+
+════════════════════════════════════════════════════════════════════════════════
+ 🟢 L3.  learning_starts — 무작위 탐색 길이
+════════════════════════════════════════════════════════════════════════════════
+
+현재 : learning_starts = 1_000
+관찰 : safety_violation_rate = 1.0 이 5k 학습 내내 유지
+       → 초반 무작위 행동이 너무 자주 crash/overspeed 일으킴
+
+옵션
+  A. 5_000   (현재의 5배)
+  B. 10_000  (충분한 초기 탐색)
+
+▶ 결정 필요: [ ] 1k 유지   [ ] 5k   [ ] 10k
+
+
+════════════════════════════════════════════════════════════════════════════════
+ 🟢 L4.  Observation 정규화 클립
+════════════════════════════════════════════════════════════════════════════════
+
+현재 : obs[15] = d_impact / 50m,   obs[16] = t_f / 10s
+문제 : 50m 또는 10s 초과 시 1.0 이상 값이 들어감 (clip 없음)
+
+▶ 결정 필요: [ ] np.clip(.., -1, 1) 추가   [ ] scale 키워서 saturation 멀게
+
+
+════════════════════════════════════════════════════════════════════════════════
+ 🟢 L5.  Policy 아키텍처 — 시계열 정보
+════════════════════════════════════════════════════════════════════════════════
+
+현재 : MlpPolicy [256, 256]
+관찰 : observation 에 velocity 가 있어 1차 미분 정보는 있지만, 윈도우 정보 없음
+       → 비행체 dynamics 학습에 한계 가능
+
+옵션
+  A. Frame Stacking (n_stack=4)
+  B. sb3-contrib RecurrentSAC (LSTM)
+
+▶ 결정 필요: 본 학습 결과 보고 결정 (지금 결정 불요)
+
+
+════════════════════════════════════════════════════════════════════════════════
+ ✅ L6.  EvalCallback — 현 상태 유지로 결정   [검토 완료]
+════════════════════════════════════════════════════════════════════════════════
+결정 :  SB3 표준 EvalCallback + 세그먼트 env 는 우리 환경에선 sim cost 2배 (PX4+
+         Gazebo 한 set 띄우는데 90초+) 라 비현실적이라고 판단.
+대체 :  기존 BestModelCallback (학습 rollout ep_rew_mean 기반) 이 90% 의도 충족.
+         eval_freq 를 yaml config 로 빼서 smoke/본학습 분리 가능하게 함 (eval_freq=2000).
+         진짜 deterministic best 필요하면 학습 종료 후 evaluate.py 로 별도 측정.
+회의 :  결정 사항 공유만.
+
+----- 이하 원본 의사결정 자료 (참고용) -----
+
+현재 : evaluate.py 가 별도 스크립트
+누락 : 학습 도중 deterministic eval 주기적 측정이 없음
+       → best_model 폴더에 들어가는 게 진짜 best 인지 확인 어려움
+
+▶ 결정 필요: [ ] EvalCallback 추가   [ ] 별도 스크립트 그대로 유지
+
+
+════════════════════════════════════════════════════════════════════════════════
+ 🟢 L7.  PX4 airframe rootfs 영구 처리 (인프라)
+════════════════════════════════════════════════════════════════════════════════
+
+현재 : ROMFS → rootfs 로 cp 적용 (B 옵션), 컨테이너 라이프타임만 유효
+위험 : docker rm 이나 PX4 폴더 make clean 시 r0~r3 다시 사라짐
+
+옵션
+  A. `make px4_sitl_default` 한 번 돌려 영구화 (15~20분)
+  B. 현재 cp 상태 유지 + Dockerfile 또는 entrypoint 에 cp 단계 추가
+  C. 그냥 매번 cp 수동 (가이드 문서에 적힘)
+
+▶ 결정 필요: [ ] A   [ ] B   [ ] C
+
+
+
+════════════════════════════════════════════════════════════════════════════════
+ ⚠ N1.  Drop Sparse Signal   [신규 안건 — 검증 중 새로 부각]
+════════════════════════════════════════════════════════════════════════════════
+
+발견
+  10k smoke 와 이전 5k smoke 모두 drop_count = 1.  mean_rew_drop = 0.
+  H2 (action[4] 제거) 가 "한 번의 drop 의 정확도 향상" (23.95→14.87m, 38%개선) 은
+  가져왔지만, drop 자체가 한 번만 일어나는 sparse 문제는 그대로 남음.
+
+원인 추정
+  - CCIP auto_drop_threshold = 2.0m 가 충분히 가까워야 drop 발생
+  - 학습 초반엔 d_impact 가 평균 122m → drop 거의 못 함
+  - drop 안 일어나면 Layer 4 reward (w_drop_base · exp(-k2·error)) 신호 0
+  - 보상이 거의 R2 (efficiency) + R3 (approach) 에만 의존 → drop 학습 incentive 미미
+
+옵션
+  A. Curriculum threshold — auto_drop_threshold 를 학습 step 따라 점진 축소
+       예: 0~50k step 은 10m, 50k~ 는 2m. drop 많이 일어나게 한 뒤 정밀도로 이행.
+  B. d_impact reward 강화 — w_impact 2.0 → 5.0, k_impact 0.05 → 0.1
+       drop 안 일어나도 "drop 했으면 좋았을 위치" 에 가까울수록 큰 보상.
+  C. Terminal reward 시간적 분할 — drop 5 step 전부터 progressive reward 분배
+       sparse → dense 화. 구현 복잡.
+  D. 본 학습 (1M step) 그대로 진행 — drop_count 가 자연스럽게 늘어나는지 관찰
+
+▶ 권장: D 먼저 (변수 추가 없이 1M 가서 봄) → 안 늘어나면 A 시도
+▶ 결정 필요: [ ] A   [ ] B   [ ] C   [ ] D 권장   [ ] 그 외(________)
+
+
+################################################################################
+#  PART 3.  회의 흐름 제안 (최종 갱신 — 15분 가정)
+################################################################################
+
+이번 갱신: 권장값이 이미 적용되어 데이터로 검증된 상태라, 발표 톤이 "결정 받기"
+에서 "검증 결과 공유 + 본 학습 승인 + N1 후속 논의" 로 바뀜.  추가로 WandB 팀
+이전 이슈가 인프라 변경으로 한 줄 들어감.
+
+  0:00  Part 1 — 카메라 복구 / PX4 디버그 / SAC 5k smoke              (3분)
+  3:00  Part 1-5 — 권장값 적용 + 10k smoke 검증 결과                  (3분)
+          ・ ep_rew_mean 단조 개선 그래프
+          ・ Drop 정밀도 38% 향상 데이터
+          ・ critic_loss 폭주→안정화 (M2 안전성 확인)
+  6:00  Part 1-7 — WandB 팀 entity 이전 (NEW)                          (1분)
+          ・ junsanglee64 (free 만료) → nayoonho0922-seoul-national-univ
+          ・ 1k smoke 로 sync 검증 완료
+          ・ 가이드 STEP 6-2 함정 발견 → 날짜 필터로 회피
+  7:00  Part 2 — 적용 완료 항목 status 빠르게 (✅ H1/H2/H3/M1/M2/L6)  (2분)
+  9:00  남은 결정 — M3 total_timesteps 본 학습 길이                  (2분)
+ 11:00  남은 결정 — L7 PX4 영구화 (시점만)                            (1분)
+ 12:00  N1 — Drop sparse signal 후속 옵션                              (2분)
+ 14:00  마무리 — 본 학습 진입 승인 + N1 방향 합의                     (1분)
+
+
+핵심 메시지 (최종, 1줄)
+  "권장값 적용 후 10k smoke 에서 ep_rew_mean 단조 개선 + drop 정밀도 38% 향상
+   확인.  WandB 팀 entity 이전도 1k sync 로 동작 검증 완료.  본 학습 1M 진입해도
+   되는지 + drop sparse 신호 (N1) 후속 방향만 결정해주세요."
+
+
+================================================================================
+ 끝
+================================================================================

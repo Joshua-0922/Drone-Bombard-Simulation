@@ -8,6 +8,7 @@ import signal
 import sys
 import time
 
+import numpy as np
 import rclpy
 import yaml
 import wandb
@@ -47,45 +48,34 @@ class WandbMetricsCallback(BaseCallback):
     def __init__(self):
         super().__init__()
         self._ep_drop_errors: list = []
-        self._ep_success_flags: list = []
         self._step_d_xy: list = []
-        self._step_d_impact: list = []
-        self._step_rew_ctrl: list = []
-        self._step_rew_dist: list = []
-        self._step_rew_orient: list = []
         self._step_rew_drop: list = []
-        self._physics_glitch_count: int = 0
-        self._safety_violation_count: int = 0
-        self._total_steps: int = 0
+        self._total_episodes: int = 0
+        self._total_drops: int = 0
+        self._total_auto_drops: int = 0
+        self._total_success: int = 0
+        self._total_jackpot: int = 0
 
     def _on_step(self):
         infos = self.locals.get('infos', [])
         dones = self.locals.get('dones', [])
         for info, done in zip(infos, dones):
-            self._total_steps += 1
-            # physics_glitch steps: count for monitoring but DO NOT add their
-            # 'd_xy' to _step_d_xy — the key is 'glitch_d_xy' on glitch steps,
-            # so the 'd_xy' check below naturally skips them.
-            if info.get('physics_glitch'):
-                self._physics_glitch_count += 1
-            # Safety violations: Layer 1 crash or overspeed events
-            if info.get('crash') or info.get('overspeed'):
-                self._safety_violation_count += 1
             if 'd_xy' in info:
                 self._step_d_xy.append(info['d_xy'])
-            if 'd_impact' in info:
-                self._step_d_impact.append(info['d_impact'])
-            if 'rew_ctrl' in info:
-                self._step_rew_ctrl.append(info['rew_ctrl'])
-            if 'rew_dist' in info:
-                self._step_rew_dist.append(info['rew_dist'])
-            if 'rew_orient' in info:
-                self._step_rew_orient.append(info['rew_orient'])
             if 'rew_drop' in info:
                 self._step_rew_drop.append(info['rew_drop'])
-            if done and 'drop_error_actual_m' in info:
-                self._ep_drop_errors.append(info['drop_error_actual_m'])
-                self._ep_success_flags.append(float(info['is_success']))
+
+            if done:
+                self._total_episodes += 1
+                if 'drop_error_actual_m' in info:
+                    self._ep_drop_errors.append(info['drop_error_actual_m'])
+                    self._total_drops += 1
+                    if info.get('drop_trigger') != 'random':
+                        self._total_auto_drops += 1
+                    if info.get('is_success'):
+                        self._total_success += 1
+                    if info.get('jackpot'):
+                        self._total_jackpot += 1
         return True
 
     def _on_rollout_end(self):
@@ -104,38 +94,27 @@ class WandbMetricsCallback(BaseCallback):
         def _mean(lst):
             return sum(lst) / len(lst) if lst else None
 
-        for attr, key in (
-            ('_step_d_xy',       'env/mean_d_xy'),
-            ('_step_d_impact',   'env/mean_d_impact'),
-            ('_step_rew_ctrl',   'env/mean_rew_ctrl'),
-            ('_step_rew_dist',   'env/mean_rew_dist'),
-            ('_step_rew_orient', 'env/mean_rew_orient'),
-            ('_step_rew_drop',   'env/mean_rew_drop'),
-        ):
-            lst = getattr(self, attr)
-            if lst:
-                log_dict[key] = _mean(lst)
-                lst.clear()
+        if self._step_d_xy:
+            log_dict['env/d_xy'] = _mean(self._step_d_xy)
+            self._step_d_xy.clear()
+        if self._step_rew_drop:
+            log_dict['env/rew_drop'] = _mean(self._step_rew_drop)
+            self._step_rew_drop.clear()
 
         if self._ep_drop_errors:
-            log_dict['env/drop_error_actual_m'] = _mean(self._ep_drop_errors)
-            log_dict['env/success_rate'] = _mean(self._ep_success_flags)
-            log_dict['env/drop_count'] = len(self._ep_drop_errors)
+            log_dict['env/drop_error'] = _mean(self._ep_drop_errors)
             self._ep_drop_errors.clear()
-            self._ep_success_flags.clear()
 
-        if self._physics_glitch_count:
-            log_dict['env/physics_glitch_count'] = self._physics_glitch_count
-            self._physics_glitch_count = 0
-
-        if self._total_steps > 0:
-            log_dict['env/safety_violation_rate'] = (
-                self._safety_violation_count / self._total_steps)
-            self._safety_violation_count = 0
-            self._total_steps = 0
+        log_dict['env/total_episodes'] = self._total_episodes
+        log_dict['env/total_drops'] = self._total_drops
+        log_dict['env/total_auto_drops'] = self._total_auto_drops
+        log_dict['env/total_success'] = self._total_success
+        log_dict['env/total_jackpot'] = self._total_jackpot
 
         if log_dict:
-            log_dict['time/total_timesteps'] = self.num_timesteps
+            # NOTE: time/total_timesteps 는 위 L123 fetch 에서 이미 들어가지만,
+            # 그게 None 일 경우 대비 fallback 으로 num_timesteps 사용.
+            log_dict.setdefault('time/total_timesteps', self.num_timesteps)
             wandb.log(log_dict, step=self.num_timesteps)
 
 
@@ -224,6 +203,112 @@ class CleanupOldCheckpointsCallback(BaseCallback):
         return True
 
 
+class DropEpisodeRecorderCallback(BaseCallback):
+    """Save full trajectory data for episodes where a drop was triggered.
+
+    Each drop episode is stored as a compressed .npz containing the action
+    sequence (for replay), observations, rewards, and per-step metrics.
+    An index.csv is maintained for quick scanning.
+    """
+
+    def __init__(self, save_dir, verbose=0):
+        super().__init__(verbose)
+        self._save_dir = save_dir
+        self._best_dir = os.path.join(save_dir, 'best_drops')
+        os.makedirs(save_dir, exist_ok=True)
+        os.makedirs(self._best_dir, exist_ok=True)
+        self._buffers = {}
+        self._drop_count = 0
+        self._best_drop_error = float('inf')
+        self._index_path = os.path.join(save_dir, 'index.csv')
+        if not os.path.exists(self._index_path):
+            with open(self._index_path, 'w') as f:
+                f.write('filename,timestep,drop_error_m,is_success,'
+                        'episode_reward,n_steps\n')
+
+    def _get_buf(self, i):
+        if i not in self._buffers:
+            self._buffers[i] = {
+                'obs': [], 'act': [], 'rew': [],
+                'd_xy': [], 'd_impact': [],
+            }
+        return self._buffers[i]
+
+    def _on_step(self):
+        infos = self.locals.get('infos', [])
+        dones = self.locals.get('dones', [])
+        actions = self.locals.get('actions')
+        rewards = self.locals.get('rewards')
+        new_obs = self.locals.get('new_obs')
+
+        for i, (info, done) in enumerate(zip(infos, dones)):
+            buf = self._get_buf(i)
+            buf['act'].append(actions[i].copy())
+            buf['rew'].append(float(rewards[i]))
+            buf['obs'].append(new_obs[i].copy())
+            buf['d_xy'].append(info.get('d_xy', float('nan')))
+            buf['d_impact'].append(info.get('d_impact', float('nan')))
+
+            if done:
+                # Replace last obs with terminal observation (DummyVecEnv
+                # auto-resets and overwrites new_obs with the reset obs)
+                terminal_obs = info.get('terminal_observation')
+                if terminal_obs is not None:
+                    buf['obs'][-1] = terminal_obs.copy()
+
+                if 'drop_error_actual_m' in info:
+                    self._drop_count += 1
+                    drop_error = info['drop_error_actual_m']
+                    is_success = info.get('is_success', False)
+                    ep_reward = info.get('episode_reward', sum(buf['rew']))
+                    n_steps = len(buf['act'])
+
+                    fname = (f'drop_{self._drop_count:04d}'
+                             f'_step{self.num_timesteps}'
+                             f'_err{drop_error:.2f}m.npz')
+
+                    np.savez_compressed(
+                        os.path.join(self._save_dir, fname),
+                        actions=np.array(buf['act'], dtype=np.float32),
+                        observations=np.array(buf['obs'], dtype=np.float32),
+                        rewards=np.array(buf['rew'], dtype=np.float32),
+                        d_xy=np.array(buf['d_xy'], dtype=np.float32),
+                        d_impact=np.array(buf['d_impact'], dtype=np.float32),
+                        drop_error=np.float32(drop_error),
+                        is_success=np.bool_(is_success),
+                        episode_reward=np.float32(ep_reward),
+                        timestep=np.int64(self.num_timesteps),
+                        n_steps=np.int32(n_steps),
+                    )
+
+                    with open(self._index_path, 'a') as f:
+                        f.write(f'{fname},{self.num_timesteps},'
+                                f'{drop_error:.4f},{is_success},'
+                                f'{ep_reward:.2f},{n_steps}\n')
+
+                    if (drop_error < self._best_drop_error
+                            and info.get('drop_trigger') == 'auto'):
+                        self._best_drop_error = drop_error
+                        best_path = os.path.join(
+                            self._best_dir,
+                            f'best_err{drop_error:.2f}m_step{self.num_timesteps}')
+                        self.model.save(best_path)
+                        if self.verbose:
+                            print(f'[DropRecorder] NEW BEST (auto)! {drop_error:.3f}m '
+                                  f'→ model saved to {best_path}.zip')
+
+                    if self.verbose:
+                        print(f'[DropRecorder] Saved {fname} '
+                              f'(err={drop_error:.3f}m, rew={ep_reward:.1f},'
+                              f' {n_steps} steps)')
+
+                self._buffers[i] = {
+                    'obs': [], 'act': [], 'rew': [],
+                    'd_xy': [], 'd_impact': [],
+                }
+        return True
+
+
 def _parse_args():
     parser = argparse.ArgumentParser(
         description='Train SAC policy for drone fly-by drop.')
@@ -265,10 +350,12 @@ def main(args=None):
         'checkpoint_dir', '/workspace/ros2_ws/rl_checkpoints')
     checkpoint_freq = cfg_train.get('checkpoint_freq', 5_000)
     max_checkpoints_kept = cfg_train.get('max_checkpoints_kept', 5)
+    eval_freq = cfg_train.get('eval_freq', 10_000)   # L6: read from yaml
     _checkpoint_dir = checkpoint_dir
 
     best_model_dir = os.path.join(checkpoint_dir, 'best_model')
     archive_dir = os.path.join(checkpoint_dir, 'archive')
+    drop_episodes_dir = os.path.join(checkpoint_dir, 'drop_episodes')
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # --- Prune stale WandB offline-run directories (older than 7 days) ---
@@ -289,6 +376,12 @@ def main(args=None):
         resume='allow',   # re-attaches to existing run after preemption
     )
 
+    # ---- WandB x축 자동 매핑 (2026-05-23 추가) ----
+    # 모든 누적 count metric (env/total_*) 의 x축을 env/total_episodes 로 자동 설정.
+    # 대시보드 UI 수동 조작 불필요. rate 그래프의 binary 진동 문제 해결.
+    wandb.define_metric('env/total_episodes')
+    wandb.define_metric('env/total_*', step_metric='env/total_episodes')
+
     num_envs = cfg_train.get('num_envs', 1)
 
     print('=== SAC Drone Drop Training ===')
@@ -297,6 +390,7 @@ def main(args=None):
     print(f'  Checkpoints: {checkpoint_dir}')
     print(f'  Best model : {best_model_dir}')
     print(f'  Archive    : {archive_dir}')
+    print(f'  Drop eps   : {drop_episodes_dir}')
     print(f'  Device     : {cfg_sac.get("device", "cuda")}')
     print(f'  Num envs   : {num_envs}')
     print(f'  WandB run  : {wandb.run.name}')
@@ -327,7 +421,7 @@ def main(args=None):
     cleanup_callback = CleanupOldCheckpointsCallback(
         checkpoint_dir, 'sac_drop', keep_last=max_checkpoints_kept, verbose=1)
     best_model_callback = BestModelCallback(
-        save_path=best_model_dir, eval_freq=10_000, verbose=1)
+        save_path=best_model_dir, eval_freq=eval_freq, verbose=1)
     milestone_callback = MilestoneArchiveCallback(
         archive_dir=archive_dir, archive_freq=50_000, verbose=1)
     wandb_callback = WandbCallback(
@@ -336,10 +430,13 @@ def main(args=None):
         verbose=2,
     )
     wandb_metrics_callback = WandbMetricsCallback()
+    drop_recorder_callback = DropEpisodeRecorderCallback(
+        save_dir=drop_episodes_dir, verbose=1)
     callbacks = CallbackList([
         checkpoint_callback, cleanup_callback,
         best_model_callback, milestone_callback,
-        wandb_callback, wandb_metrics_callback])
+        wandb_callback, wandb_metrics_callback,
+        drop_recorder_callback])
 
     # --- Model ---
     if cli.resume:

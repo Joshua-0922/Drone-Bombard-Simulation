@@ -1,0 +1,127 @@
+================================================================================
+ Drone-Bombard-Simulation 작업 정리 — 2026-05-26
+ 세션 기간 : 2026-05-26
+ 직전 노트 : meeting_notes_2026-05-25.txt
+ 핵심 변화 : Round 1 분석 → Round 2 조율 → WandB 정리 → 첫 시도 실패 → 최종 수정
+================================================================================
+
+
+********************************************************************************
+*  PART 1 — Round 1 학습 결과 분석 (run ruozrv5x, 150k)
+********************************************************************************
+
+  학습 데이터 요약:
+    총 drop 에피소드:    432건
+    drop_error 범위:     4.64m ~ 69.45m
+    drop_error 평균:     14.02m
+    drop_error 중앙값:   12.21m
+    success (<5m):       1건 (0.2%) — 4.64m @ step 122k
+    episode_reward 범위: -243.3 ~ 351.9 (평균 94.7)
+    episode 길이 평균:   226.4 steps
+
+  25k 구간별 추세:
+    0~25k:    106건, avg err=16.6m, <10m=0.9%
+    25~50k:    60건, avg err=17.5m, <10m=5.0%  (최악 구간)
+    50~75k:    60건, avg err=13.0m, <10m=30.0% (개선 시작)
+    75~100k:   62건, avg err=13.3m, <10m=38.7%
+    100~125k:  76건, avg err=11.2m, <10m=56.6% (최선 구간)
+    125~150k:  68건, avg err=11.6m, <10m=33.8% (약간 정체)
+
+  핵심 문제 — 타겟 접근 실패:
+    후반 50건 d_xy 최소값 분석:
+      평균:   11.3m (auto_drop 3m에 한참 못 미침)
+      <10m:   21건 (42%)
+      <5m:    0건
+    드론이 9~11m까지 접근 후 선회/발산. 수렴 실패.
+
+  Best episode (4.64m, step 122k):
+    420 steps에 걸쳐 d_xy 14.9m → 4.6m (매우 느린 접근)
+    속도 1~3 m/s, 고도 4.8m → 8.3m (접근하며 상승)
+
+  전형적 후반 episode (12.40m):
+    d_xy 14.8m → 최소 9.3m (step 284) → 다시 12.5m으로 밀려남
+
+  근본 원인:
+    1) per-step shaping 누적이 drop 보상보다 큼 → 서두를 이유 없음
+    2) 10m 구간에서 drop 보상 gradient가 사실상 0
+       (proximity 1.5 + precision 0.7 = 2.2점 → noise에 묻힘)
+    3) auto_drop 3m에 한 번도 도달 못함 → 큰 보상 학습 기회 0
+    4) random drop이 10~15m에서 터져도 보상 미미
+
+
+********************************************************************************
+*  PART 2 — Round 2 파라미터 조율 결정
+********************************************************************************
+
+  논의 과정:
+    1. 접근 보상(w_dist) 2배만 하면? → 접근은 개선되지만 drop 학습 신호 부족
+    2. auto_drop_threshold 올리면? → 드론이 그 거리에서 멈추는 exploit 우려
+    3. k값을 낮춰서 gradient를 살리자 → 10m 구간에서도 학습 가능한 신호 확보
+
+  결정 — 3개 파라미터 변경:
+    w_dist:           0.5 → 1.0  (접근 보상 2배)
+    k2_precision:     0.5 → 0.2  (precision 감쇠 완만하게)
+    k_drop_proximity: 0.3 → 0.15 (proximity 감쇠 완만하게)
+
+  변경 전후 drop 보상 비교 (proximity + precision):
+    15m:  0.4 →  8.2
+    10m:  2.2 → 20.2
+     8m:  4.5 → 29.2
+     5m: 14.9 → 51.0
+     3m: 34.5 → 74.0
+     0m:  130 →  130
+
+  수정 파일:
+    - ros2_ws/src/rl_navigation/config/hyperparams.yaml
+    - ros2_ws/src/rl_navigation/rl_navigation/drone_drop_env.py (default값 동기화)
+
+
+********************************************************************************
+*  PART 3 — WandB metric 정리
+********************************************************************************
+
+  22개 → 8개로 축소:
+    유지: d_xy, rew_drop, drop_error, total_episodes,
+          total_drops, total_auto_drops, total_success, total_jackpot
+    제거: mean_d_impact, mean_rew_ctrl/dist/orient/impact,
+          drop_count, total_drop_random_count,
+          truncate 6종 개별, safety_violation, physics_glitch
+    이름 변경: mean_d_xy→d_xy, drop_error_actual_m→drop_error 등
+    상세: guides/wandb_metrics_guide.txt
+
+  train_sac.py 코드 수정 + install 미러링 완료
+
+
+********************************************************************************
+*  PART 4 — Round 2 첫 시도 (run dbi74uif) + 실패 분석
+********************************************************************************
+
+  학습 150k 완주 후 deterministic eval (3 episode):
+    EP1: steps=200 trigger=random drop_err=15.6m d_xy=15.8m reward=-25.8
+    EP2: steps=314 trigger=random drop_err=15.7m d_xy=15.7m reward=-20.1
+    EP3: steps=403 trigger=random drop_err=14.6m d_xy=14.6m reward=-20.1
+
+  문제: 타겟 접근 실패 (d_xy 14~16m)
+  원인: random_drop_start_step=150 → step 200에서 조기 drop
+        드론이 접근할 시간이 없음 (Round 1 best는 420 step 소요)
+
+  결정:
+    max_steps:              500 → 800 (접근 시간 확보)
+    random_drop_start_step: 150 → 600 (600 step 자유 접근)
+    종료 조건 추가:
+      max_altitude:   25m 초과 → truncate (-30)
+      stagnation:     200 step 내 d_xy 2m 미감소 → truncate (-15)
+                      step 200 이후부터 체크
+
+
+################################################################################
+#  관련 문서 (경로: /home/juns/Drone-Bombard-Simulation/local/)
+################################################################################
+
+  - issues/master.txt                    — 안건 전체 관리
+  - issues/issue_001 ~ issue_015         — 개별 안건
+  - design/design_review.md              — 최종 설계 요약
+  - parameter_log.md                     — 변경 이력
+  - guides/wandb_metrics_guide.txt       — WandB metric 정의 및 해석
+  - guides/post_training_verification_guide.txt — GUI 검증 절차
+  - guides/drone_sim_tmux_training_guide.txt    — 학습 실행 절차

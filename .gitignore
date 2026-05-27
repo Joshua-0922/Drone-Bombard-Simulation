@@ -67,3 +67,7 @@ ros2_ws/wandb/
 
 # RL checkpoints (large .zip and .pkl files)
 ros2_ws/rl_checkpoints/
+
+# Local docs (tracked) — conversation backups excluded
+local/conversation_backups/
+local/backups/

@@ -1,0 +1,652 @@
+================================================================================
+ Drone-Bombard-Simulation 작업 정리 — 2026-05-23
+ 세션 기간 : 2026-05-22 후반 ~ 2026-05-23
+ 직전 노트 : meeting_notes_2026-05-22.txt
+ 핵심 변화 : 200k v2/v3 연속 실패 → 근본 설계 점검 → Tier 1 (P1~P11) 16 항목
+              적용 → 5k dry-run 통과 → 200k junsang_v4 본학습 진입
+================================================================================
+
+
+********************************************************************************
+* 한 줄 요약
+*   두 번의 200k 학습 실패 (junsang_v2 critic 발산, junsang_v3 정책 학습 안 됨)
+*   후 사용자가 "근본부터 재설계" 요청. 11개 problem (P1~P11) 진단 + Tier 1
+*   16 항목 처방 (action scale 축소 + 가속도/속도/고도 제한 + early terminate +
+*   curriculum 10m + truncate_reason callback) 으로 정착. 5k dry-run 통과.
+*   200k junsang_v4 본학습 진행 중.
+********************************************************************************
+
+
+################################################################################
+#  PART 1.  Timeline (시간순)
+################################################################################
+
+─── 1-1. 200k N1=B v2 학습 완주 후 evaluate ──────────────────────────────────────
+
+상태 :  WandB run `um8txjvk`, 200k 자연 완주, sac_drop_final.zip 저장
+설정 :  junsang branch, w_impact=8, k_impact=0.03, speed_gate, online
+
+evaluate 5 epi (deterministic) :
+  - 0/5 drops, mean reward -6060
+  - trajectory_top.png : Target(11,10) → End(-16,23) 반대 방향
+사용자 GUI 관찰 :
+  - "드론이 처음부터 바닥에 부딪히면서 튕기다 어디론가"
+  - takeoff 도 실패
+
+진행 중 발견 :
+  - wandb API 로 19 drops 분석 → drop_error 17/19 회 정확히 14.8661m
+  - CCIP 1m 예측 vs 실제 14.87m → 14m systematic offset (시뮬 측 구조적 결함)
+
+선택 기록
+  ▶ [결정] 200k v2 학습 폐기. branch 교체 검토.
+
+
+─── 1-2. Branch 교체 — junsang → jekyun_v2 ──────────────────────────────────────
+
+배경 :
+  - 사용자가 다른 branch 에서 정상 동작 확인했다고 함
+  - 14m offset 원인은 RL parameter 아닌 sim 측
+
+branch 식별 :
+  - origin remote fetch refspec 이 main 만 fetch 하도록 제한 → jekyun_v2 안 보임
+  - 우회 : `git fetch origin jekyun_v2:refs/remotes/origin/jekyun_v2` (config 미변경)
+  - ls-remote 로 확인된 origin branch : main, jekyun_v2 (46bdb17), jekyun, donghyeok 등
+
+stash + checkout 트랩 :
+  - `git stash push -u` 가 untracked rl_eval_results/ (root 소유, docker cp 부산물)
+    제거 실패 → working tree rollback. stash entry 만 만들어짐
+  - 강제 `git checkout -f origin/jekyun_v2 -b jekyun_v2` 로 해결
+
+junsang vs jekyun_v2 비교 :
+  - 공통 부모 : 22247d3
+  - jekyun_v2 추가 commit 4개 :
+      09ea871 — spin thread crash + recursive reset + tiered recovery
+      8ddb82a — reward v2 첫 적용
+      c38592a — reward v2 orbit-milking 차단 (w_impact 0.2)
+      46bdb17 — reward v3 per-step 복구 (360K 실패 분석 후)
+  - 변경 파일 : drone_drop_env.py (+140), hyperparams.yaml, RL_analysis.md (431줄
+    신규), notes/errors/err_20260520_spin_thread_recursive_reset.md
+  - CCIP/world/launch 파일 변경 없음 → 14m offset 원인은 drone_drop_env.py 안
+
+결정적 발견 — jekyun_v2 의 commit 09ea871 의 4가지 안정성 patch :
+  1. _spin_loop (resilient spin thread) — rclpy.spin 예외 시 자동 재시작
+  2. _reset_depth recursion guard — CRUISE timeout 무한 재귀 방지
+  3. Tiered CRUISE recovery — fast path vs full infra restart
+  4. _kill_infra pkill 폴백 — reused infra 의 옛 PX4 잔재 차단
+
+→ 14m offset 진짜 원인 = 우리 junsang 이 위 4가지 patch 받지 못해 spin thread
+   crash + 옛 PX4 잔재 → CCIP 좌표 오염
+
+선택 기록
+  ▶ [결정] jekyun_v2 base 채택. 우리 H3/M1/M2 + measurement callback 만 얹음.
+
+
+─── 1-3. junsang_v2 셋업 (200k 본학습 1차) ─────────────────────────────────────
+
+설정 :
+  - Branch : jekyun_v2 + 우리 변경 (yaml + train_sac.py)
+  - Base : jekyun_v3 reward 그대로 (w_impact=0.4, drop_attempt_bonus=150,
+           truncation_penalty=-80, k2_precision=0.3, w_drop_base=100, ...)
+  - 추가 : H3 (gamma 0.995), M1 (buffer 500k), M2 (gradient_steps 4),
+           L6 (eval_freq config), mean_rew_impact + total_drop_count callback
+  - WandB run_name : "junsang_v2", online
+
+200k 학습 결과 (run `zn7xrm7e`, 실패) :
+  - state=finished, total_timesteps=200000, n_updates=795,996
+  - env/total_drop_count : 106 (이전 N1=B v2 의 0 대비 큰 개선)
+  - env/drop_error_actual_m (마지막) : 9.02m (14m offset 없음)
+  - env/mean_d_xy : 32.68m (정책 망가짐)
+  - train/critic_loss : 17,047 ← **완전 발산** (정상 ~100)
+  - train/actor_loss : -2,027 ← 발산
+  - train/ent_coef : 1.113 ← 시작값 1.0 보다 큼 (SAC auto-temp 통제 불능)
+
+Timeline 분석 (40 sample) :
+  - Phase 1 (0~30k) : critic 27→222, d_xy 117→12, drops 1→15 ✓ 정상
+  - Phase 2 (30~60k) : critic 222→657, 진행 ⚠
+  - Phase 3 (63k 부근) : critic 685 → **8,400 (10배 점프)** 🚨
+  - Phase 4 (71~200k) : critic 5K~21K 진동, ent_coef 1.05~1.35 진동
+
+진단 :
+  - M2 (gradient_steps=4) + jekyun v3 의 큰 terminal reward (drop_attempt_bonus
+    150 + w_drop_base 100 + jackpot 100 = 최대 +350, truncation -80) 조합이
+    critic 폭주의 원인
+  - 63k = buffer 의 ~13% 시점에 학습 본격화 → critic 이 큰 spike 를 4배 빠르게
+    fit 하려다 발산
+
+선택 기록
+  ▶ [결정] M2 만 단독 복원 (gradient_steps 4→1). M1/H3 는 유지. junsang_v3 시작.
+
+
+─── 1-4. junsang_v3 — M2 복원 학습 (159k 부분 진행 후 사용자 중단) ───────────
+
+설정 :
+  - Base : junsang_v2 와 동일 (jekyun_v3 reward + M1/H3 + callback)
+  - 변경 : sac.gradient_steps 4 → 1 (M2 REVERTED)
+  - WandB run_name : "junsang_v3", online
+
+진행 결과 (run `w9flirvp`, 159k 시점) :
+  - state=running 도중 사용자 중단
+  - train/critic_loss : 18.5 ← **918배 안정** (이전 17K → 18.5)
+  - train/actor_loss : +55 (양수, 다만 변동)
+  - train/ent_coef : 0.115 ← **단조 감소** (1.0 → 0.115) ✓
+  - env/total_drop_count : 57 (159k 까지)
+  - env/drop_error_actual_m (마지막) : 8.99m
+  - env/mean_d_xy : 19.46m (정체)
+  - env/mean_rew_dist : -0.002 (사실상 0)
+  - env/mean_rew_orient : -0.534 (드론이 타겟 안 향함)
+  - env/safety_violation_rate : 0 → 1.0 binary
+
+진단 :
+  - SAC 측은 완전 안정성 회복 ✓ — M2 가 단독 critic 폭주 원인 확정
+  - 그러나 정책 학습 자체가 안 일어남 — env/reward 측 근본 문제
+  - 사용자 GUI 관찰 : "전혀 학습되지 않았다"
+
+사용자 통찰 (이 시점 급증) :
+  ▶ "훈련이 전혀 안 되고 있어"
+  ▶ "드론이 바닥에 부딪혀 튕기는데, 바닥 닿으면 안 되는 법칙 추가"
+  ▶ "훈련의 방향 제대로 잡아야"
+  ▶ "문제점이 무엇인지 제대로 파악"
+  ▶ "parameter 추가/제거도 좋겠음"
+  ▶ "훈련의 목표를 2m 아니라 10m 안으로 → 일단 성공하고 더 나아가기"
+  ▶ "훈련 중간부터 이상하게 학습되는 경우 많음. 제한 조건을 강하게"
+  ▶ "안 좋은 학습은 시작부터 과감히 쳐내야"
+  ▶ "이후 긴 학습에 악영향을 안 줄거야"
+  ▶ "우린 설계를 근본부터 바꿔야 할 것 같아. 한번 점검을 해볼 타이밍"
+  ▶ "큰 - 를 어떻게 줄건지? 역효과 내진 않을까? 어떻게 설계?"
+  ▶ "절대 안 좋은 학습 (급격한 가속, 매우 큰 흔들림 등) 정의"
+  ▶ "속도 변화 (가속도) 제한 + 최대 속도 제한 + 고도 최저선"
+
+선택 기록
+  ▶ [결정] junsang_v3 학습 중단. 근본 설계 점검 진행.
+
+
+─── 1-5. 근본 설계 점검 — design_review_2026-05-23.md 작성 ────────────────────
+
+목적 : parameter tweak 가 아닌 **시스템 흐름 전체 점검**
+
+작성 산출물 :
+  /home/juns/design_review_2026-05-23.md (753 줄, 9 섹션)
+
+문서 구조 :
+  § 0. 목차 (TOC)
+  § 1. 현재 시스템 흐름 + Tier 1 적용 후 새 흐름
+  § 2. 발견된 문제점 → 고찰 → 해결 (P1~P11 Executive Summary)
+  § 2A. RL 설계 원칙 — 큰 페널티 / Early termination 의 역효과 검토
+  § 2B. 학습 진행 자동 판단 기준 (2B-1 "절대 안 좋은 행동" 정의, 2B-2 추세
+        모니터, 2B-3 구현 옵션)
+  § 3. 컴포넌트별 진단 (3-1 Action / 3-2 Obs / 3-3 Reward 4-Layer /
+       3-4 Episode / 3-5 CCIP / 3-6 SAC)
+  § 4. 사용자 관찰 → 진단 매핑
+  § 5. 처방 매트릭스 (Tier 1 15 항목 + Tier 2 4 + Tier 3 4)
+  § 6. 새 학습 사이클 plan (6-1 사전 정리 / 6-2 yaml / 6-3 code /
+       6-4 미러 / 6-5 run_name+log / 6-6 검증)
+  § 7. 폐기/유지 결정
+  § 8. 폐기된 시도들 (참고)
+  § 9. 다음 행동
+
+
+─── 1-6. 9 회차 검토 + 보완 ────────────────────────────────────────────────────
+
+사용자 요청 : "보완 사항이 많이 발견된다. 한번 더 점검을 시행해보자." (총 3번 반복)
+
+검토 라운드 (각 회차마다 논리/완전성/명확성 3종 검사) :
+  1차 (회차 1-3) : 13 issue 보완 — sub-section 번호, P 매핑, code if-elif,
+                    P2 가속도 계산, TOC 추가 등
+  2차 (회차 4-6) : 21 issue 보완 — truncate_reason callback 추가, 5k dry-run
+                    정량 기준, jekyun v3 reward 유지 명시, metric 명 표준화 등
+  3차 (회차 7-9) : 14 issue 보완 — 실제 코드 grep 으로 signature 확인 후
+                    _compute_reward 3-tuple 반환 + drop terminate 별도 분기
+                    + V_MAX_SAFETY hardcoded + wandb run_id 명시
+
+총 48 issue 발견 + 보완. 매 라운드마다 더 깊은 issue 발견.
+
+
+─── 1-7. Tier 1 적용 — 16 항목 ─────────────────────────────────────────────────
+
+사전 정리 :
+  - Container sim process 모두 종료 (pkill -9)
+  - 임시 파일 정리 (/dev/shm/fastrtps_*, /tmp/px4_lock-*, etc)
+  - junsang_v3 체크포인트 archive 이동
+    (`archive/junsang_v3_w9flirvp_failed_2026-05-23/`)
+
+Yaml 변경 (11 키) :
+  environment:
+    action_vx_scale         : 15.0 → 8.0          (P1)
+    action_rate_limit       : NEW → 0.2           (P2)
+    min_altitude            : 2.0 → 3.0           (P4)
+    min_altitude_start_step : 20 → 10             (P4)
+  reward:
+    penalty_crash           : -10 → -100          (P5)
+    penalty_overspeed       : -8 → -50            (P3)
+    auto_drop_threshold     : 4.0 → 10.0          (P6, curriculum phase 1)
+    truncation_penalty      : -80 → -30           (P8)
+    limit_inverted_tilt     : NEW → 1.047 (60°)   (P11)
+    penalty_bad_attitude    : NEW → -50           (P11)
+  wandb:
+    run_name                : "junsang_v3" → "junsang_v4"
+
+drone_drop_env.py 변경 :
+  - cfg 로드 5 키 추가 (_cfg_action_rate_limit, _cfg_limit_inverted_tilt,
+    _cfg_penalty_bad_attitude, _cfg_drop_attempt_bonus, _cfg_truncation_penalty)
+  - step() : P2 action rate clip 추가 (action 받자마자)
+  - step() : _compute_reward 호출 후 P11 safety 검사 + truncated 결정
+             (crash > overspeed > ang_vel > inverted 우선순위)
+  - step() : max_steps timeout 처리에 truncate_reason='timeout' 추가
+
+train_sac.py callback 변경 :
+  - WandbMetricsCallback : _truncate_counts dict + _rollout_done_episodes counter
+  - _on_step : info['truncate_reason'] 집계
+  - _on_rollout_end : env/truncate_<reason>_rate 5 metric + env/drop_terminated_rate
+    wandb 로깅 (총 6 신규 metric)
+
+숨겨진 버그 발견 (적용 중) :
+  - drop_attempt_bonus = 150 (L653) 과 truncation_penalty = -80 (L695) 가
+    코드에 hardcoded
+  - 즉 이전 entry 의 yaml 변경 (예: jekyun v3 의 truncation_penalty=-80) 이
+    사실상 무력했음
+  - cfg 로드 + 코드 사용 변경 으로 정정
+
+검증 :
+  - Python syntax 검증 (ast.parse) — 양 파일 통과 ✓
+  - 모든 변경 install/share 미러링 완료
+
+
+─── 1-8. 5k Dry-run 통과 (`ujvpo8ry`) ──────────────────────────────────────────
+
+설정 : total_timesteps=5000, WANDB_MODE=offline
+
+결과 (final rollout) :
+  - Training complete ✓ (자연 완주)
+  - 88 episodes / 4754 steps → 평균 ep_len = 54 (이전 ~500 대비 90% 감소)
+  - critic_loss : 24.6 (junsang_v2 의 17K 대비 700배 안정)
+  - actor_loss : -36.5 (정상 범위)
+  - ent_coef : 0.4 (단조 감소 진행 중)
+  - env/drop_count : 1 (마지막 rollout)
+  - env/drop_terminated_rate : 1.0 (마지막 rollout 모든 done = drop)
+  - env/drop_error_actual_m : 10.21m (10m threshold 거의 도달)
+  - env/mean_d_xy : 20.33m (5k 짧아 학습 초기)
+
+통과 기준 검증 :
+  ✓ Training complete
+  ✓ RuntimeError / Traceback 없음
+  ✓ env/total_drop_count ≥ 1
+  ✓ env/mean_d_xy NaN 아님
+  ✓ rollout/ep_len_mean < 500 (early terminate 작동)
+
+핵심 통찰 :
+  - Tier 1 처방이 의도대로 작동
+  - Early terminate ✓ — bad transition buffer 누적 해결
+  - Critic 안정 ✓ — action rate clip + early terminate 의 효과
+  - Drop 학습 시작 ✓ — 마지막 rollout 모두 drop
+
+
+─── 1-9. 200k 본학습 진입 — junsang_v4 ─────────────────────────────────────────
+
+정리 후 :
+  - tmux 'train' session 종료
+  - host docker exec process 0
+  - container sim process 0
+  - tmp/shm/launch_params 모두 정리
+  - rl_checkpoints/best_model 비움
+  - 5k dry-run final 도 archive 이동
+    (`archive/junsang_v4_dryrun5k_ujvpo8ry_2026-05-23/`)
+
+시작 명령 (사용자 직접 실행) :
+  tmux new -s train
+  docker exec -it drone-bombard-harmonic bash
+  # 안에서:
+  source /opt/ros/humble/setup.bash
+  source /workspace/ros2_ws/install/setup.bash
+  export WANDB_MODE=online
+  cd /workspace/ros2_ws
+  ros2 run rl_navigation train_sac 2>&1 | tee /tmp/train_junsang_v4_200k.log
+
+상태 : **학습 진행 중** (이 문서 작성 시점)
+WandB run_id : (학습 끝나면 사용자가 알려줌)
+
+
+
+################################################################################
+#  PART 2.  사용자 통찰 정리 (이번 세션 핵심 기여)
+################################################################################
+
+이번 세션은 사용자 통찰이 진단 + 처방의 거의 모든 부분을 주도. 정리 :
+
+─── 2-1. 진단 측 통찰 ─────────────────────────────────────────────────────────
+
+① "훈련이 전혀 안 되고 있어"
+   → SAC 안정성과 정책 학습은 별개 — junsang_v3 의 critic 18.5 안정 vs
+      mean_d_xy 19.46m 정체. M2 단독 lever 만으론 부족.
+
+② "드론이 바닥에 부딪혀 튕기는 장면이 많아"
+   → P4 (고도 최저선) + P5 (crash penalty) + P11 (inverted) 진단 트리거
+
+③ "시작하자마자 막 튀어나가거나"
+   → P1 (action_vx_scale 15) + P2 (가속도 제한 없음) 진단
+
+④ "중간부터 이상하게 학습되는 경우 많음"
+   → P9 (early termination 부재) → bad transition buffer 누적 진단
+
+⑤ "안 좋은 학습은 시작부터 과감히 쳐내야"
+   → P9 + P11 처방의 핵심 — 망가진 sample 즉시 episode 종료
+
+⑥ "drops 발생해도 학습 안 됨"
+   → P6 (CCIP threshold 4m 빡셈) — drops 가 우연 효과지 학습된 행동 아님
+
+─── 2-2. 처방 측 통찰 ─────────────────────────────────────────────────────────
+
+① "훈련의 목표를 2m 아니라 10m 안으로 → 일단 성공"
+   → P6 처방 : auto_drop_threshold 4 → 10 (curriculum phase 1)
+
+② "바닥 닿으면 안 되는 법칙 추가"
+   → P5 처방 : penalty_crash -10 → -100 + crash 시 truncated=True
+
+③ "제한 조건을 강하게"
+   → P3 처방 : penalty_overspeed -8 → -50 + truncate
+
+④ "속도 변화 (가속도) 제한"
+   → P2 처방 : action_rate_limit 0.2 hard clip (코드 NEW)
+
+⑤ "최대 속도에도 제한"
+   → P1 처방 : action_vx_scale 15 → 8
+
+⑥ "고도에도 최저선"
+   → P4 처방 : min_altitude 2 → 3, start_step 20 → 10
+
+⑦ "절대 안 좋은 학습 (급격한 가속, 매우 큰 흔들림) 정의"
+   → P11 처방 : step 별 |ω|>2.0 + |roll/pitch|>60° 검사 + truncate
+
+─── 2-3. 메타 통찰 (RL 설계 원칙) ─────────────────────────────────────────────
+
+① "큰 - 를 어떻게 줄건지? 역효과 내진 않을까? 어떻게 설계?"
+   → § 2A 작성 (역효과 1 Cliff effect, 2 Reward variance, 3 Death-seeking)
+   → 핵심 원칙 4가지 정착 :
+       a. 나쁜 행동의 페널티 ≤ 좋은 행동의 보상 (death-seeking 방지)
+       b. Terminate 가 페널티의 역할 — 큰 -negative 위험
+       c. Truncation 페널티 작게 — "안 좋음" ≠ "재앙"
+       d. 점진적 강화
+
+② "안 좋은 학습 판단 근거"
+   → § 2B 작성 — 자동 모니터링 metric (정상 신호 + 발산 신호)
+   → P11 의 truncate_<reason>_rate callback 으로 객관 진단 가능
+   → wandb_watch.py 외부 스크립트 (Tier 2)
+
+③ "근본부터 다시 설계 + 점검"
+   → design_review_2026-05-23.md 작성 (753 줄)
+   → 사용자 명시 검토 3 라운드 × 3 회 = 9 회 검토 진행
+   → 48 issue 발견 + 보완
+
+
+
+################################################################################
+#  PART 3.  현재 상태 + 다음 단계
+################################################################################
+
+─── 3-1. 현재 상태 (2026-05-23, 본학습 진입 시점) ──────────────────────────────
+
+Branch :  jekyun_v2 (local) = origin/jekyun_v2 (commit 46bdb17) + Tier 1 변경
+
+활성 설정 (요약) :
+  - SAC : buffer_size 500k (M1), gamma 0.995 (H3), gradient_steps 1 (M2 REVERTED)
+  - Reward : jekyun v3 (w_drop_base 100, jackpot 100, drop_attempt_bonus 150,
+             k2_precision 0.3, w_dist 0.5, w_heading 0.7, w_impact 0.4)
+  - Tier 1 변경 (Part 1-7) : 11 yaml 키 + 4 코드 patch + 1 callback
+  - WandB run_name : "junsang_v4", mode=online
+
+학습 진행 :
+  - **200k junsang_v4 본학습 진행 중**
+  - 예상 시간 : 2~10 시간 (fps 5~25 기준)
+  - 모니터링 (10~30분 단위 wandb 대시보드) :
+      env/total_drop_count (stair-step ↑)
+      env/drop_terminated_rate (단조 ↑)
+      env/truncate_crash_rate (단조 ↓)
+      env/mean_d_xy (단조 ↓, 목표 ≤ 10m)
+      train/critic_loss (< 500 안정)
+      train/ent_coef (단조 감소 1.0 → 0.2)
+
+
+─── 3-2. 200k 완주 후 성공 판정 (design_review §6-6 Step 3) ─────────────────
+
+성공 기준 :
+  - env/total_drop_count ≥ 30
+  - env/mean_d_xy (final) ≤ 10m
+  - env/truncate_crash_rate (final) < 0.1
+  - train/critic_loss (final) < 500
+  - train/ent_coef (final) < 0.5
+  - Deterministic evaluate 5 epi : drops ≥ 2
+
+분기 :
+  ▶ 성공 (위 6개 중 5개 이상) → Run #13 : auto_drop_threshold 10→5
+                                 (curriculum phase 2) 또는 200k → 500k resume
+  ▶ 부분 성공 (drops 있지만 d_xy 정체) → Tier 2 : per-step reward 강화
+                                          (w_dist 0.5→1.0, w_heading 0.7→1.0)
+  ▶ 실패 (drops < 5, d_xy > 30m) → Tier 1 수치 재조정 또는 Tier 3 (obs 정규화)
+
+
+─── 3-3. WandB 데이터 보존 ────────────────────────────────────────────────────
+
+사용자 질문 답 : "1000k 가도 학습 초반 데이터 사라지지 않음"
+  - WandB 모든 rollout metric cloud 영구 저장 (sampling 없음)
+  - api.run().scan_history() 로 첫 step 부터 모두 retrieve 가능
+  - 대시보드 plot 자동 downsample 만 (raw data 그대로)
+  - SNU 팀 무료 tier ~100GB — 200k 학습 1~2GB 수준
+
+체크포인트 보존 :
+  - Rolling : max_checkpoints_kept=5 (마지막 5개만)
+  - Milestone : 50k 마다 자동 archive (200k = 4개 milestone, 1M = 20개)
+  - Final : 학습 끝 sac_drop_final.zip 1개
+
+추후 1M 까지 가는 흐름 (200k 결과 보고 결정) :
+  - 200k 성공 → resume 로 500k → 1M 단계적 (한번에 1M 위험)
+
+
+
+################################################################################
+#  PART 4.  보존된 자료 위치
+################################################################################
+
+─── 4-1. 호스트 측 문서 (5/23 후반 폴더 정리 후 위치) ─────────────────────────
+
+[NOTE] 본 노트 작성 후 (5/23 후반) /home/juns/Drone-Bombard-Simulation/local/
+폴더 신설 + 모든 문서 이동. 아래는 현재 위치 (이전 모두 /home/juns/ 직속이었음).
+
+루트 (`/home/juns/Drone-Bombard-Simulation/local/`) :
+  README.md                       (전체 가이드 + 빠른 시작)
+  design_review_2026-05-23.md     (753 줄, 9 회차 검토)
+  parameter_log.md                (parameter history, entry #12)
+  A_phased_curriculum_도입방안.md  (Tier 3 phased curriculum 참조)
+
+meeting_notes/ (누적) :
+  meeting_notes_2026-05-20.txt    (5/20-21 작업)
+  meeting_notes_2026-05-22.txt    (5/22 작업)
+  meeting_notes_2026-05-23.txt    (이 문서)
+
+conversation_backups/ (compact 전 보존) :
+  conversation_backup_2026-05-21.txt
+  conversation_backup_2026-05-23.jsonl  (raw, 9.3MB)
+  conversation_backup_2026-05-23.txt    (readable, 480KB, 667 메시지)
+
+guides/ (현재 실행 가이드) :
+  drone_sim_tmux_training_guide.txt  (v3 리뉴얼, junsang_v4 시점)
+
+evals/ (evaluate 결과 누적) :
+  n1b_v2_200k_2026-05-22/  (junsang N1=B v2 evaluate — 학습 실패 증거물)
+
+backups/ (큰 snapshot) :
+  backup_2026-05-20_drone-bombard/    (27MB)
+  backup_pre_pull_2026-05-22/         (4.7GB, 8 카테고리 — repo/wandb/
+    rl_checkpoints/install/docs/eval_results/memory/scripts +
+    local_dronebombard_simulation_2026-05-23/ + memory_2026-05-23/)
+
+archive/ (완료된 plan + 옛 가이드) :
+  branch_pull_plan_2026-05-22.txt
+  change_inventory_pre_pull_2026-05-22.md
+  parameter_조절_의사결정_guide.md  (DEPRECATED)
+  drone_sim_training_guide.txt      (5/19 옛 가이드)
+  drone_sim_fresh_training_start_guide.txt
+  wandb_incremental_sync.sh
+  restore_guide/                    (5/21 manifest, DEPRECATED)
+
+외부 (이동 안 한 것) :
+  /home/juns/Downloads/N1_drop_sparse_AB방안.md  (원본 그대로)
+  /home/juns/Drone-Bombard-Simulation/           (코드 git repo)
+
+
+─── 4-2. 컨테이너 측 archive ──────────────────────────────────────────────────
+
+/workspace/ros2_ws/rl_checkpoints/archive/ :
+  - n1_d_baseline_2026-05-21/
+  - n1_b_w5_k05_2026-05-22/
+  - dry_run_2026-05-21/
+  - junsang_v2_200k_failed_2026-05-22/  (critic 17K 발산)
+  - junsang_v3_w9flirvp_failed_2026-05-23/  (정책 학습 실패)
+  - junsang_v4_dryrun5k_ujvpo8ry_2026-05-23/  (Tier 1 5k 통과)
+  - sac_drop_milestone_<50k|100k|150k|200k>.zip  (자동 milestone)
+
+
+─── 4-3. WandB run history ────────────────────────────────────────────────────
+
+team : nayoonho0922-seoul-national-university
+project : drone-bombard-sac
+
+진행 history :
+  pwkujvev (2026-05-20)  — 10k smoke (H1+H2+H3+M1+M2)
+  4he5fw3c (2026-05-20)  — jekyun 360K v2 (실패) — RL_analysis.md 참조
+  06x7kpot (2026-05-19)  — jekyun 118K v1 (성공) — 참고
+  um8txjvk (2026-05-22)  — junsang N1=B v2 200k (실패, w_impact=8)
+  zn7xrm7e (2026-05-22)  — junsang_v2 200k (critic 발산)
+  w9flirvp (2026-05-23)  — junsang_v3 159k (정책 학습 실패)
+  ujvpo8ry (2026-05-23, offline)  — junsang_v4 5k dry-run 통과
+  (current) — junsang_v4 200k 본학습 진행 중
+
+
+─── 4-4. Claude 메모리 (auto-load) ────────────────────────────────────────────
+
+/home/juns/.claude/projects/-home-juns/memory/ :
+  MEMORY.md                                              (인덱스)
+  feedback_local_only.md                                 (NEVER push to github)
+  feedback_ros2_install_cache.md                         (src/install sync)
+  feedback_train_sac_graceful_kill.md                    (SIGINT pattern)
+  feedback_simulation_offset_root_cause.md               (14m offset 진단법)
+  project_drone_sim.md                                   (컨테이너 구조)
+  project_px4_airframe_sync.md                           (rootfs cp)
+  project_n1b_200k_training.md                           (DEPRECATED, N1=B v2 실패)
+  project_junsang_v2_setup_2026-05-22.md                 (DEPRECATED, junsang_v2/v3 실패)
+  project_junsang_v4_setup_2026-05-23.md                 (CURRENT, 현재 학습)
+
+
+
+################################################################################
+#  PART 5.  핵심 교훈 (이번 세션의 학습)
+################################################################################
+
+─── 5-1. 진단 분리 — SAC 안정성 vs 정책 학습 ──────────────────────────────────
+
+junsang_v2 → junsang_v3 비교가 명확히 보여줌 :
+  - junsang_v2 : critic_loss 17K (발산), drops 106 → SAC 측 망가짐
+  - junsang_v3 : critic_loss 18 (안정), drops 57 → SAC 측 정상, 정책만 못 배움
+
+→ **SAC parameter (M1/M2/H3) 와 정책 학습 능력은 별개**. SAC 안정성 회복했다고
+   학습 성공 보장 X. Env/reward 측 학습 신호가 별도로 필요.
+
+
+─── 5-2. Hardcoded 값의 함정 ───────────────────────────────────────────────────
+
+drop_attempt_bonus=150, truncation_penalty=-80 두 핵심 reward 가 코드에
+hardcoded 였음 (L653, L695). yaml 변경이 사실상 무력했음.
+
+→ **새 prescription 적용 시 grep 으로 실제 사용 위치 확인 필수**.
+   yaml 키 추가만으로는 안 됨 — 코드의 self._cfg_* 로드 + 사용처 확인.
+
+
+─── 5-3. 사용자 GUI 관찰의 가치 ────────────────────────────────────────────────
+
+200k 학습 후 evaluate 의 deterministic policy 를 GUI 로 직접 보지 않았으면
+  - wandb metric (mean_d_xy=32m, drops=106) 만으로는 "잘 안 됐다" 정도만
+  - GUI 관찰 ("바닥에 부딪혀 튕기다 어디론가") 이 P4/P5/P11 진단의 트리거
+
+→ **학습 끝날 때마다 deterministic evaluate + GUI 관찰 권장**. 수치만으로는
+   bad sample 의 정성적 특성 못 봄.
+
+
+─── 5-4. Reward 설계의 cliff vs gradient ───────────────────────────────────────
+
+junsang N1=B v2 (w_impact=8) 의 per-step 강화 → orbit-milking
+jekyun v3 (w_impact=0.4 + drop_attempt_bonus=150) 의 sparse-dense 균형 → critic 폭주
+junsang_v3 (M2=1) → SAC 안정 but 학습 동기 부족
+
+해결 = **early terminate + 큰 penalty + reasonable per-step + 큰 terminal bonus**
+
+→ **Reward 설계는 hyperparameter tweak 이 아닌 system design**. parameter
+   하나 바꿔서 해결되는 게 아니라 환경/safety/curriculum 의 종합 설계.
+
+
+─── 5-5. 검토 라운드의 효용 ───────────────────────────────────────────────────
+
+9 회차 검토 결과 48 issue 발견 + 보완.
+  - 1차 (3 회) : 13 issue — 표면적 (번호, 일관성)
+  - 2차 (3 회) : 21 issue — 누락 (callback, 정량 기준, edge case)
+  - 3차 (3 회) : 14 issue — 실제 코드 grep 으로 signature 검증
+
+→ **첫 문서 작성 후 한 번 검토만으로는 부족**. 3 차 (라운드 7-9) 에서 발견된
+   `_compute_reward` 의 3-tuple 반환 / drop terminate 별도 분기 등은 실제
+   적용 시 critical (잘못 적용했다면 syntax error 또는 런타임 오류).
+
+
+
+################################################################################
+#  추가 — 학습 도중 추가 작업 (2026-05-23 후반, 학습 진행 중)
+################################################################################
+
+─── 추가 1. WandB callback metric overhaul (parameter_log entry #13) ───────────
+
+사용자 통찰 :
+  ▶ "wandb 그래프 너무 많아서 정리 필요"
+  ▶ "rate 그래프 0/1 binary 진동 — 보기 어렵다"
+  ▶ "time step 대신 episode 누적 횟수를 x축으로"
+  ▶ "모든 rate 를 누적 count 로 대체"
+
+처방 (src 만 수정, install 미러는 Phase 2 진입 시 — 현재 Phase 1 학습 영향 0) :
+
+제거 (rate 8개) :
+  env/truncate_<crash|overspeed|ang_vel|inverted|timeout>_rate (5)
+  env/drop_terminated_rate, env/success_rate, env/safety_violation_rate
+
+추가 (누적 count 9개 + x축 base 1개) :
+  env/total_episodes (universal counter, x축 base)
+  env/total_drop_terminated_count (기존 total_drop_count 이름 변경)
+  env/total_success_count (d_error ≤ 0.5m)
+  env/total_jackpot_count (d_error ≤ 0.1m)
+  env/total_truncate_<crash|overspeed|ang_vel|inverted|timeout>_count (5)
+  env/total_safety_violation_count (crash + overspeed)
+  env/total_physics_glitch_count (이전 rollout 단위 → 누적)
+
+x축 자동 매핑 (wandb.define_metric — main 함수의 wandb.init() 직후) :
+  wandb.define_metric('env/total_*', step_metric='env/total_episodes')
+
+코드 변경 :
+  WandbMetricsCallback.__init__ : 누적 변수 추가 + 옛 변수 (_safety_violation_count,
+                                  _total_steps, _rollout_done_episodes) 제거
+  _on_step : episode 종료 시 누적 카운트 (truncate_counts rollout reset 안 함)
+  _on_rollout_end : rate 계산 블록 모두 제거 + 누적 log 추가
+
+검증 :
+  python3 ast.parse → syntax OK
+  src 18 새 키 / install 0 매치 → Phase 1 학습 영향 0 ✓
+
+Phase 2 진입 시 적용 명령 :
+  docker cp /home/juns/Drone-Bombard-Simulation/ros2_ws/src/rl_navigation/rl_navigation/train_sac.py \
+    drone-bombard-harmonic:/workspace/ros2_ws/install/rl_navigation/lib/python3.10/site-packages/rl_navigation/train_sac.py
+
+관련 문서 :
+  parameter_log.md entry #13
+  design_review_2026-05-23.md Tier 1 #17
+  A_phased_curriculum_도입방안.md 부록 § 5 (install 미러 절차 보강)
+  guides/drone_sim_tmux_training_guide.txt § 5 (모니터링 metric 갱신)
+
+
+################################################################################
+ 끝 — 다음 노트 : junsang_v4 200k 본학습 결과 정리 (학습 끝나면 wandb run_id
+       기반으로 timeline 분석 + 성공 판정 + Run #13 또는 Tier 2 결정).
+       Phase 2 진입 시 train_sac.py 의 install 미러 필수 (entry #13 callback 적용).
+================================================================================

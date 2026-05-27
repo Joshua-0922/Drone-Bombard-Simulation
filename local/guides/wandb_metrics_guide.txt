@@ -1,0 +1,121 @@
+================================================================================
+ WandB Metrics Guide — 대시보드 metric 정의 및 해석
+================================================================================
+최종 갱신 : 2026-05-26
+관련     : train_sac.py (WandbMetricsCallback)
+
+
+================================================================================
+ 1. 활성 metric 목록 (8개)
+================================================================================
+
+  x축 = step (num_timesteps) 기준:
+
+    env/d_xy
+      의미:    rollout 내 step별 타겟 수평 거리(m) 평균
+      해석:    줄어들면 드론이 타겟에 접근하고 있음. 가장 중요한 지표.
+      목표:    < 5m (auto_drop 발동 가능 거리)
+
+    env/rew_drop
+      의미:    drop 발동 시 받는 보상의 rollout 평균
+      공식:    30*exp(-0.15*d_xy) + 100*exp(-0.2*d_error)
+               + 20*exp(-0.1*|d_impact-d_error|) + [50 jackpot]
+      해석:    값이 클수록 가까이서 정밀하게 drop한 것.
+               Round 간 비교로 보상 gradient 개선 효과 확인.
+      거리별:  10m~20, 8m~29, 5m~51, 3m~74, 0m~200
+
+    env/drop_error
+      의미:    rollout 내 drop 에피소드의 실제 착탄 오차(m) 평균
+      공식:    payload 착지 위치와 타겟 사이 거리
+      해석:    줄어들면 정밀도 향상. 핵심 목표 지표.
+      목표:    < 5m (success), < 0.1m (jackpot)
+
+  x축 = env/total_episodes (에피소드 누적) 기준:
+
+    env/total_episodes
+      의미:    누적 에피소드 수 (x축 자체)
+      해석:    다른 total_* metric의 x축 base.
+
+    env/total_drops
+      의미:    drop이 발동된 에피소드 누적 수
+      해석:    기울기 = drop 빈도. 가파를수록 자주 drop.
+               random + auto 합산.
+
+    env/total_auto_drops
+      의미:    auto drop (d_impact <= threshold) 누적 수
+      해석:    가파를수록 드론이 자주 타겟 근처까지 접근.
+               total_drops 대비 비율이 높아야 정밀 drop 학습 중.
+
+    env/total_success
+      의미:    drop_error < 5m 누적 수
+      해석:    계단이 올라가면 성공 발생. 기울기 = 성공 빈도.
+
+    env/total_jackpot
+      의미:    drop_error < 0.1m 누적 수
+      해석:    최종 목표. 현 수준에서는 대부분 0.
+
+
+================================================================================
+ 2. 제거된 metric (15개) — 2026-05-26 정리
+================================================================================
+
+  제거 사유: 중복 정보이거나 학습 판단에 직접 불필요
+
+  거리/상태:
+    env/mean_d_impact         — d_xy와 유사, 중복
+
+  보상 분해 (per-step):
+    env/mean_rew_ctrl         — 항상 작은 값, 신호 없음
+    env/mean_rew_dist         — d_xy 감소로 간접 확인
+    env/mean_rew_orient       — d_xy 감소로 간접 확인
+    env/mean_rew_impact       — d_xy 감소로 간접 확인
+
+  Drop:
+    env/drop_count            — total_drops와 중복 (per-rollout vs 누적)
+    env/total_drop_random_count — total_drops - auto_drops로 유추
+
+  종료 (개별 6개 → 8개로 증가했지만 로깅하지 않음):
+    env/total_truncate_crash_count
+    env/total_truncate_overspeed_count
+    env/total_truncate_ang_vel_count
+    env/total_truncate_inverted_count
+    env/total_truncate_timeout_count
+    env/total_truncate_out_of_range_count
+    env/total_truncate_max_altitude_count  (Round 2 신규, 로깅 안 함)
+    env/total_truncate_stagnation_count    (Round 2 신규, 로깅 안 함)
+
+  합산/인프라:
+    env/total_safety_violation_count  — crash+overspeed 합산, 개별 제거와 함께
+    env/total_physics_glitch_count    — 인프라 문제 해결 후 불필요
+
+
+================================================================================
+ 3. 이름 변경 이력
+================================================================================
+
+  2026-05-26:
+    env/mean_d_xy                  → env/d_xy
+    env/mean_rew_drop              → env/rew_drop
+    env/drop_error_actual_m        → env/drop_error
+    env/total_drop_terminated_count → env/total_drops
+    env/total_drop_auto_count      → env/total_auto_drops
+    env/total_success_count        → env/total_success
+    env/total_jackpot_count        → env/total_jackpot
+    env/total_episodes             → (유지)
+
+
+================================================================================
+ 4. 학습 중 체크 포인트
+================================================================================
+
+  빠른 판단 (5분):
+    1. d_xy — 줄어들고 있는가?
+    2. total_drops — drop이 발생하고 있는가?
+    3. drop_error — 오차가 줄어들고 있는가?
+
+  상세 분석 (학습 완료 후):
+    1. total_auto_drops / total_drops 비율 — auto drop 비중 증가?
+    2. rew_drop 추세 — 보상이 커지고 있는가?
+    3. total_success 계단 — 언제 첫 성공?
+    4. rollout/ep_rew_mean (SB3 기본) — 전체 보상 추이
+    5. train/critic_loss, train/ent_coef — 학습 안정성

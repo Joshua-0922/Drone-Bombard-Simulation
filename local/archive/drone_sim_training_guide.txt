@@ -1,0 +1,252 @@
+================================================================================
+ Drone-Bombard-Simulation — RL 학습 실행 가이드
+================================================================================
+대상 환경: drone-bombard-harmonic Docker 컨테이너
+세션 작성일: 2026-05-20
+
+--------------------------------------------------------------------------------
+0. 사전 확인
+--------------------------------------------------------------------------------
+- 호스트의 /home/juns/Drone-Bombard-Simulation/ 이 컨테이너의 /workspace/ 에
+  bind-mount 되어 있다. 호스트에서 파일을 편집하면 컨테이너 안에서도 동일하게 보인다.
+- 단, ROS2 package data file(launch / config / python 모듈)을 src/ 에서 편집했다면
+  반드시 install/ 쪽도 동기화해야 ros2 run / ros2 launch 가 반영한다. (4번 항목 참조)
+- PX4 airframe r0~r3 가 rootfs에 들어있어야 학습이 뜬다. (8번 항목 참조)
+
+
+--------------------------------------------------------------------------------
+1. 컨테이너 살아있는지 확인 후 진입
+--------------------------------------------------------------------------------
+호스트에서:
+
+    docker ps --filter name=drone-bombard-harmonic --format '{{.Names}} {{.Status}}'
+
+멈춰있으면:
+
+    docker start drone-bombard-harmonic
+
+들어가기:
+
+    docker exec -it drone-bombard-harmonic bash
+
+
+--------------------------------------------------------------------------------
+2. (선택) 하이퍼파라미터 조정
+--------------------------------------------------------------------------------
+hyperparams.yaml 위치 (두 군데 모두):
+
+    src    : /workspace/ros2_ws/src/rl_navigation/config/hyperparams.yaml
+    install: /workspace/ros2_ws/install/rl_navigation/share/rl_navigation/config/hyperparams.yaml
+
+대표 키:
+    total_timesteps     : smoke 5000 / 본 학습 200000~1000000
+    use_vision          : false (vision world 사용 시 true + x_marker_world_vision.sdf)
+    auto_drop_threshold : smoke 2.0 / 본 학습 0.5 권장
+    w_impact, k_impact  : d_impact 보상 shaping 계수
+
+편집 후 양쪽 동기화:
+
+    cp /workspace/ros2_ws/src/rl_navigation/config/hyperparams.yaml \
+       /workspace/ros2_ws/install/rl_navigation/share/rl_navigation/config/hyperparams.yaml
+
+동기화 확인 (출력이 비어야 OK):
+
+    diff /workspace/ros2_ws/src/rl_navigation/config/hyperparams.yaml \
+         /workspace/ros2_ws/install/rl_navigation/share/rl_navigation/config/hyperparams.yaml
+
+
+--------------------------------------------------------------------------------
+3. 학습 실행
+--------------------------------------------------------------------------------
+컨테이너 안에서 환경 source 는 공통:
+
+    source /opt/ros/humble/setup.bash
+    source /workspace/ros2_ws/install/setup.bash
+    cd /workspace/ros2_ws
+
+아래 [방식 A] / [방식 B] / [방식 C] 중 하나만 골라 실행. 동시에 두 개를 같이
+하는 게 아님. 새 터미널을 따로 열 필요도 없고, 기존 학습을 중단할 필요도 없음.
+처음 학습 시작할 때 선택하는 것.
+
+────────────────────────────────────────────────────────────────────────────────
+ [방식 A] 포그라운드 — 가장 단순. 짧은 smoke 학습 권장.
+────────────────────────────────────────────────────────────────────────────────
+
+    ros2 run rl_navigation train_sac
+
+  - 터미널이 학습 출력에 묶임 (다른 명령 못 침)
+  - Ctrl+C  →  학습 종료 (SB3 가 sac_drop_preempt.zip 저장 시도)
+  - 터미널 / SSH 끊기면 학습도 함께 죽음
+
+────────────────────────────────────────────────────────────────────────────────
+ [방식 B] 백그라운드 + 로그 파일 — 같은 터미널에서 다른 작업도 하고 싶을 때.
+────────────────────────────────────────────────────────────────────────────────
+
+    ros2 run rl_navigation train_sac > /tmp/train.log 2>&1 &
+    tail -f /tmp/train.log
+
+  핵심: 명령 끝의 `&` 가 "백그라운드로 보내고 셸은 바로 돌려줘" 라는 뜻.
+
+  - 학습은 백그라운드에서 도는 동안 출력은 /tmp/train.log 에 누적
+  - tail -f 는 그 파일을 같은 터미널에 흘려 보여주는 별개 명령
+  - tail 보다가 Ctrl+C  →  tail 만 멈춤. 학습은 계속 돌아감.
+  - 다시 보고 싶을 때:  tail -f /tmp/train.log
+
+  학습을 실제로 멈추려면 (Ctrl+C 안 됨):
+
+      docker exec drone-bombard-harmonic pgrep -af train_sac    # PID 확인
+      docker exec drone-bombard-harmonic pkill -f train_sac     # 종료
+
+  주의: 터미널 / SSH 가 끊기면 백그라운드 학습도 같이 죽을 수 있음.
+        장시간 학습은 아래 [방식 C] 권장.
+
+────────────────────────────────────────────────────────────────────────────────
+ [방식 C] tmux — SSH 끊겨도 살아남는 가장 안정적인 방법. 본 학습 권장.
+────────────────────────────────────────────────────────────────────────────────
+
+    tmux new -s train                              # 세션 생성
+    # 그 안에서:
+    source /opt/ros/humble/setup.bash
+    source /workspace/ros2_ws/install/setup.bash
+    cd /workspace/ros2_ws
+    ros2 run rl_navigation train_sac
+
+    # 세션에서 빠져나오기 (학습은 계속 돔):  Ctrl+B  →  D
+    # 다시 들어가기:                          tmux attach -t train
+    # 세션 통째로 죽이기:                     tmux kill-session -t train
+
+  - SSH 끊겨도 tmux 세션 안의 학습은 계속 돔
+  - attach 로 다시 들어가면 그동안 쌓인 출력이 그대로 보임
+  - 가장 안정적이고 권장되는 본 학습 방식
+
+
+--------------------------------------------------------------------------------
+4. ROS2 install 캐시 함정
+--------------------------------------------------------------------------------
+ros2 launch / ros2 run 은 src/ 가 아닌 install/ 의 카피본을 읽는다.
+launch/, config/, 일반 python 모듈을 src/ 에서 편집하면 반드시:
+
+  (a) colcon build --packages-select <pkg>  — 정석
+  또는
+  (b) docker cp / cp 로 install/ 쪽에 동일 파일 직접 복사  — 빠른 처리
+
+확인 명령:
+
+    diff /workspace/ros2_ws/src/<pkg>/.../foo \
+         /workspace/ros2_ws/install/<pkg>/.../foo
+
+다음번 빌드 시 --symlink-install 을 켜두면 이 함정이 사라진다:
+
+    cd /workspace/ros2_ws
+    colcon build --symlink-install
+
+
+--------------------------------------------------------------------------------
+5. 진행 상황 보기
+--------------------------------------------------------------------------------
+실시간 로그            : tail -f /tmp/train.log
+SAC 테이블             : 위 로그 안에 episodes/fps/actor_loss/critic_loss 등 출력
+WandB 대시보드          : https://wandb.ai/junsanglee64/drone-bombard-sac
+체크포인트             : /workspace/ros2_ws/rl_checkpoints/
+TensorBoard            : (현재 비어있음, WandB가 주된 추적 도구)
+
+
+--------------------------------------------------------------------------------
+6. 중단 / 종료
+--------------------------------------------------------------------------------
+정상 중단 (포그라운드일 때, SB3가 sac_drop_preempt.zip 저장 시도):
+
+    Ctrl+C
+
+강제 종료:
+
+    docker exec drone-bombard-harmonic pkill -f train_sac
+
+PX4 / Gazebo / DDS agent 잔존 정리:
+
+    docker exec drone-bombard-harmonic pkill -f px4
+    docker exec drone-bombard-harmonic pkill -f "gz sim"
+    docker exec drone-bombard-harmonic pkill -f MicroXRCEAgent
+
+주의: pkill -f 'px4' 를 docker exec bash 셸 안에서 그대로 쓰면 자기 셸까지
+매칭해서 잡기도 한다. 가능하면 docker exec 로 단발성으로 쓰는 게 안전.
+
+
+--------------------------------------------------------------------------------
+7. 산출물 위치
+--------------------------------------------------------------------------------
+체크포인트:
+    /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip
+    /workspace/ros2_ws/rl_checkpoints/sac_drop_<N>_steps.zip
+    /workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip   (Ctrl+C 시)
+    /workspace/ros2_ws/rl_checkpoints/sac_drop_preempt_replay.pkl
+    /workspace/ros2_ws/rl_checkpoints/best_model/
+    /workspace/ros2_ws/rl_checkpoints/archive/
+
+WandB run 디렉터리:
+    /workspace/ros2_ws/wandb/run-<timestamp>-<runid>/
+
+
+--------------------------------------------------------------------------------
+8. (중요) 컨테이너 재생성 / PX4 재빌드 후 필수 작업
+--------------------------------------------------------------------------------
+PX4 SITL은 build/.../rootfs/etc/init.d-posix/airframes/ 의 airframe 파일만 본다.
+기본 PX4 SITL 빌드는 4015_gz_x500_bombard (base) 만 채워두므로, 학습 코드가
+사용하는 r0~r3 가 누락되면:
+
+    ERROR [init] Unknown model gz_x500_bombard_r0 (not found by name on
+                 /opt/PX4-Autopilot/build/px4_sitl_default/rootfs/etc/init.d-posix/airframes)
+    ERROR [px4] Startup script returned with return value: 256
+
+해결 1) 빠른 처리 (즉시, 컨테이너 라이프타임 동안 유효):
+
+    docker exec drone-bombard-harmonic bash -c '
+    SRC=/opt/PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix/airframes
+    DST=/opt/PX4-Autopilot/build/px4_sitl_default/rootfs/etc/init.d-posix/airframes
+    for f in 4016_gz_x500_bombard_r0 4017_gz_x500_bombard_r1 \
+             4018_gz_x500_bombard_r2 4019_gz_x500_bombard_r3; do
+      cp -v "$SRC/$f" "$DST/$f"
+    done'
+
+해결 2) 영구 (PX4 풀 빌드, 15~20분):
+
+    docker exec drone-bombard-harmonic bash -c \
+        'cd /opt/PX4-Autopilot && make px4_sitl_default'
+
+학습 켜기 전 한 줄 점검:
+
+    docker exec drone-bombard-harmonic bash -c \
+        'ls /opt/PX4-Autopilot/build/px4_sitl_default/rootfs/etc/init.d-posix/airframes/ \
+         | grep -E "401[6-9]_gz_x500"'
+
+
+--------------------------------------------------------------------------------
+9. World 선택 (RL vs Vision)
+--------------------------------------------------------------------------------
+launch 파일이 어떤 world 파일을 쓸지 선택한다. world 의 <world name="..."> 은
+양쪽 모두 x_marker_world 로 동일하게 유지 (PX4_GZ_WORLD, IMU bridge 토픽이
+이 이름을 하드코딩).
+
+  RL 학습용     : /workspace/gazebo_models/worlds/x_marker_world.sdf
+                  (Sensors 플러그인 없음 — 카메라 비활성, 학습 안정)
+  Vision 미션용 : /workspace/gazebo_models/worlds/x_marker_world_vision.sdf
+                  (gz::sim::systems::Sensors + ogre2 추가 — 카메라 작동)
+
+전환은 mission_manager 의 launch / config 에서 파일 경로만 바꾸면 됨.
+변경 후 4번 항목의 install 동기화 잊지 말 것.
+
+
+--------------------------------------------------------------------------------
+10. 한 번에 깨끗하게 시작하는 체크리스트
+--------------------------------------------------------------------------------
+[ ] docker ps 로 컨테이너 Up 확인
+[ ] 컨테이너에 multi-instance airframe (r0~r3) 있는지 확인 (8번)
+[ ] hyperparams.yaml src/install 동기화 (2,4번)
+[ ] 기존 잔존 프로세스 정리: pkill -f train_sac / px4 / gz sim / MicroXRCEAgent (6번)
+[ ] (선택) tmux 세션 안에서 학습 시작 (3번)
+[ ] WandB 대시보드 열어두기 (5번)
+
+
+================================================================================
+ 끝
+================================================================================

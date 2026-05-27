@@ -1,0 +1,307 @@
+================================================================================
+ Drone-Bombard-Simulation 작업 정리 — 2026-05-25
+ 세션 기간 : 2026-05-24 ~ 2026-05-25
+ 직전 노트 : meeting_notes_2026-05-23.txt
+ 핵심 변화 : junsang_v4 200k 결과 분석 → 문제점 브레인스토밍 → Issue 10건 정리
+             → Round 1 결정 (#001+#002+#003+#006 동시 적용) → 코드 수정 완료
+================================================================================
+
+
+********************************************************************************
+* 한 줄 요약
+*   junsang_v4 200k/150k 학습 결과 분석: drop은 발생하지만 정밀도 개선 없음
+*   (drop_error 12~14m 수렴, total_success=0). 보상 구조, drop 메커니즘,
+*   종료 조건, 스케일 등 10건의 근본 문제 식별 → issues 폴더 체계 구축.
+*   Round 1으로 4건 동시 적용 결정. 코드 수정 완료, 학습 대기 중.
+********************************************************************************
+
+
+################################################################################
+#  PART 1.  학습 결과 분석
+################################################################################
+
+─── 1-1. junsang_v4_150k (run xk7rw5e1) — 112k에서 중단 ─────────────────────
+
+  15k checkpoint resume → 112k step에서 infra crash (CRUISE timeout 재귀)
+  wandb run: xk7rw5e1 (junsang_v4_150k)
+
+  10k 구간 집계:
+    step  |  ep  | drops | crash | inv  | ovspd | tmout | d_xy  | ent
+    20k   |   68 |    11 |    14 |   29 |    14 |     0 |  14.9 | 0.53
+    50k   |  445 |    68 |    78 |  200 |    74 |    17 |  14.4 | 0.53
+    80k   |  824 |   115 |   115 |  403 |   134 |    39 |  14.8 | 0.27
+    112k  | 1107 |   215 |   160 |  486 |   164 |    59 |  12.7 | 0.25
+
+  Drop episode 분석 (275건):
+    mean_error: 13.15m, median: 12.89m
+    p25: 12.01m, p75: 13.54m
+    min: 2.32m, max: 41.65m
+    ≤ 5m: 6건(2%), ≤ 10m: 19건(7%), ≤ 15m: 250건(91%)
+    total_success_count (≤ 0.5m): 0
+
+  핵심 관찰:
+    1. drop_error가 12~14m에 수렴 — 정밀도 개선 없음
+    2. inverted(44%)가 최대 종료 원인 — 드론 자주 뒤집힘
+    3. d_xy 불안정 — 14m↔90m 왔다갔다 (일관된 접근 실패)
+    4. DropEpisodeRecorder 정상 작동 확인 (275 episode 저장)
+
+─── 1-2. 이전 학습(junsang_v4 200k, run krxfl97k)과 비교 ────────────────────
+
+  동일한 양상:
+    - drop_error 10~15m 범위 수렴
+    - total_success_count = 0
+    - deterministic eval에서 drop 0회
+    - d_xy 불안정 (타겟 방향 일관성 부족)
+
+  결론: 파라미터 수치가 아닌 구조적 문제.
+
+
+################################################################################
+#  PART 2.  브레인스토밍 — 문제점 진단
+################################################################################
+
+2-1. Drop 보상이 거리에 둔감 (#001)
+  15m drop과 5m drop의 보상 차이가 21밖에 안 됨.
+  drop_attempt_bonus=150이 지배적 → "대충 drop만 하면 OK" 전략.
+
+2-2. 에피소드 종료 조건 부족 (#002)
+  지면 바운스 미차단, out_of_range 미구현.
+  드론이 타겟 반대로 날아가도 500 step까지 기다려야 함.
+
+2-3. 보상 스케일 과대 / critic 불안정 (#003)
+  터미널 보상 분산(±400)이 per-step 접근 신호(+375)를 덮음.
+  critic이 "타겟 접근 = 좋다"를 학습하지 못하는 근본 원인.
+  → 드론이 이상한 방향으로 날아가는 이유.
+
+2-4. Deterministic eval drop 0회 (#004)
+  stochastic noise로 우연히 drop zone 진입. mean action은 못 감.
+  배포 시 문제.
+
+2-5. Replay buffer 오염 (#005)
+  500k buffer에 초기 쓰레기 데이터 잔존. 150k 학습에서는 영향 제한적.
+
+2-6. Auto_drop 구조적 한계 (#006)
+  d_impact이 처음 threshold 이하가 되는 순간 강제 drop.
+  에이전트가 "더 기다려서 정밀하게" 할 수 없음.
+  → hybrid drop (manual + auto 안전망) 제안.
+
+2-7. CCIP 예측 갭 (#007)
+  CCIP 예측(d_impact) vs 실제(drop_error) 사이에 체계적 오차.
+
+2-8. Observation/Action 충분성 (#008)
+  분석 완료: obs/action은 구조적으로 충분.
+  병목은 학습 체계(보상 + drop 메커니즘).
+
+2-9. Phase 1 졸업 기준 불명확 (#009)
+  현재 기준(drops≥30 등)이 신뢰 불가. 결과 보고 재정립 필요.
+
+2-10. 분리/착탄 이중 보상 (#010)
+  release 조건 + actual error + CCIP 일치도 3요소 보상.
+  Round 2 후보로 보류.
+
+
+################################################################################
+#  PART 3.  Round 1 결정
+################################################################################
+
+#001 + #002 + #003 + #006 동시 적용 (코드 수정 완료)
+
+─── yaml 변경 ────────────────────────────────────────────────────────────────
+
+  보상 (Issue #001 + #003):
+    drop_attempt_bonus:     150 → 30 * exp(-0.3 * d_xy) (proximity 기반)
+    k_drop_proximity:       (신규) 0.3 — 가까이 가야 bonus 받음
+    k2_precision:           0.3 → 0.5
+    w_drop_base:            100 → 100 (유지)
+    r_success_jackpot:      100 → 50
+    penalty_crash:          -100 → -50
+    penalty_overspeed:      -50 → -30
+    penalty_bad_attitude:   -50 → -30
+    truncation_penalty:     -30 → -15
+
+  Drop 메커니즘 (Issue #006):
+    auto_drop_threshold:    10.0 → 2.0 (안전망)
+    manual_drop_threshold:  (신규) 0.5 — action[4] > 0.5 → drop
+    min_drop_step:          (신규) 10 — step 10 이전 manual drop 차단
+      (최초 50으로 설정 → dry-run에서 에피소드 평균 31 step이라 기회 없음 → 10으로 조정)
+
+  Prediction bonus (Issue #010, 보수적 도입):
+    w_prediction:           (신규) 20.0
+    k_prediction:           (신규) 0.1
+      (CCIP 갭 12m+ 확인 후 추가. release_quality는 보류)
+
+  종료 조건 (Issue #002):
+    min_altitude_start_step: 10 → 1
+    ground_contact_altitude: (신규) 0.5m — 무조건 crash
+    max_distance:            (신규) 100.0m — out_of_range truncate
+    penalty_out_of_range:    (신규) -30
+
+  wandb:
+    run_name: "round1_hybrid_drop"
+
+─── 코드 변경 ────────────────────────────────────────────────────────────────
+
+  drone_drop_env.py:
+    - hybrid drop: (action[4] > 0.5 and step ≥ 10) or (d_impact ≤ 2m)
+    - prediction_bonus: 20 * exp(-0.1 * |d_impact - actual_error|)
+    - ground contact: altitude < 0.5m → crash (무조건, step 무관)
+    - out_of_range: d_xy > 100m → truncate + penalty -30
+    - drop_trigger info ('manual'/'auto') 추가
+    - default 값 전부 Round 1 값으로 정합
+
+  train_sac.py:
+    - truncate_counts에 'out_of_range' 추가
+    - total_drop_manual_count / total_drop_auto_count wandb 추적 추가
+
+  상태: 본학습 진행 중 (run dv428atu)
+
+─── 보상 curve (Round 1 최종) ──────────────────────────────────────────────
+
+  bonus = 30 * exp(-0.3 * d_xy) — 가까이 가야 bonus 받음
+  d_xy=50m→0, 14m→0.5, 5m→6.7, 3m→12.2, 1m→22.2, 0m→30
+
+  총 보상 (prediction gap=0 가정):
+  d_xy=0m, d_error=0m: 30+100+20+50 = 200 (최대)
+  d_xy=3m: 12.2+0+6 = 18.2
+  d_xy=14m: 0.5+0+6 = 6.5
+  d_xy=50m (즉시 drop): 0+0+6 = 6.0 (사실상 무보상)
+
+─── 학습 시도 이력 ──────────────────────────────────────────────────────────
+
+  vf5dgx55: CCIP 갭 12m+ 확인, min_drop_step=50 문제 → 중단
+  2zrnjipt: min_drop_step=10에서도 step 10마다 즉시 drop → 중단
+  dv428atu: bonus proximity(k=0.3) 추가 → 현재 진행 중
+
+
+################################################################################
+#  PART 4.  Issues 체계 구축
+################################################################################
+
+issues/ 폴더 신규 생성. master.txt로 전체 관리.
+
+  Round 1 적용:  #001, #002, #003, #006, #010(prediction_bonus)
+  Round 1 후 확인: #004, #007, #009
+  보류:          #005, #008, #011, #012
+
+  추가 변경 (학습 중 발견):
+    success_threshold: 0.5m → 5.0m (중간 목표)
+    jackpot_threshold: (신규) 0.1m (최종 목표, 기존 success_threshold에서 분리)
+
+상세: issues/master.txt 참조
+
+
+################################################################################
+#  PART 5.  Critical — Issue #013 DetachableJoint 미작동 발견
+################################################################################
+
+  2026-05-25, Round 1 학습(dv428atu) GUI 검증 중 발견:
+    - payload가 실제로 분리되지 않았음
+    - SDF에서 <topic> 태그 사용 → Gazebo Harmonic은 <detach_topic> 필요
+    - 프로젝트 시작부터 현재까지 모든 drop_error가 가짜
+      (payload 낙하 위치가 아닌 드론 crash/착륙 위치)
+    - 8개 model.sdf 수정 완료, GUI 검증 통과
+
+  상세: issues/issue_013_detachable_joint_never_fired.txt
+
+
+################################################################################
+#  PART 5b. Issue #014 — DetachableJoint 근본 원인 해결
+################################################################################
+
+  2026-05-26, #013 SDF 수정 후에도 payload가 드론에 안 붙는 문제 디버깅.
+
+  근본 원인 2가지:
+    1. <include merge="true">가 DetachableJoint를 깨뜨림 (gz-sim8 버그)
+       → x500_bombard/model.sdf를 inline으로 완전 변환
+    2. Gazebo 즉시 실행(-r) 시 PX4 연결 전 드론이 중력으로 추락 → joint 파괴
+       → paused 시작 → PX4 연결 → unpause
+
+  추가 변경:
+    - drone_drop_env.py: PX4_SIM_MODEL → PX4_GZ_MODEL_NAME (pre-spawn 연결)
+    - drone_drop_env.py: world SDF에 드론 pre-spawn inject 로직
+    - world SDF payload_0 z: 0.36(테스트 잔여) → 0.14 원복
+
+  검증: payload z=4.89 (공중 부착), drop 후 낙하 확인
+
+  상세: issues/issue_014_detachable_joint_debug_log.txt
+        issues/issue_014_solutions.txt
+
+
+################################################################################
+#  PART 6.  기타 작업
+################################################################################
+
+  - DropEpisodeRecorderCallback 구현 + install 미러링 완료 (train_sac.py)
+  - replay_drop_episode.py 신규 생성 + install 미러링 완료
+  - post_training_verification_guide.txt 생성 (GUI 검증 가이드)
+  - success_threshold: 0.5m → 5.0m 완화, jackpot_threshold: 0.1m 분리
+  - drop episode 275건 저장 확인 (이전 학습 — payload 미분리 상태)
+
+
+################################################################################
+#  PART 7.  다음 단계
+################################################################################
+
+  Round 1 본학습 (실제 물리 drop):
+    WandB run: ruozrv5x (round1_hybrid_drop)
+    150k, fresh start, online
+    #013+#014 해결 + manual drop 비활성 + random drop 추가
+    이전 시도 v6i3vy4p에서 "즉시 drop" exploit 발견 → manual drop 제거
+
+  학습 완료 후:
+    1. wandb 데이터 분석 (실제 drop_error 첫 측정)
+    2. drop episode GUI 검증 (payload 낙하 확인)
+    3. issues 업데이트 (#004, #007, #009 재평가)
+    4. 다음 Round 결정
+
+
+################################################################################
+#  PART 8. Issue #015 — 좌표 오프셋 의심 → replay 한계 발견
+################################################################################
+
+  GUI에서 drop episode replay 시 드론이 타겟을 30m 지나쳐서 drop.
+  학습 데이터에서는 d_xy=4.6m.
+
+  디버깅 결과:
+    - obs vs Gazebo 좌표: 첫 에피소드에서 일치 (오프셋 0.2m)
+    - replay가 30m 차이나는 이유: open loop (저장된 action 재생, obs 안 봄)
+      → 초기 0.01m 차이가 420 step 뒤 30m로 발산
+    - deterministic evaluate (closed loop)로 검증: obs ≈ Gazebo 일치 확인
+    - 좌표 문제 없음. replay 방식의 근본적 한계.
+
+  결정:
+    - action replay 폐기 → deterministic evaluate + GUI가 올바른 검증 방법
+    - best drop 시 모델 가중치(.zip) 저장 추가 (action 저장은 재현 불가)
+    - post_training_verification_guide 전면 교체
+
+
+################################################################################
+#  PART 9. 폴더 통합 + 디스크 정리
+################################################################################
+
+  폴더 통합:
+    local_dronebombard_simulation/ 삭제 (옛 branch의 repo clone + local/ 문서)
+    local/ → Drone-Bombard-Simulation/local/ 이동
+    문서 경로 참조 업데이트 (4개 파일)
+    .gitignore에 local/ 추가
+
+  디스크 정리:
+    PX4 비행 로그 (.ulg):  33G → 삭제 (2123개 누적)
+    /tmp/px4_test.log:     9.5G → 삭제
+    Docker 빌드 캐시:      1.2G → 삭제
+    합계:                  44G 회수
+    /home 여유:            78G → 120G
+
+  학습 정리 루틴에 PX4 로그 삭제 추가 (training guide Step 4)
+
+
+################################################################################
+#  관련 문서 (경로: /home/juns/Drone-Bombard-Simulation/local/)
+################################################################################
+
+  - issues/master.txt                    — 안건 전체 관리
+  - issues/issue_001 ~ issue_015         — 개별 안건
+  - design/design_review.md              — 최종 설계 요약
+  - parameter_log.md                     — 변경 이력
+  - guides/post_training_verification_guide.txt — GUI 검증 절차 (evaluate 방식)
+  - guides/drone_sim_tmux_training_guide.txt    — 학습 실행 절차
