@@ -12,15 +12,14 @@ type: index
 
 ---
 
-## 현재 상태 (2026-04-16)
+## 현재 상태 (2026-05-30)
 
-- **알고리즘:** SAC, `net_arch=[256,256]`, L4 GPU
-- **보상 함수:** 2026-03-22 패치 완료, **Fresh 1M-step 학습 대기 중**
-- **RTF:** **2** (dry-run 실험으로 RTF=2 최적 확정, avg 59.5 fps)
-- **마지막 정상 체크포인트:** `sac_drop_preempt.zip` (run `8otphxy8`, ~114K steps)
-- **다음 행동:** `ros2 run rl_navigation train_sac --config hyperparams_rtf2.yaml` (fresh start)
-- **Phase 1 계획:** CCIP 기반 자율 접근 비행 제어기 — 8주, 14개 실험, 5/8 시작 → [[research/phase1_plan]]
-- **다음 행동:** colcon build → Exp 004-dryrun (obs[15-16] 확인) → Exp 004-baseline → Exp 005a 야간
+- **Migration 단계:** Isaac Sim 환경 인프라 migration 진행 중 (`feat/isaac-env-migration` 브랜치)
+  - Dockerfile: `isaac-sim:5.1.0` + Isaac Lab v2.3.2 + rsl_rl (Gazebo/PX4/ROS2 완전 제거)
+  - `.dockerignore`, `requirements-deploy.txt`, 新 `entrypoint.sh`, 新 `startup.sh` 완료
+  - **남은 작업:** `USER root` 커밋 → `docker build` → AR push → `l4-spot` VM 기동 → Cartpole 스모크
+- **다음 단계 (완료 후):** `isaac_tasks/` 커스텀 태스크 작성 → `drone_drop_env.py` DirectRLEnv 포팅
+- **이전 상태 (2026-04-26):** Vision 기반 obs 리팩토링 계획 수립, SAC RTF=2 확정 → [[daily/daily_2026-04-26]]
 
 ---
 
@@ -70,6 +69,7 @@ type: index
 ## 노트 인덱스
 
 ### 연구 (research/)
+- [[research/vision_obs_refactor]] — Vision 기반 obs 리팩토링 (GPS 제거, YOLO 전환)
 - [[research/phase1_plan]] — Phase 1 CCIP 기반 자율 접근 연구 계획 (8주, 5/8-6/30)
 - [[research/reward_design]] — 4-layer 보상 함수 (LaTeX 수식)
 - [[research/architecture]] — Method A (1-World-4-Payload) 아키텍처
@@ -88,6 +88,8 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-05-30]] — Isaac Sim migration Phase 1 인프라 구축 (Dockerfile·startup·deploy 재작성)
+- [[daily/daily_2026-04-26]] — Vision obs 리팩토링 계획 + 카메라 파이프라인 복원
 - [[daily/daily_2026-04-17]] — Phase 1 코드 전체 구현 (변경 1-10, obs 15→17, CCIP auto-drop)
 - [[daily/daily_2026-04-16]] — WandB 연결 + RTF dry-run 실험 + 인프라 고장 해결
 - [[daily/daily_2026-04-14]] — Guacamole HTTPS + Obsidian 설치 + wikilink 정비
