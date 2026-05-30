@@ -325,6 +325,9 @@ def _parse_args():
     parser.add_argument(
         '--checkpoint-dir', type=str, default=None,
         help='Override checkpoint directory from config')
+    parser.add_argument(
+        '--run-name', type=str, default=None,
+        help='Override wandb run_name from config')
     return parser.parse_args()
 
 
@@ -370,7 +373,7 @@ def main(args=None):
     wandb.init(
         project=cfg_wandb.get('project', 'drone-bombard-sac'),
         entity=cfg_wandb.get('entity') or None,
-        name=cfg_wandb.get('run_name') or None,
+        name=cli.run_name or cfg_wandb.get('run_name') or None,
         tags=cfg_wandb.get('tags', []),
         config=cfg,
         resume='allow',   # re-attaches to existing run after preemption

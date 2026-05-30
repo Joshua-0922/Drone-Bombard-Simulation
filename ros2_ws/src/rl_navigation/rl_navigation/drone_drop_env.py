@@ -1,18 +1,15 @@
-"""Gymnasium environment for drone fly-by drop RL training.
+"""Gymnasium environment for drone X-marker navigation RL training.
 
-Reward structure — 4-Layer Hierarchical:
+Reward structure — 3-Layer Hierarchical:
   Layer 1: Safety    — penalty on crash / overspeed / target lost (no hard termination)
   Layer 2: Stability — per-step time, angular-velocity and action-smoothness penalties
-  Layer 3: Approach  — 2D distance gradient + heading alignment (no kinematic prediction)
-  Layer 4: Terminal  — ACTUAL physics drop error (wait for drop_calculator result) + jackpot
+  Layer 3: Navigation — GPS distance gradient + heading alignment + vision centering + proximity
 
-Method A (1-World-4-Payload): 4 drones/payloads pre-spawned in shared Gazebo world at
-150m Y-offsets. PX4 connects via PX4_GZ_MODEL_NAME. Each instance runs its own
-ros_gz_bridge. Drop accuracy based on real Gazebo physics, NOT kinematic prediction.
+Goal: train drone to fly as close as possible to the X marker using YOLO camera detection.
+Drop/payload functionality is removed; camera (YOLO) must be enabled (use_vision: true).
 """
 
 import math
-import queue
 import os
 import shutil
 import signal
@@ -25,10 +22,9 @@ import numpy as np
 import rclpy
 import yaml
 from geometry_msgs.msg import Point, Twist
-from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
-from std_msgs.msg import Bool, Empty, String
+from std_msgs.msg import String
 
 try:
     from px4_msgs.msg import (
@@ -62,14 +58,11 @@ class _RLBridgeNode(Node):
     """Background ROS2 node owning all pub/sub for the RL environment."""
 
     def __init__(self, state_lock, obs_ready_event,
-                 drop_error_event, drop_error_queue,
                  px4_topic_prefix=''):
         super().__init__('drone_drop_rl_bridge')
 
         self._lock = state_lock
         self._obs_ready = obs_ready_event
-        self._drop_error_event = drop_error_event
-        self._drop_error_queue = drop_error_queue
 
         # --- Shared state (protected by _lock) ---
         self.pos_enu = np.zeros(3, dtype=np.float32)
@@ -79,7 +72,6 @@ class _RLBridgeNode(Node):
         self.pitch = 0.0
         self.pixel_coords = np.zeros(3, dtype=np.float32)   # u, v, conf
         self.mission_state = 'IDLE'
-        self.payload_attached = True
 
         # PX4 -i N publishes to /px4_N/fmu/out/* topics on the same
         # ROS_DOMAIN_ID.  Instance 0 (no -i flag) uses /fmu/out/*.
@@ -120,22 +112,9 @@ class _RLBridgeNode(Node):
             Point, '/target/pixel_coords', self._on_pixel_coords, 10)
         self.create_subscription(
             String, '/mission/state', self._on_mission_state, 10)
-        self.create_subscription(
-            Odometry, '/drone/payload/position', self._on_payload_pos, 10)
-        self.create_subscription(
-            Bool, '/drone/payload/drop_cmd_raw', self._on_drop_cmd_raw, 10)
-
-        # Drop error (published by drop_calculator after impact; used for logging)
-        from std_msgs.msg import Float32
-        self.create_subscription(
-            Float32, '/rl/drop_error', self._on_drop_error, 10)
 
         # --- Publishers ---
         self.vel_pub = self.create_publisher(Twist, '/drone/cmd/velocity', 10)
-        self.detach_pub = self.create_publisher(
-            Empty, '/payload/drop_cmd', 10)
-        self.drop_raw_pub = self.create_publisher(
-            Bool, '/drone/payload/drop_cmd_raw', 10)
 
         # VehicleCommand publisher — used to disarm PX4 between episodes.
         # Must share the same QoS as drone_controller's publisher so PX4
@@ -221,45 +200,11 @@ class _RLBridgeNode(Node):
         with self._lock:
             self.mission_state = msg.data
 
-    def _on_payload_pos(self, msg):
-        """Track payload position (reserved for future extensions)."""
-        pass
-
-    def _on_drop_cmd_raw(self, msg):
-        if not msg.data:   # False = drop event (inverted semantics)
-            with self._lock:
-                self.payload_attached = False
-
-    def _on_drop_error(self, msg):
-        """Called by drop_calculator after payload impacts ground (logging only)."""
-        error = float(msg.data)
-        try:
-            self._drop_error_queue.put_nowait(error)
-        except queue.Full:
-            pass
-        self._drop_error_event.set()
-
     # ------------------------------------------------------------------
     # Action helpers
     # ------------------------------------------------------------------
 
     def publish_velocity(self, vx, vy, vz, yaw_rate):
-        """Publish ENU velocity command."""
-        twist = Twist()
-        twist.linear.x = float(vx)
-        twist.linear.y = float(vy)
-        twist.linear.z = float(vz)
-        twist.angular.z = float(yaw_rate)
-        self.vel_pub.publish(twist)
-
-    def publish_drop(self):
-        """Fire payload drop commands on both ROS2 and gz-transport channels."""
-        self.detach_pub.publish(Empty())
-        drop_msg = Bool()
-        drop_msg.data = False   # False = drop event (inverted semantics)
-        self.drop_raw_pub.publish(drop_msg)
-
-    def disarm_px4(self):
         """Send DISARM command directly to PX4.
 
         Called during episode reset so PX4 is disarmed before the new
@@ -293,18 +238,19 @@ class _RLBridgeNode(Node):
 # ---------------------------------------------------------------------------
 
 class DroneDropEnv(gym.Env):
-    """Gymnasium env: SAC trains a fly-by precision-drop policy.
+    """Gymnasium env: SAC trains drone to fly as close as possible to X marker.
 
-    Observation: Box(17,) float32
-      [0-14] same as before (pos, vel, ang_vel, vision, attached, rel_target)
-      [15]   d_impact / 50m (CCIP predicted miss distance, normalised)
-      [16]   t_f / 10s     (CCIP time-of-flight, normalised, clamped at 10s)
-    Action:      Box(5,)  float32 in [-1, 1]
+    Observation: Box(14,) float32
+      [0-2]  pos_enu / pos_scale         (world position, normalised)
+      [3-5]  vel_enu / vel_scale         (world velocity, normalised)
+      [6-8]  ang_vel / ang_vel_scale     (body angular velocity, normalised)
+      [9-11] vision: u_norm, v_norm, conf (YOLO pixel coords + confidence)
+      [12-13] rel_dx, rel_dy / pos_scale (relative position to target, normalised)
+    Action: Box(4,) float32 in [-1, 1]
       [0] vx command (scaled by action_vx_scale)
       [1] vy command (scaled by action_vy_scale)
       [2] vz command (scaled by action_vz_scale)
       [3] yaw_rate command (scaled by action_yaw_scale)
-      [4] manual drop trigger (> 0 fires drop; auto-drop overrides via kinematics)
     """
 
     metadata = {'render_modes': []}
@@ -370,30 +316,18 @@ class DroneDropEnv(gym.Env):
         # use_vision=False: skip camera termination + synthesise conf=1.0 in obs
         self._cfg_use_vision = cfg_env.get('use_vision', True)
 
-        # --- Reward constants (4-Layer Hierarchical) ---
+        # --- Reward constants (3-Layer Hierarchical) ---
         r = cfg_reward
-        self._cfg_g = r.get('g', 9.81)
-        self._cfg_auto_drop_threshold = r.get('auto_drop_threshold', 3.0)
-        self._cfg_random_drop_start_step = r.get('random_drop_start_step', 600)
-        self._cfg_random_drop_prob = r.get('random_drop_prob', 0.005)
-        self._cfg_k1_potential = r.get('k1_potential', 1.0)
-        self._cfg_k2_precision = r.get('k2_precision', 0.2)
         self._cfg_w_dist = r.get('w_dist', 1.0)
         self._cfg_w_heading = r.get('w_heading', 0.7)
         self._cfg_w_time = r.get('w_time', 0.01)
         self._cfg_w_ang_vel = r.get('w_ang_vel', 0.05)
         self._cfg_w_action_smooth = r.get('w_action_smooth', 0.05)
-        self._cfg_w_drop_base = r.get('w_drop_base', 100.0)
-        self._cfg_r_success_jackpot = r.get('r_success_jackpot', 50.0)
-        self._cfg_success_threshold = r.get('success_threshold', 5.0)
-        self._cfg_jackpot_threshold = r.get('jackpot_threshold', 0.1)
-        self._cfg_penalty_instability = r.get('penalty_instability', 50.0)
+        self._cfg_w_vision_center = r.get('w_vision_center', 1.0)
         self._cfg_limit_ang_vel = r.get('limit_ang_vel', 2.0)
         self._cfg_limit_tilt = r.get('limit_tilt', 0.26)
         self._cfg_limit_inverted_tilt = r.get('limit_inverted_tilt', 1.047)
         self._cfg_penalty_bad_attitude = r.get('penalty_bad_attitude', -30.0)
-        self._cfg_drop_attempt_bonus = r.get('drop_attempt_bonus', 30.0)
-        self._cfg_k_drop_proximity = r.get('k_drop_proximity', 0.15)
         self._cfg_truncation_penalty = r.get('truncation_penalty', -15.0)
         self._cfg_penalty_crash = r.get('penalty_crash', -50.0)
         self._cfg_penalty_overspeed = r.get('penalty_overspeed', -30.0)
@@ -401,37 +335,28 @@ class DroneDropEnv(gym.Env):
         self._cfg_penalty_out_of_range = r.get('penalty_out_of_range', -30.0)
         self._cfg_penalty_max_altitude = r.get('penalty_max_altitude', -30.0)
         self._cfg_penalty_stagnation = r.get('penalty_stagnation', -15.0)
-        self._cfg_w_prediction = r.get('w_prediction', 20.0)
-        self._cfg_k_prediction = r.get('k_prediction', 0.1)
-        # Layer 4: time to wait for actual physics landing result from drop_calculator
-        self._cfg_drop_wait_timeout = r.get('drop_wait_timeout', 10.0)
-        # Ablation flag: disable speed gate to reproduce Spiral Milking reward hack
         self._cfg_speed_gate = r.get('speed_gate_enabled', True)
-        # d_impact shaping (Layer 3 addition): reward for reducing CCIP predicted miss distance
-        self._cfg_w_impact = r.get('w_impact', 0.0)
-        self._cfg_k_impact = r.get('k_impact', 0.05)
 
-        # obs[0-14]: pos(3)+vel(3)+ang_vel(3)+vision(3)+attached(1)+rel_target(2)
-        # obs[15]:   d_impact / pos_scale  (CCIP predicted miss distance)
-        # obs[16]:   t_f / 10.0            (CCIP time-of-flight, clamped at 10s)
+        # obs[0-2]:  pos (ENU, normalised)
+        # obs[3-5]:  vel (ENU, normalised)
+        # obs[6-8]:  ang_vel (body, normalised)
+        # obs[9-11]: vision u, v, conf
+        # obs[12-13]: rel_dx, rel_dy (relative to target, normalised)
         self.observation_space = gym.spaces.Box(
-            low=-1.0, high=1.0, shape=(17,), dtype=np.float32)
+            low=-1.0, high=1.0, shape=(14,), dtype=np.float32)
         self.action_space = gym.spaces.Box(
-            low=-1.0, high=1.0, shape=(5,), dtype=np.float32)
+            low=-1.0, high=1.0, shape=(4,), dtype=np.float32)
 
         # --- Threading primitives ---
         self._state_lock = threading.Lock()
         self._obs_ready = threading.Event()
-        self._drop_error_event = threading.Event()
-        self._drop_error_queue = queue.Queue(maxsize=1)
 
         # --- Episode state ---
         self._step_count = 0
-        self.dropped = False
         self._episode_reward = 0.0
         self._episode_procs = []      # Popen handles for episode nodes
         self.d_xy_prev = 0.0          # 2D horizontal distance to target at previous step
-        self.action_prev = np.zeros(5, dtype=np.float32)
+        self.action_prev = np.zeros(4, dtype=np.float32)
         self._d_xy_history = {}       # step→d_xy for stagnation detection
 
         # --- Infra state ---
@@ -446,8 +371,6 @@ class DroneDropEnv(gym.Env):
         self._node = _RLBridgeNode(
             self._state_lock,
             self._obs_ready,
-            self._drop_error_event,
-            self._drop_error_queue,
             px4_topic_prefix=self._px4_ns,
         )
         self._spin_thread = threading.Thread(
@@ -475,25 +398,13 @@ class DroneDropEnv(gym.Env):
                 'Spin thread may be dead or infra is unrecoverable. Aborting.')
 
         # 1. Clear episode state
-        # Save dropped state BEFORE clearing — used below to decide infra restart path.
-        _prev_dropped = self.dropped
         self._step_count = 0
-        self.dropped = False
         self._episode_reward = 0.0
         self._d_xy_history = {}
         self._obs_ready.clear()
-        self._drop_error_event.clear()
-        self.action_prev = np.zeros(5, dtype=np.float32)
-
-        # Drain drop-error queue
-        while not self._drop_error_queue.empty():
-            try:
-                self._drop_error_queue.get_nowait()
-            except queue.Empty:
-                break
+        self.action_prev = np.zeros(4, dtype=np.float32)
 
         with self._state_lock:
-            self._node.payload_attached = True
             self._node.mission_state = 'IDLE'  # avoid stale CRUISE from last episode
 
         # Ensure spin thread is alive before proceeding
@@ -508,19 +419,8 @@ class DroneDropEnv(gym.Env):
         # 2. Kill previous episode processes.
         self._kill_episode()
 
-        # 3. Reset drone + payload to spawn position.
-        #    If payload was dropped this episode, DetachableJoint is gone.
-        #    _gz_world_reset(model_only) caused ODE AABB integer overflow crash
-        #    because residual payload velocity after drop destabilises physics.
-        #    Fix: full infra restart (kill Gazebo+PX4 and restart) — DetachableJoint
-        #    is re-created cleanly from SDF. Slower (~30s) but crash-free.
-        #    If no drop occurred, the faster teleport path is sufficient.
-        if _prev_dropped:
-            self._obs_ready.clear()  # ensure _start_infra() waits for fresh PX4 data
-            self._kill_infra()
-            self._start_infra()
-        else:
-            self._gz_reset_poses()   # fast teleport (joint still intact)
+        # 3. Reset drone to spawn position (fast teleport path — payload always attached).
+        self._gz_reset_poses()
 
         # 4. Start fresh episode processes
         self._start_episode()
@@ -615,9 +515,8 @@ class DroneDropEnv(gym.Env):
             pitch = self._node.pitch
             pix = self._node.pixel_coords.copy()
 
-        # --- 2D horizontal distance + CCIP predicted impact distance ---
+        # --- 2D horizontal distance ---
         d_xy = self._compute_d_xy(pos)
-        _, _, t_f, d_impact = self._predict_impact_point(pos, vel)
 
         # --- Physics explosion guard ---
         # Catches two failure modes:
@@ -634,141 +533,67 @@ class DroneDropEnv(gym.Env):
                 'physics_glitch': True,
                 'glitch_d_xy': float(d_xy),
                 'episode_reward': self._episode_reward,
-                'rew_ctrl': 0.0, 'rew_dist': 0.0,
-                'rew_orient': 0.0, 'rew_drop': 0.0,
+                'rew_ctrl': 0.0, 'rew_dist': 0.0, 'rew_orient': 0.0,
             }
 
         terminated = False
         truncated = False
         info = {}
 
-        # --- Drop decision: auto + random exploration ---
-        # action[4] ignored (manual drop disabled — causes "drop ASAP" exploit).
-        # auto_drop: d_impact ≤ threshold → precision drop near target.
-        # random_drop: step ≥ start, 0.5% per step → diverse drop experience
-        #              at various d_xy. Agent can't control → learns to fly only.
-        random_drop = (self._step_count >= self._cfg_random_drop_start_step
-                       and np.random.random() < self._cfg_random_drop_prob)
-        if (random_drop or d_impact <= self._cfg_auto_drop_threshold) and not self.dropped:
-            # ============================================================
-            # Layer 4: Terminal drop accuracy reward (ACTUAL physics result)
-            # Issue #014 해결: inline SDF + pre-spawn + PX4_GZ_MODEL_NAME
-            # → DetachableJoint 정상 작동 → 실제 payload 낙하.
-            # ============================================================
-            self._node.publish_drop()
-            self.dropped = True
+        # ============================================================
+        # Layers 1–3: Per-step reward
+        # ============================================================
+        reward, terminated, info = self._compute_reward(
+            pos, vel, ang, pix, d_xy, action)
 
-            got_result = self._drop_error_event.wait(
-                timeout=self._cfg_drop_wait_timeout)
-            actual_error = 99.0
-            if got_result:
-                try:
-                    actual_error = self._drop_error_queue.get_nowait()
-                except queue.Empty:
-                    pass
-            d_error = actual_error
+        # --- Safety truncation decisions ---
+        truncate_reason = None
+        if info.get('crash'):
+            truncated = True
+            truncate_reason = 'crash'
+        elif info.get('overspeed'):
+            truncated = True
+            truncate_reason = 'overspeed'
+        elif np.linalg.norm(ang) > self._cfg_limit_ang_vel:
+            info['bad_attitude'] = 'ang_vel'
+            reward += self._cfg_penalty_bad_attitude
+            truncated = True
+            truncate_reason = 'ang_vel'
+        elif (abs(roll) > self._cfg_limit_inverted_tilt
+              or abs(pitch) > self._cfg_limit_inverted_tilt):
+            info['bad_attitude'] = 'inverted'
+            reward += self._cfg_penalty_bad_attitude
+            truncated = True
+            truncate_reason = 'inverted'
 
-            # Drop attempt bonus: scaled by proximity to target.
-            # Dropping far away gives ~0, dropping close gives full bonus.
-            reward = self._cfg_drop_attempt_bonus * math.exp(
-                -self._cfg_k_drop_proximity * d_xy)
+        if not truncated and d_xy > self._cfg_max_distance:
+            reward += self._cfg_penalty_out_of_range
+            truncated = True
+            truncate_reason = 'out_of_range'
 
-            # Base precision reward: w_drop_base * exp(-k2 * d_error)
-            reward += self._cfg_w_drop_base * math.exp(
-                -self._cfg_k2_precision * d_error)
+        if not truncated and pos[2] > self._cfg_max_altitude:
+            reward += self._cfg_penalty_max_altitude
+            truncated = True
+            truncate_reason = 'max_altitude'
 
-            # Prediction bonus: reward CCIP accuracy (Issue #010)
-            prediction_gap = abs(d_impact - d_error)
-            reward += self._cfg_w_prediction * math.exp(
-                -self._cfg_k_prediction * prediction_gap)
-            info['prediction_gap'] = prediction_gap
+        if not truncated:
+            self._d_xy_history[self._step_count] = d_xy
+            if self._step_count >= self._cfg_stagnation_start_step:
+                past_step = self._step_count - self._cfg_stagnation_window
+                if past_step in self._d_xy_history:
+                    past_d_xy = self._d_xy_history[past_step]
+                    if past_d_xy - d_xy < self._cfg_stagnation_min_progress:
+                        reward += self._cfg_penalty_stagnation
+                        truncated = True
+                        truncate_reason = 'stagnation'
 
-            # Jackpot: bonus for high-precision drop
-            if d_error <= self._cfg_jackpot_threshold:
-                reward += self._cfg_r_success_jackpot
-                info['jackpot'] = True
-
-            # Instability penalty: large angular velocity or excessive tilt
-            omega_mag = float(np.linalg.norm(ang))
-            if (omega_mag > self._cfg_limit_ang_vel
-                    or abs(roll) > self._cfg_limit_tilt
-                    or abs(pitch) > self._cfg_limit_tilt):
-                reward -= self._cfg_penalty_instability
-                info['instability_penalty'] = True
-
-            info['drop_error_actual_m'] = d_error
-            info['is_success'] = bool(d_error <= self._cfg_success_threshold)
-            info['drop_trigger'] = 'random' if random_drop else 'auto'
-            info['layer4_reward'] = reward
-            # Reward component keys (consistent schema with non-terminal steps)
-            info['rew_drop'] = reward      # full Layer 4 reward
-            info['rew_ctrl'] = 0.0
-            info['rew_dist'] = 0.0
-            info['rew_orient'] = 0.0
-            info['d_xy'] = d_xy            # drone was at this distance when dropped
-            info['d_impact'] = d_impact    # CCIP predicted distance that triggered drop
-            terminated = True
-
-        else:
-            # ============================================================
-            # Layers 1–3: Per-step reward for non-terminal steps
-            # ============================================================
-            reward, terminated, info = self._compute_reward(
-                pos, vel, ang, pix, d_xy, d_impact, action)
-
-            # --- P11/P9 (junsang_v4): step 별 safety 검사 + truncated 결정 ---
-            # 우선순위: crash > overspeed > ang_vel > inverted
-            # crash/overspeed 는 _compute_reward 안에서 이미 penalty add + info['crash'/'overspeed']
-            # 표기 — 여기선 truncate_reason 만 결정 (truncate=True 트리거).
-            truncate_reason = None
-            if info.get('crash'):
-                truncated = True
-                truncate_reason = 'crash'
-            elif info.get('overspeed'):
-                truncated = True
-                truncate_reason = 'overspeed'
-            elif np.linalg.norm(ang) > self._cfg_limit_ang_vel:
-                info['bad_attitude'] = 'ang_vel'
-                reward += self._cfg_penalty_bad_attitude
-                truncated = True
-                truncate_reason = 'ang_vel'
-            elif (abs(roll) > self._cfg_limit_inverted_tilt
-                  or abs(pitch) > self._cfg_limit_inverted_tilt):
-                info['bad_attitude'] = 'inverted'
-                reward += self._cfg_penalty_bad_attitude
-                truncated = True
-                truncate_reason = 'inverted'
-
-            if not truncated and d_xy > self._cfg_max_distance:
-                reward += self._cfg_penalty_out_of_range
-                truncated = True
-                truncate_reason = 'out_of_range'
-
-            if not truncated and pos[2] > self._cfg_max_altitude:
-                reward += self._cfg_penalty_max_altitude
-                truncated = True
-                truncate_reason = 'max_altitude'
-
-            if not truncated:
-                self._d_xy_history[self._step_count] = d_xy
-                if self._step_count >= self._cfg_stagnation_start_step:
-                    past_step = self._step_count - self._cfg_stagnation_window
-                    if past_step in self._d_xy_history:
-                        past_d_xy = self._d_xy_history[past_step]
-                        if past_d_xy - d_xy < self._cfg_stagnation_min_progress:
-                            reward += self._cfg_penalty_stagnation
-                            truncated = True
-                            truncate_reason = 'stagnation'
-
-            if truncate_reason:
-                info['truncate_reason'] = truncate_reason
+        if truncate_reason:
+            info['truncate_reason'] = truncate_reason
 
         # --- Truncation on step limit (timeout) ---
         if not terminated and not truncated and self._step_count >= self._cfg_max_steps:
             truncated = True
-            if not self.dropped:
-                # P8 (junsang_v4): yaml truncation_penalty 사용 (이전 hardcoded -80)
-                reward += self._cfg_truncation_penalty
+            reward += self._cfg_truncation_penalty
             info['truncate_reason'] = 'timeout'
 
         # --- Update action memory ---
@@ -793,58 +618,8 @@ class DroneDropEnv(gym.Env):
     # Kinematic predictor — AeroThrow projectile physics
     # ------------------------------------------------------------------
 
-    def _predict_impact_point(self, pos, vel):
-        """Predict where the payload will land if released right now.
-
-        Solves the 1-D kinematic equation for time-of-flight t_f:
-            z(t) = z_0 + vz_0 * t_f - 0.5 * g * t_f^2 = 0   (target at z = 0)
-
-        Rearranged as the quadratic:
-            0.5*g * t_f^2  -  vz_0 * t_f  -  z_0  =  0
-
-        Discriminant:  D = vz_0^2 + 2*g*z_0  (always >= 0 when z_0 >= 0)
-
-        Positive physical root:
-            t_f = (vz_0 + sqrt(D)) / g
-
-        Args:
-            pos: ENU position [x, y, z] in metres (z = altitude above ground)
-            vel: ENU velocity [vx, vy, vz] in m/s
-
-        Returns:
-            x_p (float):      predicted impact x (metres, ENU)
-            y_p (float):      predicted impact y (metres, ENU)
-            t_f (float):      time of flight (seconds)
-            d_impact (float): horizontal miss distance to target (metres)
-        """
-        x, y, z = float(pos[0]), float(pos[1]), float(pos[2])
-        vx, vy, vz = float(vel[0]), float(vel[1]), float(vel[2])
-        g = self._cfg_g
-
-        if z <= 0.0:
-            # Already at/below ground — impact is the current position
-            t_f = 0.0
-        else:
-            # D = vz^2 + 2*g*z >= 0 guaranteed when z > 0
-            discriminant = vz * vz + 2.0 * g * z
-            t_f = (vz + math.sqrt(discriminant)) / g
-            if t_f < 0.0:
-                t_f = 0.0   # numerical guard (should not occur for z > 0)
-            t_f = min(t_f, 10.0)  # clamp: at vz≈0, z=490m → t_f≈10s; beyond this obs diverges
-
-        x_p = x + vx * t_f
-        y_p = y + vy * t_f
-        dx = x_p - self._cfg_target_x
-        dy = y_p - self._cfg_target_y
-        d_impact = math.sqrt(dx * dx + dy * dy)
-
-        return x_p, y_p, t_f, d_impact
-
     def _compute_d_xy(self, pos):
-        """2D horizontal distance from drone to target (no kinematic prediction).
-
-        Used for Layer 3 approach gradient and Layer 4 auto-drop trigger in
-        Method A. Replaces _predict_impact_point for per-step distance signal.
+        """2D horizontal distance from drone to target.
 
         Args:
             pos: ENU position [x, y, z] in metres
@@ -860,16 +635,20 @@ class DroneDropEnv(gym.Env):
     # Reward computation — Layers 1, 2, 3 (non-terminal steps)
     # ------------------------------------------------------------------
 
-    def _compute_reward(self, pos, vel, ang, pix, d_xy, d_impact, action):
-        """Compute per-step reward for non-terminal steps.
+    def _compute_reward(self, pos, vel, ang, pix, d_xy, action):
+        """Compute per-step reward.
 
-        Layer 1 — Safety:     penalty on crash / overspeed / target lost (no termination)
+        Layer 1 — Safety:     penalty on crash / overspeed / target lost
         Layer 2 — Stability:  time + angular-velocity + action-smoothness penalties
-        Layer 3 — Approach:   2D distance gradient + heading alignment reward
+        Layer 3 — Navigation: GPS distance gradient + heading alignment + vision centering
+
+        Vision centering: reward proportional to how close the X marker is to
+        the camera centre.  max(0, 1 - sqrt(u_norm^2 + v_norm^2)) gives 1.0
+        when X is centred and 0 at the frame corners.  Scaled by conf so a
+        missing detection contributes nothing.
 
         Args:
-            d_xy:     2D horizontal distance to target (drone position, no kinematics)
-            d_impact: CCIP predicted miss distance (from _predict_impact_point)
+            d_xy: 2D horizontal distance to target (metres)
 
         Returns:
             reward (float), terminated (bool), info (dict)
@@ -896,7 +675,6 @@ class DroneDropEnv(gym.Env):
             reward += self._cfg_penalty_overspeed
 
         # Skip vision-based penalty when running without camera sensor.
-        # use_vision=False means pixel_coords will always be zero (no detector).
         if self._cfg_use_vision and conf == 0.0:
             info['target_lost'] = True
             reward += self._cfg_penalty_target_lost
@@ -905,61 +683,56 @@ class DroneDropEnv(gym.Env):
         # Layer 2 — Efficiency / Stability
         # R2 = -w_time - w_ang_vel * ||omega||^2 - w_action_smooth * ||Δa||^2
         # ----------------------------------------------------------------
-        omega_sq = float(np.dot(ang, ang))   # ||omega||^2
+        omega_sq = float(np.dot(ang, ang))
 
         action_arr = np.asarray(action, dtype=np.float32)
         delta_action = action_arr - self.action_prev
         action_smooth_sq = float(np.dot(delta_action, delta_action))
 
         r2 = (
-            -0.05
+            -self._cfg_w_time
             - self._cfg_w_ang_vel * omega_sq
             - self._cfg_w_action_smooth * action_smooth_sq
         )
 
         # ----------------------------------------------------------------
-        # Layer 3 — Approach
-        # R3 = w_dist * (d_prev - d_now)           ← linear distance reward
-        #      + w_heading * cos(angle between drone heading and bearing to target)
-        #
-        # NOTE: Previously used exp(-k1*d) potential which saturates to ~0 for
-        # d > 10 m (with k1=1.0, exp(-45) ≈ 6e-20 in float64 — machine zero).
-        # Linear reward gives a nonzero gradient at ANY distance.
-        # k1_potential is retained in config for reference but unused here.
+        # Layer 3 — Navigation + Vision Centering
+        # R3 = w_dist * (d_prev - d_now)              ← GPS distance gradient
+        #      + w_heading * cos_heading * speed_gate  ← heading alignment
+        #      + w_vision_center * centering * conf    ← YOLO centering reward
         # ----------------------------------------------------------------
 
-        # Distance gradient (positive when moving toward target, any distance)
+        # Distance gradient (positive when moving toward target)
         r3_dist = self._cfg_w_dist * (self.d_xy_prev - d_xy)
 
-        # Heading alignment: cos(delta_yaw_to_target)
-        # Use 2-D velocity direction as drone heading proxy.
+        # Heading alignment: cos(angle between drone velocity and bearing to target)
         vx_2d, vy_2d = float(vel[0]), float(vel[1])
         speed_xy = math.sqrt(vx_2d * vx_2d + vy_2d * vy_2d)
         if speed_xy > 0.1:
             dx_to_target = self._cfg_target_x - float(pos[0])
             dy_to_target = self._cfg_target_y - float(pos[1])
             dist_to_target = math.sqrt(dx_to_target ** 2 + dy_to_target ** 2)
-            if dist_to_target > 0.01:
-                cos_heading = (
-                    (vx_2d * dx_to_target + vy_2d * dy_to_target)
-                    / (speed_xy * dist_to_target)
-                )
-            else:
-                cos_heading = 1.0   # already over target
+            cos_heading = (
+                (vx_2d * dx_to_target + vy_2d * dy_to_target)
+                / (speed_xy * dist_to_target)
+            ) if dist_to_target > 0.01 else 1.0
         else:
-            cos_heading = 0.0   # hovering — no heading signal
+            cos_heading = 0.0
 
-        # Speed-gated orientation reward: scales from 0 at hover to full at ≥2 m/s.
-        # Prevents farming cos_heading by crawling/hovering (anti-milking).
-        # speed_gate_enabled=false reproduces Spiral Milking reward hack (ablation).
         speed_gate = min(speed_xy / 2.0, 1.0) if self._cfg_speed_gate else 1.0
         r3_orient = self._cfg_w_heading * cos_heading * speed_gate
 
-        # d_impact shaping: exp(-k_impact * d_impact) gives nonzero gradient at any distance.
-        # Rewards the agent for achieving a trajectory where releasing now would land near target.
-        r3_impact = self._cfg_w_impact * math.exp(-self._cfg_k_impact * d_impact)
+        # Vision centering: reward X marker being close to camera centre.
+        # u_norm, v_norm ∈ [-1,1] where 0 = centre of frame.
+        if self._cfg_use_vision and conf > 0.0:
+            u_n = (pix[0] / 640.0) * 2.0 - 1.0
+            v_n = (pix[1] / 480.0) * 2.0 - 1.0
+            center_dist = math.sqrt(u_n * u_n + v_n * v_n)   # 0 at centre, √2 at corner
+            r3_vision = self._cfg_w_vision_center * max(0.0, 1.0 - center_dist) * conf
+        else:
+            r3_vision = 0.0
 
-        r3 = r3_dist + r3_orient + r3_impact
+        r3 = r3_dist + r3_orient + r3_vision
 
         # Advance d_xy_prev for next step
         self.d_xy_prev = d_xy
@@ -968,14 +741,11 @@ class DroneDropEnv(gym.Env):
         info['r2'] = r2
         info['r3'] = r3
         info['d_xy'] = d_xy
-        info['d_impact'] = d_impact    # CCIP predicted miss distance (WandB: env/mean_d_impact)
         info['cos_heading'] = cos_heading
-        # Split reward components for per-rollout WandB monitoring
         info['rew_ctrl'] = r2
         info['rew_dist'] = r3_dist
         info['rew_orient'] = r3_orient
-        info['rew_impact'] = r3_impact
-        info['rew_drop'] = 0.0
+        info['rew_vision'] = r3_vision
 
         return reward, False, info
 
@@ -989,16 +759,11 @@ class DroneDropEnv(gym.Env):
             vel = self._node.vel_enu.copy()
             ang = self._node.ang_vel.copy()
             pix = self._node.pixel_coords.copy()
-            attached = float(self._node.payload_attached)
 
         pos_n = np.nan_to_num(pos / POS_SCALE, nan=0.0)
         vel_n = np.nan_to_num(vel / VEL_SCALE, nan=0.0)
         ang_n = np.nan_to_num(ang / ANG_VEL_SCALE, nan=0.0)
 
-        # Pixel coordinates normalised to [-1, 1].
-        # When use_vision=False (camera disabled), synthesise conf=1.0 so
-        # downstream reward layers and SB3 normalisation see a valid signal;
-        # u_norm/v_norm remain 0.0 (centred) since no pixel data is available.
         if self._cfg_use_vision:
             u_norm = (pix[0] / 640.0) * 2.0 - 1.0 if pix[2] > 0 else 0.0
             v_norm = (pix[1] / 480.0) * 2.0 - 1.0 if pix[2] > 0 else 0.0
@@ -1006,29 +771,19 @@ class DroneDropEnv(gym.Env):
         else:
             u_norm = 0.0
             v_norm = 0.0
-            conf = 1.0   # synthetic: "target always visible" via kinematics
+            conf = 1.0   # synthetic: "target always visible"
 
         pos_clean = np.nan_to_num(pos, nan=0.0)
-        vel_clean = np.nan_to_num(vel, nan=0.0)
         rel_dx = (pos_clean[0] - self._cfg_target_x) / POS_SCALE
         rel_dy = (pos_clean[1] - self._cfg_target_y) / POS_SCALE
 
-        # CCIP features: predicted miss distance and time-of-flight
-        # t_f is clamped at 10s in _predict_impact_point; d_impact normalised by POS_SCALE.
-        _, _, t_f_obs, d_impact_obs = self._predict_impact_point(pos_clean, vel_clean)
-        obs_d_impact = float(np.clip(d_impact_obs / self._cfg_pos_scale, 0.0, 1.0))
-        obs_t_f = float(np.clip(t_f_obs / 10.0, 0.0, 1.0))
-
         obs = np.array([
-            *np.clip(pos_n, -1.0, 1.0),    # 0-2  world position (ENU, normalised)
-            *np.clip(vel_n, -1.0, 1.0),    # 3-5  world velocity (ENU, normalised)
-            *np.clip(ang_n, -1.0, 1.0),    # 6-8  angular velocity (body, normalised)
-            u_norm, v_norm, conf,           # 9-11 vision: pixel u, v, confidence
-            attached,                       # 12   payload attached flag
-            np.clip(rel_dx, -1.0, 1.0),    # 13   relative x to target (normalised)
-            np.clip(rel_dy, -1.0, 1.0),    # 14   relative y to target (normalised)
-            obs_d_impact,                  # 15   CCIP miss dist / 50m  (0=on target)
-            obs_t_f,                       # 16   CCIP t_f / 10s        (0=drop now)
+            *np.clip(pos_n, -1.0, 1.0),    # 0-2   world position (ENU, normalised)
+            *np.clip(vel_n, -1.0, 1.0),    # 3-5   world velocity (ENU, normalised)
+            *np.clip(ang_n, -1.0, 1.0),    # 6-8   angular velocity (body, normalised)
+            u_norm, v_norm, conf,           # 9-11  vision: pixel u, v, confidence
+            np.clip(rel_dx, -1.0, 1.0),    # 12    relative x to target (normalised)
+            np.clip(rel_dy, -1.0, 1.0),    # 13    relative y to target (normalised)
         ], dtype=np.float32)
         return obs
 

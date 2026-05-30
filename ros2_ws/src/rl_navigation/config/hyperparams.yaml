@@ -41,62 +41,35 @@ environment:
   stagnation_start_step: 200    # Round 2: step 200 이후부터 체크
   obs_wait_timeout: 0.02
   cruise_poll_timeout: 60.0
-  use_vision: false
+  use_vision: true
 
 reward:
-  # --- Physics ---
-  g: 9.81
-
-  # --- Drop trigger (hybrid: manual + auto safety net) ---
-  auto_drop_threshold: 3.0     # Issue #006: 10.0 → 3.0 (안전망, manual drop이 주력)
-  # manual drop 비활성 — action[4] 무시 ("drop ASAP" exploit 방지)
-  random_drop_start_step: 600  # Round 2: 150→600 (600 step 자유 접근 확보)
-  random_drop_prob: 0.005      # 매 step 0.5% 확률로 random drop
-  drop_wait_timeout: 10.0
-
-  # --- Approach shaping (Layer 3) ---
-  k1_potential: 1.0
+  # --- Approach shaping ---
   w_dist: 1.0
   w_heading: 0.7
   speed_gate_enabled: true
 
-  # --- d_impact shaping (Layer 3 addition) ---
-  w_impact: 0.4
-  k_impact: 0.05
+  # --- Vision centering ---
+  w_vision_center: 1.0          # reward for X marker at camera centre (0=edge, 1=centre)
 
-  # --- Stability/efficiency (Layer 2) ---
-  w_time: 0.01
+  # --- Stability/efficiency ---
+  w_time: 0.05
   w_ang_vel: 0.05
   w_action_smooth: 0.05
 
-  # --- Terminal drop accuracy (Layer 4) ---
-  k2_precision: 0.2            # Round 2: 0.5 → 0.2 (10m 구간 gradient 확보)
-  w_prediction: 20.0           # Issue #010: CCIP 예측-실제 일치도 보상 가중치
-  k_prediction: 0.1            # Issue #010: prediction gap 감쇠 (0.1 = 완만, gap 12m에서도 신호 유지)
-  w_drop_base: 100.0
-  r_success_jackpot: 50.0      # Issue #003: 100 → 50 (스케일 축소)
-  success_threshold: 5.0            # total_success_count 기준 (중간 목표)
-  jackpot_threshold: 0.1            # total_jackpot_count 기준 (최종 목표)
-  penalty_instability: 50.0
+  # --- Layer 1 penalties ---
+  penalty_crash: -50.0
+  penalty_overspeed: -30.0
+  penalty_target_lost: -10.0
+  penalty_out_of_range: -30.0
+  penalty_max_altitude: -30.0
+  penalty_stagnation: -15.0
+  penalty_bad_attitude: -30.0
   limit_ang_vel: 2.0
   limit_tilt: 0.26
 
-  # --- Step 별 안전 검사 ---
-  limit_inverted_tilt: 1.047
-  penalty_bad_attitude: -30.0   # Issue #003: -50 → -30 (스케일 축소)
-
   # --- Episode termination penalties ---
-  drop_attempt_bonus: 30.0      # Issue #001+#003: 150 → 30 (precision 비중 상승)
-  k_drop_proximity: 0.15        # Round 2: 0.3 → 0.15 (10m 구간에서도 bonus 유지)
-  truncation_penalty: -15.0     # Issue #003: -30 → -15 (스케일 축소)
-
-  # --- Layer 1 penalties ---
-  penalty_crash: -50.0          # Issue #003: -100 → -50 (스케일 축소)
-  penalty_overspeed: -30.0      # Issue #003: -50 → -30 (스케일 축소)
-  penalty_target_lost: -10.0
-  penalty_out_of_range: -30.0   # Issue #002: 신규 — out_of_range truncate 페널티
-  penalty_max_altitude: -30.0   # Round 2: 고도 상한 초과 페널티
-  penalty_stagnation: -15.0     # Round 2: 정체 감지 페널티
+  truncation_penalty: -15.0
 
 wandb:
   project: "drone-bombard-sac"
