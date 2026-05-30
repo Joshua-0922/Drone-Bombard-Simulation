@@ -19,9 +19,9 @@ CONTAINER="drone-bombard-isaac"
 # Isaac Sim shader/pip 캐시 — 재빌드 방지
 CACHE_ROOT="/opt/isaacsim-cache"
 ISAACSIM_CACHE_ARGS=(
-  -v "${CACHE_ROOT}/kit:/root/.local/share/ov/pkg"
-  -v "${CACHE_ROOT}/ov:/root/.local/share/ov/data"
-  -v "${CACHE_ROOT}/pip:/root/.local/lib/python3.11/site-packages"
+  -v "${CACHE_ROOT}/kit:/isaac-sim/kit/cache"
+  -v "${CACHE_ROOT}/ov:/root/.cache/ov"
+  -v "${CACHE_ROOT}/pip:/root/.cache/pip"
   -v "${CACHE_ROOT}/glcache:/root/.cache/nvidia/GLCache"
   -v "${CACHE_ROOT}/computecache:/root/.nv/ComputeCache"
 )
