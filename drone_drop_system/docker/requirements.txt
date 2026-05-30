@@ -1,45 +1,11 @@
-# --- Core Python packages ---
-numpy<2.0
-scipy
+# Isaac Sim 5.1.0 bundled Python 3.11 target
+# numpy / torch / gymnasium / protobuf version pins removed — bundled versions win
+
+wandb>=0.18.0
+tensorboard
 matplotlib
 tqdm
 pyyaml
-
-# --- Machine Learning / Deep Learning ---
-# ⚠ Do NOT install torch via pip inside Docker
-# torch, torchvision, torchaudio → Dockerfile에서 명시적 설치!
-
-# --- Computer Vision ---
-opencv-python
-ultralytics       # YOLOv8
-
-# --- ROS2 Python interface ---
-rosbags
-
-# --- DL 모델 학습/실험 도구 ---
-tensorboard
 pillow
-
-# --- Utility ---
+scipy
 pytest
-pydantic
-future
-pyserial
-
-# --- PX4 & Build Tools ---
-kconfiglib
-symforce
-pyros-genmsg
-jsonschema
-
-# --- 🧠 강화학습 (Reinforcement Learning) ---
-gymnasium[classic-control]==1.2.3
-stable-baselines3[extra]>=2.2.1   # [추가됨] PPO, SAC 등 RL 알고리즘 라이브러리
-
-# --- 시각화 ---
-pygame==2.6.1
-matplotlib>=3.8.0
-tensorboard>=2.15.0
-
-# --- 실험 추적 (Experiment Tracking) ---
-wandb>=0.18.0

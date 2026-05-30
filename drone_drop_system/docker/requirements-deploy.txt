@@ -1,0 +1,4 @@
+# Deploy-only dependencies (computer vision inference)
+# NOT included in the training image — add via separate docker run or overlay
+opencv-python
+ultralytics

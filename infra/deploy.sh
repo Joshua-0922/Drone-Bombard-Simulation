@@ -21,7 +21,39 @@ SCHEDULER_JOB="drone-watchdog-trigger"
 SA_NAME="drone-watchdog-sa"
 SA_EMAIL="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
 
+REGISTRY="us-central1-docker.pkg.dev/${PROJECT}/drone-bombard"
+ISAAC_IMAGE="${REGISTRY}/isaac-lab"
+
 log() { echo ""; echo "=== $* ==="; }
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# ============================================================
+# STEP -1: Isaac 이미지 빌드 + Artifact Registry push
+# ============================================================
+log "STEP -1: NGC 로그인 + Isaac 이미지 빌드 + AR push"
+echo "NGC API 키 필요: https://ngc.nvidia.com/setup/api-key"
+echo "  docker login nvcr.io  (username: \$oauthtoken, password: <API key>)"
+read -p "NGC 로그인 완료? (y/N) " ngc_ok
+[ "$ngc_ok" = "y" ] || { echo "NGC 로그인 후 재실행하세요."; exit 0; }
+
+# Artifact Registry 리포 생성 (이미 있으면 무시)
+gcloud artifacts repositories create drone-bombard \
+  --repository-format=docker \
+  --location=us-central1 \
+  --project="$PROJECT" \
+  --description="Drone Bombard training images" 2>/dev/null || true
+
+gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+
+echo "이미지 빌드 중 (~30GB 다운로드, 첫 빌드는 시간이 걸림)..."
+docker build \
+  -f "${REPO_ROOT}/drone_drop_system/docker/Dockerfile" \
+  -t "${ISAAC_IMAGE}:latest" \
+  "${REPO_ROOT}"
+
+docker push "${ISAAC_IMAGE}:latest"
+echo "이미지 push 완료: ${ISAAC_IMAGE}:latest"
 
 # ============================================================
 # STEP 0: GPU 가용성 확인

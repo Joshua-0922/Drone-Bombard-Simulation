@@ -1,0 +1,10 @@
+ros2_ws/
+gazebo_models/
+notes/
+infra/
+.git/
+.github/
+__pycache__/
+*.pyc
+*.pyo
+.env
