@@ -127,6 +127,36 @@ if 'd_xy' in info:
 
 ---
 
+## Rule 8 — Per-step Reward Density 변경 금지 (SAC 발산)
+
+> **상세 메커니즘:** [[research/sac_reward_density_junsang]] · **발견 run:** Round 4 `4j46qwpk` (2026-05-31)
+
+**SAC auto-entropy는 per-step reward density에 매우 민감하다. density를 줄이면 발산한다.**
+
+- Round 4에서 hover 차단을 위해 per-step 보상을 축소(`w_heading` 0.7→0.3) + per-step 페널티 신규(`w_distance_penalty` 0.03) → **146k에서 발산**
+  - per-step : drop reward 비율 1:300 → **1:700** (sparsity 2배)
+  - 결과: `ent_coef` 0.58 → **6.03 폭주**, `critic_loss` 100 → **230,000+**
+- **발산 모드 메커니즘:** sparsity↑ → critic variance↑ → policy가 dominant 신호(drop)에 집중 → entropy↓ → SAC "탐색 부족" 판단 → `ent_coef`↑ → bounded action space[-1,1]라 entropy 못 올림 → 양성 피드백 → 발산
+
+**규칙:**
+1. hover/loitering exploit 차단은 **per-step density를 건드리지 말고 terminal signal로 해결** (Round 5 Hover Terminal Penalty: 종료 시 -15 1회)
+2. per-step 보상 weight를 바꿔야 하면 반드시 짧은 run에서 `ent_coef` 추세 먼저 확인 (단조 감소 = 정상)
+3. 정상 oscillation vs 발산 구별 (Known Failure Modes 참조)
+
+---
+
+## Rule 9 — Post-success Regression
+
+> **발견:** Round 2 `z05fx7g9`, Round 3 `lidq3ydu` 공통
+
+큰 success terminal reward(+200~+550)가 critic을 흔들어 직후 정책이 붕괴하는 패턴.
+
+- Round 3: 100~125k 최우수(avg 13.9m, success 3건) → 125~150k avg 35.5m로 후퇴
+- 완화책: PER priority cap(30), LR 1e-4, tau 0.002, Hard cap [-200,+300] — 발산은 막지만 oscillation 자체는 SAC + sparse reward의 본질적 특성 (완전 제거 불가)
+- **판단:** 단기 fluctuation에 흔들리지 말고 장기 추세로 평가
+
+---
+
 > **Phase 1 전체 계획:** [[research/phase1_plan]] — CCIP 기반 자율 접근, 8주, 14개 실험
 
 ---
@@ -140,3 +170,8 @@ if 'd_xy' in info:
 | CRUISE 타임아웃 | PX4 arm race / 드론 뒤집힘 | `reset()` 1회 재시도; 10에피소드당 >1회면 조사 |
 | `ep_rew_mean` 나선형 하락 | CRUISE 타임아웃 → 크래시 페널티 에피소드 버퍼 오염 | CRUISE 타임아웃 근본 원인 수정; fps 하락 확인 |
 | fps 급감 | CRUISE 타임아웃 (65 s 대기) 또는 ODE 크래시 | 로그에서 "Timed out waiting for CRUISE" 확인 |
+| `ent_coef` 폭주 (1.0+), `critic_loss` 1000+ 지속 | per-step reward density 과소 → reward sparsity 발산 (SAC auto-entropy 양성 피드백) | per-step density 복원; hover는 terminal penalty로 차단 → [[research/sac_reward_density_junsang]] (Rule 8) |
+| critic 폭주 (17K), 큰 terminal과 충돌 | `gradient_steps=4` + 큰 terminal reward(+250~350) 동시 → critic 4배 빠르게 fit 실패 | `gradient_steps` 1로 복원 (junsang_v2 `zn7xrm7e` 발산) |
+| 100~125k 최우수 후 급후퇴 | post-success regression (큰 success reward가 critic 교란) | PER cap + LR/tau↓로 완화, 장기 추세로 평가 (Rule 9) |
+| hover 후 random_drop으로 종료 (drop_error ≈ spawn→target 거리) | hover exploit — heading 보상 수확이 success보다 안전 | Hover Terminal Penalty (종료 시 -15, sustained hover만) → [[experiments/exp_004_round5_hover_junsang]] |
+| `gz model --list` 5s timeout → 학습 abort | PX4 `.ulg` 로그 누적(20GB) → 디스크 I/O 지연 | PX4 로깅 비활성화 (`SDLOG_MODE -1`), 누적 로그 삭제 |

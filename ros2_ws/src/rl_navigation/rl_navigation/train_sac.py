@@ -13,14 +13,142 @@ import rclpy
 import yaml
 import wandb
 from ament_index_python.packages import get_package_share_directory
+import math as _math
 import torch
+import torch as th
+from torch.nn import functional as F
 from stable_baselines3 import SAC
 from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.callbacks import (
     BaseCallback, CallbackList, CheckpointCallback)
 from stable_baselines3.common.type_aliases import ReplayBufferSamples
+from stable_baselines3.common.utils import polyak_update
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from wandb.integration.sb3 import WandbCallback
+
+
+class DampedEntropySAC(SAC):
+    """Round 6: SAC with damped entropy auto-tuning + hard cap (Issue #017).
+
+    Round 4/5에서 ent_coef가 6.0+ 발산하여 학습 망가짐.
+    원인: SAC auto-tuning이 bounded action space에서 양성 피드백 발산.
+    처방:
+      1) Soft damping: log_prob이 target보다 멀어질수록 alpha 증가폭 감소
+         → policy가 자연스럽게 deterministic 수렴하는 것 허용
+      2) Hard cap: 극단 폭주 방지 안전망
+    """
+
+    def __init__(self, *args,
+                 ent_damping_threshold=5.0,
+                 ent_coef_hard_cap=2.0,
+                 **kwargs):
+        super().__init__(*args, **kwargs)
+        self.ent_damping_threshold = ent_damping_threshold
+        self.ent_coef_hard_cap = ent_coef_hard_cap
+
+    def train(self, gradient_steps, batch_size=64):
+        self.policy.set_training_mode(True)
+        optimizers = [self.actor.optimizer, self.critic.optimizer]
+        if self.ent_coef_optimizer is not None:
+            optimizers += [self.ent_coef_optimizer]
+        self._update_learning_rate(optimizers)
+
+        ent_coef_losses, ent_coefs = [], []
+        actor_losses, critic_losses = [], []
+        damping_factors = []  # 모니터링용
+
+        for _ in range(gradient_steps):
+            replay_data = self.replay_buffer.sample(
+                batch_size, env=self._vec_normalize_env)
+
+            if self.use_sde:
+                self.actor.reset_noise()
+
+            actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
+            log_prob = log_prob.reshape(-1, 1)
+
+            ent_coef_loss = None
+            if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
+                ent_coef = th.exp(self.log_ent_coef.detach())
+
+                # Round 6: Soft damping
+                # log_prob_mean이 -target_entropy를 초과하면 (정책이 deterministic)
+                # alpha-증가 그라디언트를 감쇠
+                log_prob_mean = log_prob.mean().item()
+                # target_entropy는 보통 -|A| = -5. -target_entropy = 5
+                concentration = max(0.0, log_prob_mean - (-self.target_entropy))
+                damping = self.ent_damping_threshold / (
+                    self.ent_damping_threshold + concentration)
+                damping_factors.append(damping)
+
+                ent_coef_loss = -(self.log_ent_coef * (
+                    log_prob + self.target_entropy).detach()).mean()
+                ent_coef_loss = ent_coef_loss * damping
+                ent_coef_losses.append(ent_coef_loss.item())
+            else:
+                ent_coef = self.ent_coef_tensor
+
+            ent_coefs.append(ent_coef.item())
+
+            if ent_coef_loss is not None and self.ent_coef_optimizer is not None:
+                self.ent_coef_optimizer.zero_grad()
+                ent_coef_loss.backward()
+                self.ent_coef_optimizer.step()
+                # Round 6: Hard cap
+                with th.no_grad():
+                    max_log_alpha = _math.log(self.ent_coef_hard_cap)
+                    self.log_ent_coef.clamp_(max=max_log_alpha)
+
+            with th.no_grad():
+                next_actions, next_log_prob = self.actor.action_log_prob(
+                    replay_data.next_observations)
+                next_q_values = th.cat(
+                    self.critic_target(replay_data.next_observations, next_actions),
+                    dim=1)
+                next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
+                next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
+                target_q_values = (
+                    replay_data.rewards
+                    + (1 - replay_data.dones) * self.gamma * next_q_values)
+
+            current_q_values = self.critic(replay_data.observations, replay_data.actions)
+            critic_loss = 0.5 * sum(
+                F.mse_loss(current_q, target_q_values) for current_q in current_q_values)
+            critic_losses.append(critic_loss.item())
+
+            self.critic.optimizer.zero_grad()
+            critic_loss.backward()
+            self.critic.optimizer.step()
+
+            q_values_pi = th.cat(
+                self.critic(replay_data.observations, actions_pi), dim=1)
+            min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
+            actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
+            actor_losses.append(actor_loss.item())
+
+            self.actor.optimizer.zero_grad()
+            actor_loss.backward()
+            self.actor.optimizer.step()
+
+            if self._n_updates % self.target_update_interval == 0:
+                polyak_update(
+                    self.critic.parameters(),
+                    self.critic_target.parameters(),
+                    self.tau)
+                polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
+
+            self._n_updates += 1
+
+        self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
+        self.logger.record("train/ent_coef", float(sum(ent_coefs)/len(ent_coefs)))
+        self.logger.record("train/actor_loss", float(sum(actor_losses)/len(actor_losses)))
+        self.logger.record("train/critic_loss", float(sum(critic_losses)/len(critic_losses)))
+        if ent_coef_losses:
+            self.logger.record("train/ent_coef_loss",
+                               float(sum(ent_coef_losses)/len(ent_coef_losses)))
+        if damping_factors:
+            self.logger.record("train/ent_damping",
+                               float(sum(damping_factors)/len(damping_factors)))
 
 
 class PrioritizedReplayBuffer(ReplayBuffer):
@@ -492,11 +620,15 @@ def main(args=None):
     # --- Model ---
     if cli.resume:
         print(f'Loading existing model from {cli.resume} ...')
-        _model = SAC.load(
+        _model = DampedEntropySAC.load(
             cli.resume,
             env=env,
             device=cfg_sac.get('device', 'cuda'),
             tensorboard_log=None,
+            custom_objects=dict(
+                ent_damping_threshold=cfg_sac.get('ent_damping_threshold', 5.0),
+                ent_coef_hard_cap=cfg_sac.get('ent_coef_hard_cap', 2.0),
+            ),
         )
         # Reload replay buffer if preempt checkpoint exists.
         # Skip if num_envs changed — buffer n_envs must match current env.
@@ -513,6 +645,9 @@ def main(args=None):
         per_alpha = cfg_sac.get('per_alpha', 0.6)
         per_eps = cfg_sac.get('per_eps', 0.1)
         per_priority_max = cfg_sac.get('per_priority_max', 30.0)
+        # Round 6: ent_coef damping + hard cap
+        ent_damping_threshold = cfg_sac.get('ent_damping_threshold', 5.0)
+        ent_coef_hard_cap = cfg_sac.get('ent_coef_hard_cap', 2.0)
 
         sac_kwargs = dict(
             learning_rate=cfg_sac.get('learning_rate', 3e-4),
@@ -526,13 +661,16 @@ def main(args=None):
             device=cfg_sac.get('device', 'cuda'),
             tensorboard_log=None,
             verbose=1,
+            ent_damping_threshold=ent_damping_threshold,
+            ent_coef_hard_cap=ent_coef_hard_cap,
         )
         if use_per:
             print(f'[Round 3] PER enabled: alpha={per_alpha}, eps={per_eps}, priority_max={per_priority_max}')
             sac_kwargs['replay_buffer_class'] = PrioritizedReplayBuffer
             sac_kwargs['replay_buffer_kwargs'] = dict(
                 alpha=per_alpha, eps=per_eps, priority_max=per_priority_max)
-        _model = SAC('MlpPolicy', env, **sac_kwargs)
+        print(f'[Round 6] DampedEntropySAC: damping_threshold={ent_damping_threshold}, hard_cap={ent_coef_hard_cap}')
+        _model = DampedEntropySAC('MlpPolicy', env, **sac_kwargs)
 
     print('Starting training...')
     _model.learn(

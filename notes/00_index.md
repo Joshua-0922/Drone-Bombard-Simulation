@@ -12,16 +12,18 @@ type: index
 
 ---
 
-## 현재 상태 (2026-04-23)
+## 현재 상태 (2026-05-31)
 
-- **알고리즘:** SAC, `net_arch=[256,256]`, L4 GPU
-- **보상 함수:** 2026-03-22 패치 완료, **Fresh 1M-step 학습 대기 중**
-- **RTF:** **2** (dry-run 실험으로 RTF=2 최적 확정, avg 59.5 fps)
-- **마지막 정상 체크포인트:** `sac_drop_preempt.zip` (run `8otphxy8`, ~114K steps)
-- **VM:** Spot VM 전환 완료 (IP: `130.211.241.166`) — startup.sh + watchdog CF + Scheduler 배포 완료
-- **자동화:** 선점 → 5분 내 자동 재시작 파이프라인 완성 (무인 야간 학습 가능)
-- **Phase 1 계획:** CCIP 기반 자율 접근 비행 제어기 → [[research/phase1_plan]]
-- **다음 행동:** hyperparams_rtf2.yaml 수정 → colcon build 확인 → Exp 004-dryrun → Exp 005a 야간 (Spot VM 무인 실행)
+- **알고리즘:** SAC, `net_arch=[256,256]`, L4 GPU, PER(α0.6), LR 1e-4, tau 0.002, gamma 0.995
+- **현재 학습:** **Round 5 (`sdjytkpv`, 300k 진행 중)** — Hover Terminal Penalty → [[experiments/exp_004_round5_hover_junsang]]
+- **최고 성적:** best drop 2.53m (Round 2), success 8건/157k (Round 3). 현재 평균 명중거리 13~22m 수준, 목표 <5m
+- **핵심 교훈:** per-step reward density 변경 금지 → SAC 발산 → [[research/sac_reward_density_junsang]] (Round 4 `4j46qwpk` 발산)
+- **보상/설계:** branch `jekyun_v2` 기반, Round 1~5 누적 튜닝. 최신값 `local/design/design_review.md`
+- **RTF:** **2** (avg 59.5 fps)
+- **인프라:** PX4 `.ulg` 로깅 비활성화(SDLOG_MODE −1) — 20GB 누적 크래시 방지
+- **다음 행동:** Round 5 모니터링 (hover 비율 / ent_coef 안정 / 100k 중간 평가)
+
+> ⚠️ 아래 일부 노트(research/, experiments/ 04월분)는 04-23 시점 기준. 5월 Round 1~5는 [[experiments/training_history]] 및 `local/` 참조.
 
 ---
 
@@ -32,6 +34,13 @@ type: index
 | 001 | 8otphxy8 | 114K | ✅ 완료 | 선형 보상 + CRUISE retry |
 | 002 | — | 0 | ⏳ 대기 | 보상 패치 Fresh Start 필요, RTF=2 |
 | 003 (dry-run) | mtx7ud6o/x8jq9fsy/u8w3xn0w | 5500×3 | ✅ 완료 | RTF 1/2/4 비교 → RTF=2 최적 |
+| Round 1 | ruozrv5x | 150K | ✅ 완료 | hybrid drop, 432 drops, best 4.64m, success 1건 |
+| Round 2 | z05fx7g9 | 150K | ✅ 완료 | success 16건(16배↑), best 2.53m, post-success regression 발견 |
+| Round 3 | lidq3ydu | 157K | ⚠️ 크래시 | PER+안전망, success 8건. PX4 로그 20GB→gz timeout |
+| Round 4 | 4j46qwpk | 146K | ❌ 발산 | per-step density 축소 → ent_coef 6.03 폭주 → [[research/sac_reward_density_junsang]] |
+| Round 5 | sdjytkpv | 300K | 🔄 학습 중 | Hover Terminal Penalty → [[experiments/exp_004_round5_hover_junsang]] |
+
+> 전체 이력: [[experiments/training_history]] · 5월 상세: `local/parameter_log.md`
 
 ## 에러 현황
 
@@ -77,18 +86,21 @@ type: index
 - [[research/system_overview]] — 전체 시스템 (패키지, 토픽, 좌표계, 브리지)
 - [[research/rl_rules]] — RL 실험 규칙, WandB 메트릭, Known Failure Modes
 - [[research/rtf_fps_analysis]] — RTF vs FPS 분석. RTF=2 최적, Python 루프 병목 규명
+- [[research/sac_reward_density_junsang]] — per-step density와 SAC 발산 (Round 4 교훈)
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
 - [[experiments/exp_001_8otphxy8_linear_reward]] — 선형 거리 보상 + CRUISE retry
 - [[experiments/exp_002_reward_shaping_patches]] — 보상 패치 Fresh Training (대기 중)
 - [[experiments/exp_003_rtf_dryrun]] — RTF 1/2/4 dry-run 비교. RTF=2 최적 확정.
+- [[experiments/exp_004_round5_hover_junsang]] — Round 4 발산 → Round 5 Hover Terminal Penalty
 
 ### 에러 (errors/)
 - [[errors/err_20260320_physics_explosion]] — Gazebo ODE 물리 폭발 3중 방어
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-05-31_junsang]] — Round 4 발산 원인 규명(per-step density) → Round 5 설계·시작(Hover Terminal Penalty)
 - [[daily/daily_2026-04-23]] — Spot VM 이전 완료 (startup.sh + watchdog CF + create_spot_vm.sh) + IP 변경 대응
 - [[daily/daily_2026-04-17]] — Phase 1 코드 전체 구현 (변경 1-10, obs 15→17, CCIP auto-drop)
 - [[daily/daily_2026-04-16]] — WandB 연결 + RTF dry-run 실험 + 인프라 고장 해결

@@ -23,6 +23,9 @@ sac:
   per_alpha: 0.6           # priority 강도 (0=uniform, 1=full priority)
   per_eps: 0.1             # priority 최소값 (zero priority 방지)
   per_priority_max: 30.0   # Round 3: priority 상한 (outlier 폭주 방지)
+  # Round 6: ent_coef 발산 방지 (Round 4/5에서 ent_coef 6.0+ 폭주)
+  ent_damping_threshold: 5.0   # log_prob 집중도 임계 (soft damping)
+  ent_coef_hard_cap: 2.0       # ent_coef 절대 상한 (안전망)
 
 environment:
   target_enu_x: 11.0
@@ -114,7 +117,7 @@ reward:
 wandb:
   project: "drone-bombard-sac"
   entity: "nayoonho0922-seoul-national-university"
-  run_name: "round5_hover_terminal_penalty"
+  run_name: "round6_damped_entropy"
   tags: ["sac", "spot-vm", "l4-gpu", "round1"]
   save_model_artifact: true
   log_freq: 1000
