@@ -13,11 +13,53 @@ import rclpy
 import yaml
 import wandb
 from ament_index_python.packages import get_package_share_directory
+import torch
 from stable_baselines3 import SAC
+from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.callbacks import (
     BaseCallback, CallbackList, CheckpointCallback)
+from stable_baselines3.common.type_aliases import ReplayBufferSamples
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from wandb.integration.sb3 import WandbCallback
+
+
+class PrioritizedReplayBuffer(ReplayBuffer):
+    """Static priority PER — Round 3 (조합 C, Issue #016).
+
+    Reward 크기 기반 priority 사용. Success transition (큰 reward) 자주 샘플링.
+    TD-error 업데이트 없는 단순 버전.
+    """
+
+    def __init__(self, *args, alpha=0.6, eps=0.1, priority_max=30.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.alpha = alpha
+        self.eps = eps
+        self.priority_max = priority_max
+        self.priorities = np.zeros(self.buffer_size, dtype=np.float32)
+        self.max_priority = 1.0
+
+    def add(self, obs, next_obs, action, reward, done, infos):
+        # 삽입 위치 기록 (super().add()가 self.pos 갱신하기 전)
+        idx = self.pos
+        super().add(obs, next_obs, action, reward, done, infos)
+        # Priority = min(priority_max, (|reward| + eps)^alpha)
+        # Round 3: priority_max 상한 — outlier (예: 고도 페널티 폭주) 차단
+        r = float(np.abs(reward).max())
+        priority = min(self.priority_max, (r + self.eps) ** self.alpha)
+        self.priorities[idx] = priority
+        if priority > self.max_priority:
+            self.max_priority = priority
+
+    def sample(self, batch_size, env=None):
+        # Priority-weighted sampling
+        upper = self.buffer_size if self.full else self.pos
+        priorities = self.priorities[:upper]
+        probs = priorities / priorities.sum()
+        indices = np.random.choice(upper, size=batch_size, p=probs)
+        # 마지막 위치(self.pos)는 다음 step에서 덮어쓸 거라 stale 가능 → 회피
+        if not self.full:
+            indices = np.where(indices == self.pos, (indices + 1) % upper, indices)
+        return self._get_samples(indices, env=env)
 
 from rl_navigation.drone_drop_env import DroneDropEnv
 
@@ -55,6 +97,10 @@ class WandbMetricsCallback(BaseCallback):
         self._total_auto_drops: int = 0
         self._total_success: int = 0
         self._total_jackpot: int = 0
+        self._truncate_counts: dict = {
+            'crash': 0, 'overspeed': 0, 'ang_vel': 0, 'inverted': 0,
+            'timeout': 0, 'out_of_range': 0, 'max_altitude': 0,
+        }
 
     def _on_step(self):
         infos = self.locals.get('infos', [])
@@ -67,6 +113,9 @@ class WandbMetricsCallback(BaseCallback):
 
             if done:
                 self._total_episodes += 1
+                reason = info.get('truncate_reason')
+                if reason in self._truncate_counts:
+                    self._truncate_counts[reason] += 1
                 if 'drop_error_actual_m' in info:
                     self._ep_drop_errors.append(info['drop_error_actual_m'])
                     self._total_drops += 1
@@ -110,6 +159,8 @@ class WandbMetricsCallback(BaseCallback):
         log_dict['env/total_auto_drops'] = self._total_auto_drops
         log_dict['env/total_success'] = self._total_success
         log_dict['env/total_jackpot'] = self._total_jackpot
+        for reason, count in self._truncate_counts.items():
+            log_dict[f'env/total_truncate_{reason}'] = count
 
         if log_dict:
             # NOTE: time/total_timesteps 는 위 L123 fetch 에서 이미 들어가지만,
@@ -457,9 +508,13 @@ def main(args=None):
             print(f'Skipping replay buffer (num_envs={num_envs}, '
                   f'buffer was single-env — shape mismatch)')
     else:
-        _model = SAC(
-            'MlpPolicy',
-            env,
+        # Round 3 (조합 C): PER 사용 여부 결정
+        use_per = cfg_sac.get('use_per', False)
+        per_alpha = cfg_sac.get('per_alpha', 0.6)
+        per_eps = cfg_sac.get('per_eps', 0.1)
+        per_priority_max = cfg_sac.get('per_priority_max', 30.0)
+
+        sac_kwargs = dict(
             learning_rate=cfg_sac.get('learning_rate', 3e-4),
             buffer_size=cfg_sac.get('buffer_size', 100_000),
             batch_size=cfg_sac.get('batch_size', 256),
@@ -472,6 +527,12 @@ def main(args=None):
             tensorboard_log=None,
             verbose=1,
         )
+        if use_per:
+            print(f'[Round 3] PER enabled: alpha={per_alpha}, eps={per_eps}, priority_max={per_priority_max}')
+            sac_kwargs['replay_buffer_class'] = PrioritizedReplayBuffer
+            sac_kwargs['replay_buffer_kwargs'] = dict(
+                alpha=per_alpha, eps=per_eps, priority_max=per_priority_max)
+        _model = SAC('MlpPolicy', env, **sac_kwargs)
 
     print('Starting training...')
     _model.learn(

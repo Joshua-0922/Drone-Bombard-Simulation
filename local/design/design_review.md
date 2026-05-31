@@ -3,7 +3,7 @@
 > 이 문서는 **현재 기준 최종 결정만** 담는다.
 > 변경 이유, 이력, 대안 분석은 날짜별 design_review 파일 참조.
 >
-> 최종 갱신: 2026-05-26 (Round 2 최종: gradient 완만화 + max_steps 800 + 종료 조건 추가 + WandB 정리)
+> 최종 갱신: 2026-05-31 (Round 4 발산 분석 + Hover terminal penalty + Round 5 시작)
 > 상세 이력: [design_review_2026-05-25.md](design_review_2026-05-25.md)
 
 ---
@@ -44,9 +44,10 @@ Per-step 보상 (Layer 2+3):
   R = -0.05 (time)
     - 0.05 * ||omega||²
     - 0.05 * ||Δa||²
-    + 1.0 * (d_prev - d_now)       ← Round 2: 0.5→1.0
-    + 0.7 * cos(heading) * speed_gate
+    + 1.0 * (d_prev - d_now)              ← Round 2: 0.5→1.0
+    + 0.7 * cos(heading) * speed_gate     ← Round 5: 0.3→0.7 복원
     + 0.4 * exp(-0.05 * d_impact) * speed_gate
+    (Round 4 w_distance_penalty 0.03 제거됨 — SAC 발산 원인)
 ```
 
 ---
@@ -86,11 +87,35 @@ wandb에서 `env/total_drops` / `env/total_auto_drops`로 구분 추적.
 | ang_vel | \|\|omega\|\| > 2.0 rad/s | -30 |
 | inverted | \|roll\| or \|pitch\| > 60° | -30 |
 | out_of_range | d_xy > 100m | -30 |
-| max_altitude | altitude > 25m | -30 — Round 2 신규 |
-| stagnation | 200 step 내 d_xy 2m 미감소 (step≥200) | -15 — Round 2 신규 |
+| max_altitude | altitude > 50m | -15 — Round 3 부활 |
 | timeout | step ≥ 800 (drop 미발동 시) | -15 — Round 2: 500→800 |
+| hover_penalty | max_consecutive_still > 200 step | -15 — Round 5 신규 |
 
-우선순위: crash > overspeed > ang_vel > inverted > out_of_range > max_altitude > stagnation > timeout
+우선순위: crash > overspeed > ang_vel > inverted > out_of_range > max_altitude > timeout
+
+**Hover Penalty (Round 5 신규)** — episode 종료 시 1회 적용:
+- 조건: max_consecutive_still > 200 step (속도 < 1 m/s 연속)
+- 페널티: -15
+- 제외: drop 발생 시 (terminated) — 정밀 hover 정당
+- **Per-step density 변화 없음** → SAC 안정성 유지 (Round 4 발산 회피)
+
+**Drop 시점 고도 페널티 (Round 3 수정)** — Sigmoid bounded:
+- `penalty = -alt_penalty_max * sigmoid(k * (alt - mid))`
+- 파라미터: max=50, mid=30m, k=0.15
+- 거리별: 15m→-4.7, 20m→-11.7, 30m→-25, 50m→-47.5, 100m+→-50 (포화)
+- Round 2 지수 페널티가 -6.77e9 폭주하여 Sigmoid로 교체 (q13hli0y 학습 실패)
+
+**Max altitude truncate (Round 3, 부활)**:
+- alt > 50m → truncate + 페널티 -15
+- 비행 중 극단 상승 차단 (sigmoid 페널티 외 추가 방어층)
+
+**Reward Hard Cap (Round 3 신규)**:
+- step 끝에 reward 범위 검사: [-200, +300]
+- 범위 밖이면 `[WARN]` 출력 + np.clip
+- 정상 학습엔 영향 없음. 방어적 안전망.
+
+**제거됨**:
+- ~~stagnation~~ (200step/2m progress) — speed_gate가 이미 hover 차단
 
 ---
 
@@ -98,15 +123,16 @@ wandb에서 `env/total_drops` / `env/total_auto_drops`로 구분 추적.
 
 | 파라미터 | 값 |
 |----------|-----|
-| learning_rate | 3e-4 |
+| learning_rate | **1e-4** — Round 3: 3e-4→1e-4 (critic overshoot 완화) |
 | buffer_size | 500,000 |
 | batch_size | 256 |
-| tau | 0.005 |
+| tau | **0.002** — Round 3: 0.005→0.002 (target stability) |
 | gamma | 0.995 |
 | learning_starts | 1,000 |
 | gradient_steps | 1 |
 | net_arch | [256, 256] |
 | device | cuda |
+| **Replay Buffer** | **PER (alpha=0.6, eps=0.1, priority_max=30)** — Round 3 |
 
 ---
 
@@ -164,15 +190,29 @@ Action (5D):
 - 150k steps
 - WANDB_MODE=online
 - run_name: round1_hybrid_drop
-- Round 1 WandB run ID: ruozrv5x (150k 완주)
-  - 결과: 432 drops, best 4.64m, avg 14.02m, success 1건
-  - d_xy 최소 평균 11.3m — auto_drop 3m 도달 0건
-- **Round 2 파라미터 조율** (학습 예정):
-  - w_dist: 0.5→1.0, k2_precision: 0.5→0.2, k_drop_proximity: 0.3→0.15
-  - max_steps: 500→800, random_drop_start_step: 150→600
-  - 종료 조건 추가: max_altitude 25m, stagnation (200step/2m)
-  - WandB metric 22개→8개 정리
-  - 목적: gradient 확보 + 접근 시간 확보 + 이탈 조기 차단
+- Round 1 (ruozrv5x, 150k 완주):
+  - 432 drops, best 4.64m, avg 14.02m, success 1건 (0.2%)
+- Round 2 첫 시도 (dbi74uif, 150k 완주):
+  - 접근 실패 — random_drop_start=150 너무 이름
+- Round 2 최종 (z05fx7g9, 150k 완주):
+  - 427 drops, best 2.53m, avg 19.09m, success 16건 (3.7% — 16배 증가)
+  - Deterministic eval: drop 0건, 모두 crash 종료
+  - 발견: Reset 버그 (fix 완료), Post-success regression
+- Round 3 첫 시도 (q13hli0y, 30k 중단):
+  - 지수 고도 페널티 폭주 → -6.77e+9 outlier → 학습 망가짐
+- Round 3 수정 학습 (lidq3ydu, 157k 크래시):
+  - 104 drops, best 4.32m, success 8건 (Round 2 대비 2배 속도)
+  - 100~125k 최우수 (avg 13.9m, success 3건)
+  - PX4 로그 20GB 누적 → Gazebo timeout 크래시
+- Round 4 발산 (4j46qwpk, 146k 중단):
+  - per-step density 변경 (w_heading↓, distance_penalty 신규) → SAC auto-entropy 발산
+  - ent_coef 6.03 폭주, critic_loss 230k+
+- **Round 5 학습 중** (sdjytkpv, 300k):
+  - Round 4 처방 전면 복원 (w_heading 0.7, distance_penalty 0)
+  - 신규 Hover Terminal Penalty: episode 종료 시 -15 (sustained hover만)
+  - Per-step density 보존 → SAC 안정성 유지
+  - PER + LR/Tau + 4가지 안전장치 + PX4 로깅 비활성 유지
 - Issue #013+#014 해결: inline SDF + paused start + unpause
+- Issue (Reset 버그) 해결: reset()에서 pos_enu/vel/ang/roll/pitch 명시 초기화
 - best drop 시 모델 가중치 자동 저장 (auto drop 성공 시만)
 - 검증 방법: deterministic evaluate + GUI (action replay 폐기)

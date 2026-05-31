@@ -360,10 +360,7 @@ class DroneDropEnv(gym.Env):
         self._cfg_min_alt_start = cfg_env.get('min_altitude_start_step', 1)
         self._cfg_ground_contact_alt = cfg_env.get('ground_contact_altitude', 0.5)
         self._cfg_max_distance = cfg_env.get('max_distance', 100.0)
-        self._cfg_max_altitude = cfg_env.get('max_altitude', 25.0)
-        self._cfg_stagnation_window = int(cfg_env.get('stagnation_window', 200))
-        self._cfg_stagnation_min_progress = cfg_env.get('stagnation_min_progress', 2.0)
-        self._cfg_stagnation_start_step = int(cfg_env.get('stagnation_start_step', 200))
+        self._cfg_max_altitude = cfg_env.get('max_altitude', 50.0)
         self._cfg_obs_wait = cfg_env.get('obs_wait_timeout', 0.15)
         self._cfg_cruise_timeout = cfg_env.get('cruise_poll_timeout', 60.0)
         self._cfg_sim_speed_factor = int(cfg_env.get('sim_speed_factor', 1))
@@ -380,6 +377,7 @@ class DroneDropEnv(gym.Env):
         self._cfg_k2_precision = r.get('k2_precision', 0.2)
         self._cfg_w_dist = r.get('w_dist', 1.0)
         self._cfg_w_heading = r.get('w_heading', 0.7)
+        self._cfg_w_distance_penalty = r.get('w_distance_penalty', 0.0)
         self._cfg_w_time = r.get('w_time', 0.01)
         self._cfg_w_ang_vel = r.get('w_ang_vel', 0.05)
         self._cfg_w_action_smooth = r.get('w_action_smooth', 0.05)
@@ -399,8 +397,15 @@ class DroneDropEnv(gym.Env):
         self._cfg_penalty_overspeed = r.get('penalty_overspeed', -30.0)
         self._cfg_penalty_target_lost = r.get('penalty_target_lost', -10.0)
         self._cfg_penalty_out_of_range = r.get('penalty_out_of_range', -30.0)
-        self._cfg_penalty_max_altitude = r.get('penalty_max_altitude', -30.0)
-        self._cfg_penalty_stagnation = r.get('penalty_stagnation', -15.0)
+        self._cfg_penalty_max_altitude = r.get('penalty_max_altitude', -15.0)
+        # Round 5: Hover 감지 (속도 기준 연속 정체)
+        self._cfg_hover_speed_threshold = r.get('hover_speed_threshold', 1.0)
+        self._cfg_hover_consecutive_threshold = int(r.get('hover_consecutive_threshold', 200))
+        self._cfg_penalty_hover = r.get('penalty_hover', -15.0)
+        # Drop 시점 고도 페널티 (Round 3): sigmoid bounded
+        self._cfg_alt_penalty_max = r.get('alt_penalty_max', 50.0)
+        self._cfg_alt_penalty_mid = r.get('alt_penalty_mid', 30.0)
+        self._cfg_alt_penalty_k = r.get('alt_penalty_k', 0.15)
         self._cfg_w_prediction = r.get('w_prediction', 20.0)
         self._cfg_k_prediction = r.get('k_prediction', 0.1)
         # Layer 4: time to wait for actual physics landing result from drop_calculator
@@ -432,7 +437,9 @@ class DroneDropEnv(gym.Env):
         self._episode_procs = []      # Popen handles for episode nodes
         self.d_xy_prev = 0.0          # 2D horizontal distance to target at previous step
         self.action_prev = np.zeros(5, dtype=np.float32)
-        self._d_xy_history = {}       # step→d_xy for stagnation detection
+        # Round 5: hover 감지 (연속 정체 step 추적)
+        self._consecutive_still = 0
+        self._max_consecutive_still = 0
 
         # --- Infra state ---
         self._infra_procs = []        # Popen handles for infra processes
@@ -480,10 +487,12 @@ class DroneDropEnv(gym.Env):
         self._step_count = 0
         self.dropped = False
         self._episode_reward = 0.0
-        self._d_xy_history = {}
         self._obs_ready.clear()
         self._drop_error_event.clear()
         self.action_prev = np.zeros(5, dtype=np.float32)
+        # Round 5: hover 감지 초기화
+        self._consecutive_still = 0
+        self._max_consecutive_still = 0
 
         # Drain drop-error queue
         while not self._drop_error_queue.empty():
@@ -495,6 +504,17 @@ class DroneDropEnv(gym.Env):
         with self._state_lock:
             self._node.payload_attached = True
             self._node.mission_state = 'IDLE'  # avoid stale CRUISE from last episode
+            # Round 4 fix: stale pos/vel 초기화 — reset 후 PX4 callback 갱신 전 step 1에서
+            # 이전 episode 위치를 읽는 reset 버그 방지.
+            # x, y는 (0, 0) 으로 마킹 (auto_drop은 d_impact≤3m에서 발동 — 14.87m면 안전).
+            # z는 5m로 마킹 (Round 4: 이전 0이 ground_contact_alt 0.5m 위반 → step 1 crash 유발).
+            # 진짜 값은 PX4 callback이 곧 덮어씀.
+            self._node.pos_enu = np.array([0.0, 0.0, 5.0], dtype=np.float32)
+            self._node.vel_enu = np.zeros(3, dtype=np.float32)
+            self._node.ang_vel = np.zeros(3, dtype=np.float32)
+            self._node.roll = 0.0
+            self._node.pitch = 0.0
+            self._node.pixel_coords = np.zeros(3, dtype=np.float32)
 
         # Ensure spin thread is alive before proceeding
         if not self._spin_thread.is_alive():
@@ -619,6 +639,15 @@ class DroneDropEnv(gym.Env):
         d_xy = self._compute_d_xy(pos)
         _, _, t_f, d_impact = self._predict_impact_point(pos, vel)
 
+        # Round 5: Hover 추적 (속도 기준 연속 정체)
+        speed_xy_now = math.sqrt(vel[0]**2 + vel[1]**2)
+        if speed_xy_now < self._cfg_hover_speed_threshold:
+            self._consecutive_still += 1
+        else:
+            self._consecutive_still = 0
+        if self._consecutive_still > self._max_consecutive_still:
+            self._max_consecutive_still = self._consecutive_still
+
         # --- Physics explosion guard ---
         # Catches two failure modes:
         #   a) non-finite d_xy (NaN/Inf slipping past _on_local_pos guards)
@@ -688,6 +717,15 @@ class DroneDropEnv(gym.Env):
                 reward += self._cfg_r_success_jackpot
                 info['jackpot'] = True
 
+            # 고도 페널티 (Round 3): sigmoid bounded — 지수 폐기 (-6.77e9 폭주 방지)
+            # penalty = -alt_penalty_max * sigmoid(k * (alt - mid))
+            alt_at_drop = float(pos[2])
+            sig = 1.0 / (1.0 + math.exp(
+                -self._cfg_alt_penalty_k * (alt_at_drop - self._cfg_alt_penalty_mid)))
+            alt_penalty = self._cfg_alt_penalty_max * sig
+            reward -= alt_penalty
+            info['altitude_penalty'] = alt_penalty
+
             # Instability penalty: large angular velocity or excessive tilt
             omega_mag = float(np.linalg.norm(ang))
             if (omega_mag > self._cfg_limit_ang_vel
@@ -749,17 +787,6 @@ class DroneDropEnv(gym.Env):
                 truncated = True
                 truncate_reason = 'max_altitude'
 
-            if not truncated:
-                self._d_xy_history[self._step_count] = d_xy
-                if self._step_count >= self._cfg_stagnation_start_step:
-                    past_step = self._step_count - self._cfg_stagnation_window
-                    if past_step in self._d_xy_history:
-                        past_d_xy = self._d_xy_history[past_step]
-                        if past_d_xy - d_xy < self._cfg_stagnation_min_progress:
-                            reward += self._cfg_penalty_stagnation
-                            truncated = True
-                            truncate_reason = 'stagnation'
-
             if truncate_reason:
                 info['truncate_reason'] = truncate_reason
 
@@ -771,8 +798,26 @@ class DroneDropEnv(gym.Env):
                 reward += self._cfg_truncation_penalty
             info['truncate_reason'] = 'timeout'
 
+        # Round 5: Hover 페널티 — episode 종료 시 (drop 제외)
+        # 연속 정체 step이 임계 초과 시 한 번에 -15
+        # Drop 시 (terminated) 제외 — drop을 위한 정밀 hover는 정당
+        if truncated and not terminated and not self.dropped:
+            if self._max_consecutive_still > self._cfg_hover_consecutive_threshold:
+                reward += self._cfg_penalty_hover
+                info['hover_penalty'] = True
+                info['max_consecutive_still'] = self._max_consecutive_still
+
         # --- Update action memory ---
         self.action_prev = np.array(action, dtype=np.float32)
+
+        # Round 3: Hard cap + warning — outlier 폭주 차단 (방어 안전망)
+        # 이론 최대: drop bonus 200, max penalty ~100. 범위 밖이면 버그.
+        REWARD_HARD_MAX = 300.0
+        REWARD_HARD_MIN = -200.0
+        if reward > REWARD_HARD_MAX or reward < REWARD_HARD_MIN:
+            print(f'[WARN] reward out of range: {reward:.2f} at step '
+                  f'{self._step_count} (info={info.get("truncate_reason", "")})')
+            reward = float(np.clip(reward, REWARD_HARD_MIN, REWARD_HARD_MAX))
 
         obs = self._get_obs()
         self._episode_reward += reward
@@ -959,7 +1004,12 @@ class DroneDropEnv(gym.Env):
         # Rewards the agent for achieving a trajectory where releasing now would land near target.
         r3_impact = self._cfg_w_impact * math.exp(-self._cfg_k_impact * d_impact)
 
-        r3 = r3_dist + r3_orient + r3_impact
+        # Round 4 (A+C): 거리 비례 per-step 페널티 (hover 차단)
+        # 멀리 있을수록 매 step 비용 부과 — hover 수익 차단
+        # penalty = -w * d_xy / 50  (d_xy=15m → -0.009/step)
+        r3_distance_penalty = -self._cfg_w_distance_penalty * d_xy / 50.0
+
+        r3 = r3_dist + r3_orient + r3_impact + r3_distance_penalty
 
         # Advance d_xy_prev for next step
         self.d_xy_prev = d_xy

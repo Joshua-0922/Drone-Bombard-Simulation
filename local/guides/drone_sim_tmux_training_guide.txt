@@ -61,17 +61,24 @@ tmux = "원격에 떠 있는 가상 터미널" :
   # 살아있으면 kill
 
   # 3. Container 안 sim process 정리 (pkill -f 는 substring — OR 안 됨, 개별 호출)
+  #    ⚠ python3/ros2 도 반드시 종료 — 안 하면 이전 ROS2 노드가 잔류하여
+  #      새 sim에 간섭 (드론 비정상 위치 → step 0 inverted → 학습 불가)
   docker exec drone-bombard-harmonic bash -c "\
     pkill -9 -f 'gz sim'; \
     pkill -9 -f 'bin/px4'; \
     pkill -9 -f 'MicroXRCEAgent'; \
     pkill -9 -f 'parameter_bridge'; \
     pkill -9 -f 'train_sac'; \
+    pkill -9 -f python3; \
+    pkill -9 -f ros2; \
     sleep 2; \
     rm -f /dev/shm/fastrtps_* /tmp/px4_lock-* /tmp/px4-sock-*; \
     rm -f /tmp/*.log /tmp/launch_params_* /tmp/drone_env_gz_ready /tmp/ros_gz_bridge_*.yaml /tmp/x_marker_world_rl_*.sdf"
 
-  # 4. PX4 비행 로그 삭제 (매 에피소드마다 누적, 수GB 차지)
+  # 4. PX4 비행 로그 삭제 (2026-05-31 이후 SDLOG_MODE=-1로 비활성화됨)
+  #    구버전 컨테이너 / SDLOG_MODE 재활성화 시 누적 가능
+  #    7시간+ 학습에서 20GB 누적 → Gazebo timeout 크래시 (Round 3 lidq3ydu 사례)
+  #    Round 4부터 SDLOG_MODE=-1 (rcS 173번 줄)로 비활성, 이 명령은 안전망 역할
   docker exec drone-bombard-harmonic bash -c "\
     rm -rf /opt/PX4-Autopilot/build/px4_sitl_default/rootfs/log/* && \
     echo 'PX4 logs cleaned'"

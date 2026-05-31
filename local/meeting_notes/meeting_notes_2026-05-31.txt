@@ -1,0 +1,241 @@
+================================================================================
+ Drone-Bombard-Simulation 작업 정리 — 2026-05-31
+ 세션 기간 : 2026-05-30 ~ 2026-05-31
+ 직전 노트 : meeting_notes_2026-05-30.txt
+ 핵심 변화 : Round 3 수정 학습 → 7시간 후 Gazebo timeout 크래시 →
+            원인 진단 (PX4 20GB 로그) → Hover exploit 분석 →
+            Round 4 (A+C 조합) 시작
+================================================================================
+
+
+********************************************************************************
+*  PART 1 — Round 3 수정 학습 진행 + 크래시 (run lidq3ydu)
+********************************************************************************
+
+  Round 3 수정 학습 (조합 C + 4가지 안전장치):
+    - PER (alpha=0.6, eps=0.1, priority_max=30)
+    - LR 1e-4, tau 0.002
+    - Sigmoid altitude penalty (max -50)
+    - max_altitude truncate 50m (-15)
+    - Hard cap [-200, +300] + warning
+
+  진행:
+    14:12 시작 → 7시간 학습 → 157k 시점에서 크래시
+
+  크래시 에러:
+    subprocess.TimeoutExpired: Command '['gz', 'model', '--list']'
+    timed out after 5.0 seconds
+    위치: _check_infra_healthy() — CRUISE 복구 시도 중
+
+  마지막 체크포인트: sac_drop_95000_steps.zip (95k)
+  → 95k 이후 60k step의 학습은 저장 안 됨 (silent fail 추정)
+
+
+********************************************************************************
+*  PART 2 — Round 3 데이터 분석 (157k까지)
+********************************************************************************
+
+  총 drop: 104건, 평균 22.42m, Best 4.32m, Success 8건 (7.7%)
+
+  25k 구간별:
+    0~25k:    14건 avg=28.8m success=2
+    25~50k:   11건 avg=27.7m hover=45% (5건!) success=0
+    50~75k:   22건 avg=26.7m hover=0%
+    75~100k:  21건 avg=14.8m hover=14% success=2
+    100~125k: 22건 avg=13.9m hover=36% (8건!) success=3 ← 최우수
+    125~150k: 10건 avg=35.5m success=0 ← post-success regression
+    150~175k: 4건 avg=16.6m
+
+  주요 관찰:
+    - PER + LR/Tau 효과 확인: success 8건 (Round 2 대비 2배 속도)
+    - Best episodes (107k, 108k, 124k): n_steps 737~795 장시간 비행 + 정밀 drop
+      step 107449: err 4.32m, reward 550 (역대 최고)
+    - Hover와 success 동시 학습 — 정책 진동
+    - Post-success regression 여전 (125~150k 35m로 후퇴)
+
+
+********************************************************************************
+*  PART 3 — 크래시 원인 진단 (PX4 로그 누적)
+********************************************************************************
+
+  컨테이너 내 PX4 로그 폴더:
+    /opt/PX4-Autopilot/build/px4_sitl_default/rootfs/log/
+    크기: 20GB (8.1G + 3.0G + 이전 누적)
+    파일 수: 1547 (5월 30일) + 774 (5월 31일) + 이전
+
+  메커니즘:
+    1) PX4가 매 에피소드마다 .ulg 비행 로그 작성
+    2) 파일 누적 → 디스크 I/O 느려짐
+    3) Gazebo 명령 응답 지연 (gz model --list 5초 초과)
+    4) Timeout → reset() 예외 → 학습 abort
+
+  .ulg 파일은 우리 RL 학습에서 사용 안 함:
+    - PX4 자체 디버깅, Flight Review 시각화, PID 튜닝용
+    - 우리는 ROS topic 변환된 obs (pos_enu 등)만 사용
+    - 모든 분석은 drop_episodes/*.npz로 진행
+
+  해결:
+    A. PX4 로깅 비활성화 (SDLOG_MODE 1 → -1)
+       /opt/PX4-Autopilot/build/px4_sitl_default/etc/init.d-posix/rcS
+    B. 누적된 20GB 삭제
+
+  → 다음 학습부터 .ulg 0개 생성, 디스크 누적 0
+
+
+********************************************************************************
+*  PART 4 — Hover Exploit 분석 (Issue #017)
+********************************************************************************
+
+  발견:
+    drop_error 13~16m 구간에 16건 (15.4%)
+    특히 14.87m = sqrt(11² + 10²) = 스폰→타겟 거리 정확 매칭
+    n_steps 600+ → 스폰에서 random_drop 발동까지 대기
+
+  원인:
+    - w_heading 0.7 × 600 step hover = +420 (큰 수익)
+    - random_drop 자동 발동 → episode 안전하게 종료
+    - 안전한 +422 vs 위험한 success +50~-50
+    → agent에게 hover가 합리적 선택
+
+  검토한 7가지 해결책:
+    A. w_heading 감소 (heading 보상 약화)
+    B. Speed-gated heading 엄격화
+    C. 거리 기반 per-step 페널티 (멀리 있으면 비용)
+    D. Hover 명시적 감지
+    E. Random drop 위치 페널티
+    F. Time penalty 강화
+    G. Stagnation truncate (기각)
+
+  결정: A + C 조합 (가장 자연스럽고 부작용 적음)
+
+
+********************************************************************************
+*  PART 5 — Round 4 시작 (run vo1l9wl6, 300k)
+********************************************************************************
+
+  변경 (Round 3 기반에 추가):
+    w_heading: 0.7 → 0.3 (Issue #017 A)
+    w_distance_penalty: 0.03 신규 (Issue #017 C)
+      per_step_penalty = -0.03 * d_xy / 50
+
+  예상 효과 (Hover 600 step at d_xy=15m):
+    heading: 0.3 × 600 = +180 (기존 +420, -57%)
+    distance penalty: -5.4
+    drop: +8
+    총: +183 (기존 +422)
+
+  순위: success(232) > hover(183) ≈ 접근(179)
+
+  인프라:
+    PX4 로깅 비활성화 적용 완료
+    Round 3 결과 archive/round3_lidq3ydu_crashed_2026-05-31/
+
+  주목 포인트:
+    1. Hover 비율 감소 (Round 3: 100~125k에서 36%)
+    2. Success 빈도 증가 (Round 3: 8건/157k)
+    3. 학습 안정성 (long run crash 안 함)
+    4. [WARN] 발생 여부
+
+
+********************************************************************************
+*  PART 6 — Round 4 발산 + Round 5 (Hover Terminal Penalty) 시작
+********************************************************************************
+
+  Round 4 첫 시도 (vo1l9wl6, 14k):
+    증상: ep_len_mean=1 stuck, 모든 episode 1 step만에 crash
+    원인: reset() 버그 fix 부작용 — pos_enu z=0 → ground_contact 트리거
+    Fix: pos_enu = (0, 0, 5.0) — z를 5m로 마킹
+    재시작: 4j46qwpk
+
+  Round 4 재시도 (4j46qwpk, 146k 발산):
+    초반: 정상 학습 (0~50k success 1건, drops 7+11+7+5+4=34건)
+    후반: 발산
+      - 56~70k: 큰 양수(+274, +187) + 큰 음수(-184, -256) 교차
+      - ent_coef 0.58 → 1.5 → 6.03 폭주 (정상 0.3~0.5)
+      - critic_loss 100 → 1000 → 230,000+ (정상 100~500)
+      - ep_len 310 → 143 감소
+      - ep_rew -13 → -33 악화
+
+  발산 원인 정밀 분석:
+    1. Round 4 처방의 핵심:
+       w_heading: 0.7 → 0.3 (per-step heading 보상 축소)
+       w_distance_penalty: 0.03 신규 (per-step 페널티)
+       → Per-step 보상 magnitude 축소
+
+    2. 보상 비율 변화:
+       Round 3: per-step ~0.7 vs drop ~200 → 1:300
+       Round 4: per-step ~0.3 vs drop ~200 → 1:700 (2배 sparse)
+
+    3. SAC auto-entropy 발산 모드 트리거:
+       a) Reward sparsity ↑ → critic estimate variance ↑
+       b) Policy가 dominant 신호 (drop)에 집중 → entropy ↓
+       c) SAC: "exploration 부족" 판단 → ent_coef ↑
+       d) Bounded action space [-1, 1] → entropy 못 올라감
+       e) SAC: "여전히 부족" → ent_coef ↑↑
+       f) 양성 피드백 → 6.03 발산
+
+    교훈: Per-step 보상 magnitude 변경은 SAC 발산 위험.
+          Hover 차단은 다른 방법 필요 (terminal signal 등).
+
+
+********************************************************************************
+*  PART 7 — Round 5 결정 (Hover Terminal Penalty)
+********************************************************************************
+
+  사용자 제안: episode 종료 시 hover 판단 후 1회 페널티
+  장점:
+    - Per-step 보상 density 그대로 → SAC 안정성 유지
+    - Terminal 신호 추가만 → 발산 모드 회피
+    - "잠시 hover OK, 지속 hover BAD" 자연스러운 표현
+
+  Hover 감지 방법 5가지 검토:
+    A. 속도 기준 연속 정체 ★ (선택)
+    B. 거리 진전 없음
+    C. 최소 거리 갱신 간격
+    D. 총 정체 시간 누적
+    E. 위치 분산
+
+  방법 A 채택 이유:
+    - Round 3 hover 패턴: 14.87m 클러스터 = "스폰에서 거의 안 움직임"
+    - 속도 < 1 m/s가 정확히 그 상태
+    - 단순, 직관적, 부작용 적음
+
+  파라미터:
+    hover_speed_threshold = 1.0 m/s     (정지 판단)
+    hover_consecutive_threshold = 200 step (지속 임계, episode 25%)
+    penalty_hover = -15                  (timeout과 동일)
+    Drop 시 (terminated) 제외 — 정밀 hover 정당
+
+  Round 4 처방 복원:
+    w_heading: 0.3 → 0.7 (Round 3 수준)
+    w_distance_penalty: 0.03 → 0 (비활성)
+
+  코드 변경:
+    drone_drop_env.py:
+      reset(): _consecutive_still = 0, _max_consecutive_still = 0 추가
+      step(): speed_xy < threshold이면 consecutive ↑, 아니면 0
+              max 갱신
+              episode 종료 시 (truncated AND not dropped):
+                if max_consecutive_still > 200: reward -= 15
+    hyperparams.yaml:
+      hover_speed_threshold, hover_consecutive_threshold, penalty_hover 추가
+      run_name → round5_hover_terminal_penalty
+
+  Round 5 학습 시작 (run sdjytkpv, 300k)
+
+
+################################################################################
+#  관련 문서 (경로: /home/juns/Drone-Bombard-Simulation/local/)
+################################################################################
+
+  - issues/master.txt                       — 안건 전체 관리
+  - issues/issue_001~018                    — 개별 안건
+  - issues/issue_016_post_success_regression — Round 3 처방
+  - issues/issue_017_hover_exploit          — Round 4 실패, Round 5 새 접근
+  - issues/issue_018_vision_based_observation — Round 5 이후 후보 (보류)
+  - design/design_review.md                 — 최종 설계 요약
+  - parameter_log.md                        — 변경 이력
+  - guides/wandb_metrics_guide.txt          — WandB metric 정의
+  - guides/post_training_verification_guide.txt — GUI 검증
+  - guides/drone_sim_tmux_training_guide.txt    — 학습 실행
+  - archive/sac_oscillation_mechanism.md    — SAC oscillation 메커니즘 (참고)

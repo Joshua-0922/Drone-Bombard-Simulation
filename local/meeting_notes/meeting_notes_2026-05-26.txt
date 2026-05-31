@@ -114,6 +114,59 @@
                       step 200 이후부터 체크
 
 
+********************************************************************************
+*  PART 5 — Round 2 학습 반복 실패 + 고도 페널티로 전환
+********************************************************************************
+
+  여러 번 학습 시도 (run zd36nn59, hf3tri7m, llkx44og, e1xgwhiw):
+    공통 패턴:
+      ep_len_mean: 초반 ~90 step → 점점 감소 → 50 step → 1 step
+      ep_rew_mean: -30 부근으로 수렴 (penalty_bad_attitude 또는 max_altitude)
+    디버깅 결과:
+      컨테이너 재시작 후 reset/step 정상
+      random/extreme action으로도 step 0 crash 없음
+      학습된 policy가 일관된 방향으로 누적되며 종료 조건 트리거 추정
+
+  완화 시도 (효과 미확인):
+    max_altitude:           25 → 50m
+    stagnation_window:      200 → 400 step
+    stagnation_min_progress: 2 → 1m
+    stagnation_start_step:  200 → 400
+    + truncate_reason 8종 wandb 로깅 추가
+
+  결정: 고도 제한을 완전히 제거하고 drop 시점 페널티로 전환
+    이유:
+      1) 굳이 고도를 강제할 필요 없음 — 학습 중 drop만 제대로 하면 됨
+      2) 드론의 괴상한 움직임은 이미 다른 제약으로 제어됨:
+         - action_vx/vy/vz_scale (최대 속도 제한)
+         - action_rate_limit (가속도 hard clip)
+         - overspeed truncate (speed > 20 m/s)
+         - ang_vel / inverted truncate (자세 안정성)
+      3) 비행 중 고도 제약은 학습을 방해하기만 함
+      4) drop 시점에만 고도가 중요 (높이면 수평 drift 증가 → 정확도↓)
+
+  적용:
+    max_altitude 제거 (truncate 로직 + 페널티 모두 제거)
+    Drop 시점 고도 페널티 신규 추가:
+      if alt > 15m:
+        penalty = w * (exp(k * (alt - 15)) - 1)
+        w=1.0, k=0.15
+    거리별:
+      15m: 0
+      20m: -1.12 (작음)
+      25m: -3.48
+      30m: -8.49
+      40m: -41.5
+      50m: -189
+
+  수정 파일:
+    hyperparams.yaml: max_altitude/penalty_max_altitude 제거,
+                      altitude_drop_threshold/w/k 추가
+    drone_drop_env.py: max_altitude truncate 로직 제거,
+                      drop reward에 고도 페널티 추가
+    train_sac.py: truncate_max_altitude 카운터 제거
+
+
 ################################################################################
 #  관련 문서 (경로: /home/juns/Drone-Bombard-Simulation/local/)
 ################################################################################

@@ -1,7 +1,7 @@
 ================================================================================
  Issues Master — 안건 관리 매뉴얼
 ================================================================================
-최종 갱신 : 2026-05-26 (Round 2 최종: gradient + max_steps 800 + 종료 조건 + WandB 정리)
+최종 갱신 : 2026-05-31 (Round 4 발산 분석 + Hover terminal penalty 처방 + Round 5 시작)
 
 
 ================================================================================
@@ -28,22 +28,65 @@
     #014 — 디버깅 완료       해결됨
     #015 — 좌표 오프셋       해결됨
 
-  Round 2 적용 (학습 예정):
-    #001 — k값 완만화        k2_precision 0.5→0.2, k_drop_proximity 0.3→0.15
-    #002 — 종료 조건 추가    max_altitude 25m, stagnation (200step/2m)
-    #003 — 접근 보상 강화    w_dist 0.5→1.0
-    #006 — random drop 조정  start_step 150→600, max_steps 500→800
+  Round 2 완주 (run z05fx7g9, 150k):
+    #001 — k값 완만화        success 16건 (16배 증가), best 2.53m
+    #002 — 종료 조건         max_altitude → drop 시점 고도 페널티로 대체
+    #003 — 접근 보상 강화    유지
+    #006 — random drop 조정  유지 (random_drop_start 600)
 
-  Round 2 후 확인:
-    #004 — deterministic eval  drop 발생 여부 재평가
-    #007 — CCIP 갭            실제 payload 착탄 데이터로 분석
-    #009 — Phase 1 기준       drop 데이터 기반 재설정
+  Round 2 발견 (해결됨):
+    Reset 버그              n_steps=1 가짜 success 13건 (해결: pos_enu 초기화)
+
+  Round 2 발견 (Round 3에서 처방):
+    #016 — Post-success regression — success 직후 5 epi 평균 19.7m (전체 19.1m보다 악화)
+                                     조합 C (PER + LR + Tau) 도전 예정
+
+  Round 3 첫 시도 실패 (run q13hli0y):
+    지수 고도 페널티 폭주 (-6.77e9) → 학습 망가짐
+    archive/round3_q13hli0y_FAILED_2026-05-30/
+
+  Round 3 수정 학습 (run lidq3ydu, 157k 크래시):
+    적용: #016 (조합 C + 4가지 안전장치)
+    결과: 104 drops, success 8건 (Round 2 대비 2배 속도)
+          Best 4.32m (reward 550), 100~125k 최우수 (avg 13.9m, success 3건)
+          Post-success regression 여전, Hover exploit 발견
+    크래시: PX4 로그 20GB 누적 → Gazebo timeout
+    archive/round3_lidq3ydu_crashed_2026-05-31/
+
+  Hover exploit 발견 (Issue #017):
+    drop_error 13~16m 16건, 14.87m(spawn→target) 정확 매칭
+    원인: w_heading 0.7 × 600 step = +420 hover 수익원
+
+  Round 4 발산 (run 4j46qwpk, 146k 중단):
+    적용: #017 (A+C 조합)
+    결과: ent_coef 6.03 폭주, critic_loss 230k+ → 발산
+    원인: per-step 보상 density 축소 → reward sparsity → SAC auto-entropy
+          양성 피드백 루프 (bounded action space)
+    교훈: per-step 보상 magnitude 변경 위험 — terminal 신호로 대체 필요
+    archive/round4_4j46qwpk_diverged_2026-05-31/
+
+  Round 5 학습 중 (run sdjytkpv, 300k):
+    적용: #017 (Hover Terminal Penalty)
+    복원: w_heading 0.7, w_distance_penalty 0 (Round 4 처방 되돌림)
+    신규: Episode 종료 시 hover 페널티
+      - max_consecutive_still > 200 step → -15
+      - hover_speed_threshold = 1.0 m/s
+      - Drop (terminated) 제외 — 정밀 hover 정당
+    Per-step density 보존 → SAC 안정성 유지
+
+  Round 5 후 확인:
+    #004 — deterministic eval
+    #007 — CCIP 갭
+    #009 — Phase 1 기준
+    #016 — Post-success regression
+    #017 — Terminal penalty 효과
 
   보류:
     #005 — replay buffer      500k+ 학습 시 재검토
     #008 — obs/action 충분성  분석 완료, 추가 조치 불필요
     #011 — drop infra restart  속도 최적화 (후순위)
     #012 — 멀티 드론 병렬      #011 선결 필요
+    #018 — Vision-based obs   Round 4 결과 후 결정 (Round 5 후보)
 
 
 ================================================================================
@@ -132,16 +175,65 @@
       vf5dgx55~r5zp3k1c — payload 미분리 (#013/#014)
       v6i3vy4p — manual drop "즉시 drop" exploit → random drop으로 전환
 
-  Round 2 (학습 예정):
+  Round 2 (완주 — run z05fx7g9, 150k):
     적용: #001(k값 조율), #002(종료 조건), #003(w_dist 강화), #006(random drop)
     변경:
       - w_dist: 0.5→1.0, k2: 0.5→0.2, k_prox: 0.3→0.15
       - max_steps: 500→800, random_drop_start_step: 150→600
-      - 종료 조건 추가: max_altitude 25m(-30), stagnation 200step/2m(-15)
-      - WandB metric 22개→8개 정리 (이름 변경 포함)
+      - 종료 조건: max_altitude/stagnation 추가 → 후속 분석 후 제거,
+                  drop 시점 고도 페널티(지수)로 대체
+      - WandB metric 22개→8개 정리, 후속 truncate 카운터 추가
     Round 2 첫 시도 (run dbi74uif, 150k):
-      결과 불량 — deterministic eval d_xy 14~16m, random drop이 step 200에서 조기 발동
+      결과 불량 — deterministic eval d_xy 14~16m
       원인: random_drop_start_step=150이 너무 이름 → 600으로 변경
-    목적: gradient 확보 + 접근 시간 확보 + 이탈 조기 차단
-    방식: fresh start → 150k 본학습
-    확인: #004, #007, #009
+    Round 2 최종 (run z05fx7g9, 150k):
+      Success 16건 (Round 1의 16배), best 2.53m, 평균 19.09m (악화)
+      Deterministic eval: 모든 epi crash, drop 0건
+      문제 발견:
+        - Reset 버그 (n_steps=1 가짜 success 13건) → fix
+        - Post-success regression → Round 3 처방
+
+  Round 3 첫 시도 (run q13hli0y, 30k에서 중단):
+    적용: #016 (조합 C)
+    변경:
+      - LR 1e-4, tau 0.002, PER (alpha=0.6, eps=0.1)
+    실패: step 17731에서 reward -6.77e+9 발생
+      원인: 지수 고도 페널티 무한대 폭주 (드론 ~165m 도달)
+      영향: PER이 outlier에 천문학적 priority → buffer 오염
+    archive/round3_q13hli0y_FAILED_2026-05-30/
+
+  Round 3 수정 학습 (run lidq3ydu, 157k 크래시):
+    적용: #016 (조합 C + 4가지 안전장치)
+    변경:
+      - 지수 고도 페널티 → Sigmoid (max -50, mid 30m, k=0.15)
+      - max_altitude truncate 50m + 페널티 -15 (부활)
+      - PER priority 상한 30
+      - Hard cap [-200, +300] + warning (drone_drop_env.py step 끝)
+    결과:
+      - 104 drops, 평균 22.42m, Best 4.32m, Success 8건 (7.7%)
+      - 100~125k 최우수 (avg 13.9m, success 3건)
+      - PER 효과 확인: success 빈도 2배 (Round 2 대비)
+      - Best episodes: long-flight + precision drop (n=737~795, reward 499~550)
+    크래시: PX4 로그 20GB 누적 → gz timeout
+    archive/round3_lidq3ydu_crashed_2026-05-31/
+
+  Round 4 발산 (run vo1l9wl6 14k 버그, 4j46qwpk 146k 발산):
+    적용: #017 (A+C 조합)
+    변경: w_heading 0.7→0.3, w_distance_penalty 0.03 신규
+    인프라: PX4 로깅 비활성화 (SDLOG_MODE 1→-1)
+    결과:
+      - 85 drops, 평균 25m, success 6건
+      - 56~70k에서 발산 시작 (큰 양수 + 큰 음수 교차)
+      - ent_coef 6.03, critic_loss 230k+ → 학습 망가짐
+    원인: per-step / drop reward 비율 1:300 → 1:700 (2배 sparse)
+          → SAC bounded action 발산 모드 트리거
+    archive/round4_4j46qwpk_diverged_2026-05-31/
+
+  Round 5 학습 (run sdjytkpv, 300k):
+    적용: #017 (Hover Terminal Penalty)
+    복원: w_heading 0.7, w_distance_penalty 0
+    신규: hover_speed_threshold 1.0, hover_consecutive_threshold 200,
+          penalty_hover -15 (episode 종료 시, drop 제외)
+    Round 3 유지: PER, LR 1e-4, tau 0.002, 4가지 안전장치
+    Fresh start → 300k 본학습
+    확인: #004, #007, #009, #016, #017

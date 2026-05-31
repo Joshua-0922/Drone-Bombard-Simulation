@@ -200,7 +200,10 @@
 | 13 | 2026-05-23 | — | jekyun_v2 (junsang_v4) | WandB callback overhaul (rate → 누적 count) | src만 수정, install 미러는 #14 |
 | 14 | 2026-05-24~25 | wdwoim34(19k crash), xk7rw5e1(112k kill) | jekyun_v2 (junsang_v4_150k) | DropEpisodeRecorder 추가 + 150k 재학습 | drop_error 13.15m, success=0, 이전과 동일 양상 |
 | 15 | 2026-05-25 | ruozrv5x | jekyun_v2 (round1) | **Round 1: #001+#002+#003+#006** — hybrid drop + 보상 스케일 축소 + 종료 조건 정비 | 432 drops, best 4.64m, avg 14.02m, success 1건. d_xy 11.3m 정체 |
-| 16 | 2026-05-26 | dbi74uif(첫시도 실패), (최종 예정) | jekyun_v2 (round2) | **Round 2: gradient + max800 + 종료조건** — w_dist 1.0, k2 0.2, k_prox 0.15, start600, alt25, stagnation | dbi74uif: d_xy 14~16m 접근실패 (start_step 150 문제) → 600으로 수정 |
+| 16 | 2026-05-26~30 | dbi74uif(첫시도), z05fx7g9(최종) | jekyun_v2/junsang (round2) | **Round 2: gradient + max800 + 종료조건 진화** | dbi74uif: 접근실패 (start_step 150 문제). z05fx7g9: success 16건(16배), best 2.53m, 평균 19.09m, post-success regression 발견 |
+| 17 | 2026-05-30~31 | q13hli0y(발산), lidq3ydu(157k 크래시) | junsang (round3) | **Round 3 (조합 C): PER + LR 1e-4 + Tau 0.002 + Sigmoid alt + 4가지 안전장치** | 104 drops, success 8건 (Round 2 대비 2배 속도), PX4 로그 20GB 누적 → gz timeout 크래시 |
+| 18 | 2026-05-31 | vo1l9wl6(14k 버그), 4j46qwpk(146k 발산) | junsang (round4) | **Round 4 (A+C): Hover per-step 차단** — w_heading 0.3, w_distance_penalty 0.03 | 학습 발산 — ent_coef 6.03 폭주, critic_loss 230k+. 원인: per-step density 축소 → reward sparsity → SAC auto-entropy 양성 피드백 |
+| 19 | 2026-05-31 | sdjytkpv (학습 중) | junsang (round5) | **Round 5: Hover terminal penalty** — Round 4 복원, episode 종료 시 -15 (sustained hover만) | (학습 중 — 300k) |
 
 ---
 
@@ -788,6 +791,228 @@ WandB run: `(예정)`
 
 **결론 / 다음**: gradient 완만화 + 접근 시간 확보(max_steps 800, start_step 600)
   + 이탈 조기 차단(max_altitude, stagnation)으로 학습 효율 강화.
+
+**추가 변경 (2026-05-30, 학습 진화 중)**:
+- `environment.max_altitude` 제거 → drop 시점 고도 페널티로 대체
+- NEW `reward.altitude_drop_threshold` = 15.0, `altitude_drop_w` = 1.0, `altitude_drop_k` = 0.15
+  - **이유**: 비행 중 고도 강제할 필요 없음. drop 시 너무 높으면 수평 drift 큼.
+- `environment.stagnation_*` 제거 → speed_gate가 이미 hover 보상 차단
+- `truncate_reason 8종 wandb 카운터 추가` → 원인 추적
+- `reset() pos_enu 초기화 추가` → n_steps=1 가짜 success 버그 fix
+
+**Round 2 최종 결과 (run z05fx7g9, 150k)**:
+  총 drop: 427건, 평균 19.09m, 중앙값 11.55m
+  Best: 2.53m (Round 1 4.64m 대비 개선)
+  Success (<5m): 16건 (Round 1 1건 대비 16배 증가)
+  Deterministic eval: 3 epi 전부 crash, drop 0건
+
+**발견된 문제**:
+  1) Reset 버그 (n_steps=1 가짜 success 13건) — 해결
+  2) Post-success regression — Issue #016, Round 3 처방
+
+---
+
+### #17. 2026-05-30 — **Round 3 (조합 C): PER + LR 1e-4 + Tau 0.002**
+
+WandB run: `(예정)`
+**Base**: #16 (Round 2 — z05fx7g9 결과 분석)
+
+**문제 식별**:
+  Issue #016 Post-success regression — real success 직후 5 epi 평균 19.72m,
+  전체 평균 19.09m보다 나쁨. SAC sparse reward의 알려진 패턴.
+  4가지 메커니즘:
+    a) Critic overshoot
+    b) Policy gradient over-correction
+    c) Replay buffer 압도 (success 1/427)
+    d) High entropy exploration
+
+**변경**:
+- `sac.learning_rate`: 3.0e-4 → **1.0e-4**
+  - **이유**: 모든 update 점진적, critic overshoot 직접 완화
+- `sac.tau`: 0.005 → **0.002**
+  - **이유**: Target network 안정화, Q-value 발산 차단
+- `Replay Buffer`: 표준 → **PrioritizedReplayBuffer (PER)**
+  - alpha=0.6 (priority 강도)
+  - beta=0.4 → 1.0 (importance sampling, schedule)
+  - **이유**: TD-error 큰 success transition 자주 샘플링
+
+**유지**:
+  - 보상 구조 (Round 2)
+  - max_steps 800, random_drop_start 600
+  - Drop 시점 고도 페널티
+
+**Pre-flight**:
+  - Round 2 결과 백업 (archive/round2_z05fx7g9_2026-05-30/)
+  - Reset 버그 fix 코드 베이스 사용
+
+**Round 3 첫 시도 발산 (run q13hli0y, 30k 중단)**:
+  step 17731 단일 epi reward -6.77e+9 발생 (≈ 드론 165m 고도에서 drop)
+  원인: 지수 고도 페널티 무한대 폭주
+  PER이 천문학적 priority 부여 → buffer 오염 → 학습 망가짐
+  archive/round3_q13hli0y_FAILED_2026-05-30/ 보존
+
+**Round 3 수정 (4가지 안전장치)**:
+- `reward.alt_penalty_*` (NEW): Sigmoid 페널티 (지수 폐기)
+  - alt_penalty_max=50.0, alt_penalty_mid=30.0, alt_penalty_k=0.15
+  - penalty = -max * sigmoid(k * (alt - mid))
+  - 출력 (-50, 0) 유계 → 폭주 불가
+  - 거리별: 15m→-4.7, 20m→-11.7, 30m→-25, 50m→-47.5, 100m+→-50
+  - **이유**: 음수 지수 4곳(proximity/precision/prediction/impact)은 본질
+            적 유계라 안전. 양수 지수(고도)만 폭주 위험 → sigmoid로 교체.
+- `environment.max_altitude` = 50.0 (NEW, 부활):
+  - 비행 중 50m 초과 시 truncate
+  - **이유**: 드론이 무한정 상승 차단 (sigmoid 페널티 외 추가 방어층)
+- `reward.penalty_max_altitude` = -15.0 (NEW): timeout과 동일 페널티
+  - **이유**: 0 페널티면 "climb-out" exploit 위험. -15는 가벼운 견제.
+- `sac.per_priority_max` = 30.0 (NEW): PER priority 상한
+  - priority = min(30, (|reward|+eps)^alpha)
+  - **이유**: 이론 max reward 200 → priority 200^0.6 ≈ 24. cap 30은 충분.
+- Hard cap [-200, +300] + warning (drone_drop_env.py step 끝):
+  - reward 범위 밖이면 print warning + np.clip
+  - **이유**: 방어적 안전망. 정상 학습엔 영향 없음. 발생 시 즉시 알림.
+
+**유지**:
+  - learning_rate=1e-4, tau=0.002, PER alpha=0.6 eps=0.1
+  - 보상 구조 (Round 2)
+  - max_steps 800, random_drop_start 600
+
+**결과 (run lidq3ydu, 157k 크래시)**:
+  - 총 drop 104건, 평균 22.42m, Best 4.32m, Success 8건 (7.7%)
+  - PER + LR/Tau 효과: success 빈도 2배 가속 (Round 2: 16/150k vs Round 3: 8/100k)
+  - Best episodes (107k, 108k, 124k): 장시간 비행 + 정밀 drop, reward 499~550
+  - 100~125k 최우수 (avg 13.9m, success 3건)
+  - Post-success regression 여전 (125~150k avg 35m)
+  - Hover exploit 발생 (25~50k 45%, 100~125k 36%)
+  - 4가지 안전장치 작동 (Hard cap 발동 없음, [WARN] 없음)
+
+**크래시 원인**:
+  - PX4 로그 20GB 누적 (.ulg 파일 2300+개)
+  - Gazebo 응답 지연 → gz model --list 5초 timeout
+  - reset() 중 예외 → 학습 abort
+  - 마지막 체크포인트 95k (이후 60k 손실)
+
+**결론 / 다음**:
+  Round 3 PER + LR/Tau 처방 부분 검증 (success 2배 속도).
+  Hover exploit 새로운 문제 식별 → Issue #017, Round 4 처방.
+  PX4 로깅 비활성화로 인프라 안정성 확보.
+
+---
+
+### #18. 2026-05-31 — **Round 4 (A+C): Hover 차단**
+
+WandB run: `vo1l9wl6` (학습 중)
+**Base**: #17 (Round 3 — lidq3ydu 분석)
+
+**문제 식별 (Issue #017)**:
+  drop_error 13~16m 구간에 16건 (15.4%)
+  14.87m = sqrt(11² + 10²) = spawn→target 거리 정확 매칭
+  n_steps 600+ → 스폰에서 random_drop 대기 패턴
+  원인: w_heading 0.7 × 600 step = +420 → hover가 안전한 수익원
+
+**변경 (A + C 조합)**:
+- `reward.w_heading`: 0.7 → **0.3** (Issue #017 A)
+  - **이유**: hover의 주요 수입원 약화 (수익 57% 감소)
+- NEW `reward.w_distance_penalty` = **0.03** (Issue #017 C)
+  - **이유**: per-step penalty = -w * d_xy / 50
+  - d_xy=15m → -0.009/step, 600 step → -5.4
+  - 멀리 있을수록 비용 → hover 차단
+
+**유지** (Round 3):
+  - PER (alpha=0.6, eps=0.1, priority_max=30)
+  - learning_rate=1e-4, tau=0.002
+  - 4가지 안전장치 (sigmoid alt, max_alt truncate, PER cap, hard cap)
+  - 보상 구조 (w_dist 1.0, k2 0.2, k_prox 0.15)
+  - max_steps 800, random_drop_start 600
+
+**인프라 변경**:
+- PX4 로깅 비활성화: SDLOG_MODE 1 → -1
+  - `/opt/PX4-Autopilot/build/px4_sitl_default/etc/init.d-posix/rcS`
+  - **이유**: .ulg 누적 20GB → Gazebo timeout 크래시
+  - 우리 RL 학습엔 .ulg 사용 안 함 → 손실 없음
+
+**시뮬레이션 (300 step 예시)**:
+  Hover 600 step at d_xy=15m: +183 (기존 +422, -57%)
+  타겟 접근 400 step (15→5m): +179
+  Success 500 step (15→3m): +232
+  → success > hover ≈ 접근
+
+**Round 4 결과**:
+  vo1l9wl6 (14k 중단): reset 버그 부작용 — pos_enu z=0 → ground_contact 트리거
+    Fix: drone_drop_env.py reset()에서 pos_enu = (0, 0, 5.0)
+  4j46qwpk (146k 발산):
+    - ent_coef 6.03 (정상 0.3~0.5의 12배)
+    - critic_loss 230,000+ (정상 100~500의 500배)
+    - ep_rew_mean -20, ep_len 감소 추세
+    - 85 drops, 평균 25m, success 6건 (Round 3 8건/100k와 비슷)
+    - 56~70k 구간 발산 시작 — 큰 양수(+187,+274) + 큰 음수(-184,-256) 교차
+
+**발산 원인 분석 (정확한 메커니즘)**:
+  1. w_heading 0.7→0.3 + distance_penalty 0.03 → per-step 보상 magnitude 감소
+  2. Per-step / drop reward 비율: Round 3 1:300 → Round 4 1:700 (2배 sparse)
+  3. Critic estimate variance 폭증
+  4. Policy 집중 (한 가지 전략) → entropy ↓
+  5. SAC auto-tuning "exploration 부족" 판단 → ent_coef ↑
+  6. Bounded action space [-1,1] → entropy 못 올라감
+  7. SAC 더 ent_coef ↑ → 양성 피드백 → 발산
+
+**결론 / 다음**:
+  Per-step 보상 density 변경은 SAC 발산 위험.
+  Hover 차단은 다른 방법 필요 — Episode 종료 페널티로 시도 (Round 5).
+  archive/round4_4j46qwpk_diverged_2026-05-31/
+
+---
+
+### #19. 2026-05-31 — **Round 5: Hover Terminal Penalty**
+
+WandB run: `sdjytkpv` (학습 중)
+**Base**: #18 (Round 4 발산 분석)
+
+**문제 식별**:
+  Round 4의 per-step hover 차단이 SAC auto-entropy 발산 트리거.
+  Per-step 보상 density 보존하면서 hover 차단 필요.
+
+**복원 (Round 4 변경 전면 되돌림)**:
+- `reward.w_heading`: 0.3 → **0.7** (Round 3 수준)
+- `reward.w_distance_penalty`: 0.03 → **0** (비활성)
+
+**신규 (Episode 종료 페널티)**:
+- NEW `reward.hover_speed_threshold` = **1.0** m/s
+  - **이유**: 정지 판단 기준. 정상 비행 시 2~5 m/s 유지.
+- NEW `reward.hover_consecutive_threshold` = **200** step
+  - **이유**: episode max 800의 25% — 잠시 hover OK, 지속만 BAD
+- NEW `reward.penalty_hover` = **-15.0**
+  - **이유**: timeout과 동일 — 적당한 견제 (-50은 과함)
+
+**메커니즘**:
+  ```python
+  # 매 step:
+  speed_xy = sqrt(vx² + vy²)
+  if speed_xy < 1.0:
+      consecutive_still += 1
+  else:
+      consecutive_still = 0
+  max_consecutive_still = max(...)
+
+  # Episode 종료 시 (truncated AND not dropped):
+  if max_consecutive_still > 200:
+      reward -= 15
+  ```
+
+**핵심 장점**:
+  - Per-step 보상 density 변화 없음 → SAC 안정성 유지
+  - 1회 terminal 페널티 → 발산 모드 회피
+  - Drop 시 제외 → 정밀 hover 정당화
+  - 잠시 hover (50 step) OK → 학습 초반에도 무력화 안 함
+
+**유지** (Round 3+4 안전장치):
+  - PER (alpha=0.6, eps=0.1, priority_max=30)
+  - learning_rate=1e-4, tau=0.002
+  - Sigmoid alt penalty, max_alt truncate, hard cap
+  - PX4 로깅 비활성
+
+**결과**: (학습 중 — 300k)
+
+**결론 / 다음**: ...
 
 ---
 

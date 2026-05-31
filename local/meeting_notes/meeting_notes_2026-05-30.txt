@@ -1,0 +1,246 @@
+================================================================================
+ Drone-Bombard-Simulation 작업 정리 — 2026-05-30
+ 세션 기간 : 2026-05-28 ~ 2026-05-30
+ 직전 노트 : meeting_notes_2026-05-26.txt
+ 핵심 변화 : Round 2 완주 분석 → Reset 버그 fix → Post-success regression 발견 →
+            Round 3 첫 시도 발산 (-6.77e+9) → 4가지 안전장치 → 수정 학습 시작
+================================================================================
+
+
+********************************************************************************
+*  PART 1 — Round 2 최종 학습 (run z05fx7g9, 150k 완주)
+********************************************************************************
+
+  최종 설정 (Round 2 완성):
+    보상 gradient: w_dist 1.0, k2 0.2, k_prox 0.15
+    에피소드: max_steps 800, random_drop_start 600
+    Drop 시 고도 페널티: alt>15m부터 지수 (w=1, k=0.15)
+    종료 조건 6종: crash, overspeed, ang_vel, inverted, out_of_range, timeout
+    제거됨: max_altitude (hard cap), stagnation
+
+  학습 결과:
+    총 drop: 427건
+    drop_error 범위: 2.53m ~ 171.43m
+    평균: 19.09m (Round 1: 14.02m → 악화)
+    중앙값: 11.55m
+    Best: 2.53m (Round 1: 4.64m → 개선)
+    Success (<5m): 16건 (Round 1: 1건 → 16배 증가!)
+
+  25k 구간별 추세 (불안정):
+    0~25k:    avg 23.2m, success 5건
+    25~50k:   avg 13.2m, success 5건  ← 최선 구간
+    50~75k:   avg 17.4m, success 1건
+    75~100k:  avg 29.6m, success 2건  ← 최악
+    100~125k: avg 20.8m, success 0건
+    125~150k: avg 15.0m, success 3건
+
+
+********************************************************************************
+*  PART 2 — Deterministic Evaluate (sac_drop_final.zip)
+********************************************************************************
+
+  GUI에서 3 epi 실행:
+    EP1: 159 steps, crash, d_xy=15m, drop 없음
+    EP2: 284 steps, crash, d_xy=50m, drop 없음
+    EP3: 178 steps, crash, d_xy=42m, drop 없음
+
+  관찰:
+    - 모든 epi가 crash로 종료 (drop 0건)
+    - "crash" = 고도 < 3m (시각적 충돌 아님)
+    - 드론이 멀리 비행하다 점차 고도 낮아져 crash
+    - Deterministic mode에서 정책 매우 불안정
+
+
+********************************************************************************
+*  PART 3 — Reset 버그 발견 (n_steps=1 가짜 success)
+********************************************************************************
+
+  drop_episodes/index.csv 분석 중 13건의 n_steps=1 epi 발견:
+    - 일부는 err 2.53m, 3.61m → "success"로 기록됨
+    - step 104358: rew=-1,707,583 (계산 폭주)
+
+  Best episode (err=2.53m) npz 분석:
+    시작 obs 위치: (8.8, 9.5, 8.7) ← 정상은 (0, 0, 4.8)
+    시작 d_xy: 2.27m (이미 타겟 근처)
+    d_impact: 1.93m → auto_drop 즉시 발동
+
+  버그 메커니즘:
+    1) 이전 epi가 위치 X에서 종료
+    2) Reset: _gz_reset_poses()로 드론을 (0,0,0)으로 teleport
+    3) _start_episode() → _wait_for_cruise() 대기
+    4) Step 1 시작 → pos_enu 읽음
+    5) 그러나 PX4 새 position 메시지 미도착 → pos_enu 잔류
+    6) d_impact = stale 데이터 기반 → ≤ 3m → auto_drop 발동
+    7) drop_calculator도 stale 데이터 → 가짜 small drop_error
+
+  해결: drone_drop_env.py reset()에서 state lock 안에 명시적 초기화 추가
+    self._node.pos_enu = np.zeros(3, dtype=np.float32)
+    self._node.vel_enu = np.zeros(3, dtype=np.float32)
+    self._node.ang_vel = np.zeros(3, dtype=np.float32)
+    self._node.roll = 0.0
+    self._node.pitch = 0.0
+    self._node.pixel_coords = np.zeros(3, dtype=np.float32)
+
+  → Step 1에서 PX4 갱신 전이라도 (0,0,0)으로 인식 → d_impact ~14.9m → auto_drop 안 됨
+
+
+********************************************************************************
+*  PART 4 — Post-Success Regression 발견
+********************************************************************************
+
+  drop_episodes/index.csv를 시간순 분석:
+
+  Success 직후 5 epi 평균:
+    real success 후: 19.72m  ← 전체 평균보다 나쁨
+    fake success 후: 15.14m
+    전체 평균:       19.09m
+
+  예시 (real success 직후 발산):
+    step  7492 success(4.17m) → 다음: 65m, 13m, 15m, 16m, 51m
+    step 17160 success(3.23m) → 다음: 76m, 22m, 20m, 3.6m, 31m
+    step 91045 success(4.30m) → 다음: 50m, 10m, 37m, 96m, 9.9m
+    step 95206 success(4.97m) → 다음: 73m, 15m, 12m, 8m, 14m
+
+  원인 (4가지 메커니즘):
+    1) Critic overshoot: 큰 보상이 Q-value 일시 폭증
+    2) Policy gradient over-correction: actor가 success state로 끌려감
+    3) Replay buffer 압도: success 1건 vs 실패 426건 → 다시 평균으로 회귀
+    4) High entropy exploration: ent_coef 0.7+로 success 행동 깨뜨림
+
+  Issue #016 작성: 24개 해결방안 검토
+
+
+********************************************************************************
+*  PART 5 — Round 3 계획 (조합 C 도전)
+********************************************************************************
+
+  결정: PER + LR 축소 + Tau 축소
+
+  변경:
+    learning_rate: 3.0e-4 → 1.0e-4
+    tau:           0.005 → 0.002
+    Replay Buffer: 표준 → PrioritizedReplayBuffer (PER)
+
+  PER 파라미터:
+    alpha = 0.6 (priority 강도)
+    beta  = 0.4 → 1.0 (importance sampling, 학습 진행에 따라 증가)
+
+  기대 효과:
+    - Success TD-error 큼 → PER로 자주 샘플링됨
+    - 낮은 LR로 매 update 점진적
+    - 낮은 tau로 target network 안정
+
+  진행 순서:
+    1) Round 2 결과 백업 (archive/round2_z05fx7g9_2026-05-30/)
+    2) yaml 변경
+    3) train_sac.py PER 적용
+    4) 미러링
+    5) Fresh start 학습
+
+
+********************************************************************************
+*  PART 6 — Round 3 첫 시도 발산 (run q13hli0y, 30k 중단)
+********************************************************************************
+
+  학습 30k 시점에 ep_rew_mean = -7.7e+07 발견.
+  drop_episodes/index.csv 분석:
+    step 17731 단일 epi: drop_error=14.52m, reward = -6.77e+9 (-6.77 billion!)
+    n_steps=612
+
+  npz 분석:
+    last alt = 50.0m (obs는 50으로 saturate, 실제 더 높음)
+    actual altitude 추정: ~165m
+
+  원인:
+    지수 고도 페널티에 상한 없음:
+      penalty = -1 * (exp(0.15 * (alt - 15)) - 1)
+      alt=100m → -344,000
+      alt=150m → -616,000,000
+      alt=165m → -5,900,000,000  ← 발생!
+    드론이 극단 고도로 climb → drop 시점 페널티 폭주
+
+  PER 위험성 증폭:
+    Priority = (|reward| + eps)^0.6
+    |6.77e+9|^0.6 = 천문학적
+    이 한 transition이 거의 모든 sampling 독점
+    Critic 오염 → 정책 발산
+
+  archive/round3_q13hli0y_FAILED_2026-05-30/ 보존
+
+
+********************************************************************************
+*  PART 7 — 함수 분석 + 4가지 안전장치 도입
+********************************************************************************
+
+  함수 특성 검토 (사용자 질문):
+    - Sigmoid: (0,1) 유계, S자, 대칭
+    - Tanh: (-1,1) 유계, sigmoid scale 변형
+    - Softmax: 다수 입력 비교용 (단일 reward에 부적합)
+    - Min-Max normalization: 선형, outlier 민감
+
+  코드 내 exp() 5곳 분석:
+    1) Proximity bonus:  30 * exp(-0.15 * d_xy)        — 음수 지수, 안전
+    2) Precision reward: 100 * exp(-0.2 * d_error)     — 음수 지수, 안전
+    3) Prediction bonus: 20 * exp(-0.1 * gap)          — 음수 지수, 안전
+    4) Altitude penalty: 지수 (양수) — Sigmoid로 교체
+    5) Impact shaping:   0.4 * exp(-0.05 * d_impact)   — 음수 지수, 안전
+
+  발견: 음수 지수 exp(-k*x)는 출력 (0, max]에 자연 유계 → 발산 불가.
+        양수 지수만 위험. 알티튜드 페널티만 양수였음.
+
+  4가지 안전장치 도입:
+
+    1) Sigmoid 고도 페널티 (지수 폐기)
+       penalty = -alt_penalty_max * sigmoid(k * (alt - mid))
+       max=50, mid=30m, k=0.15
+       거리별: 15m→-4.7, 30m→-25, 50m→-47.5, 100m+→-50 (포화)
+
+    2) max_altitude truncate 50m + 페널티 -15
+       비행 중 극단 상승 차단
+       페널티 -15 (timeout 동일) — "climb-out" exploit 방지
+
+    3) PER priority 상한 30
+       priority = min(30, (|reward| + eps)^alpha)
+       이론 max reward 200 → priority ≈ 24, cap 30은 충분
+
+    4) Hard cap [-200, +300] + warning
+       drone_drop_env.py step 끝에 추가
+       reward 범위 밖이면 print + np.clip
+       방어적 안전망. 정상 학습엔 영향 없음.
+
+  수정 파일:
+    hyperparams.yaml:    alt_penalty_max/mid/k, penalty_max_altitude,
+                         per_priority_max 추가
+    drone_drop_env.py:   지수→sigmoid, max_altitude truncate 부활,
+                         hard cap + warning
+    train_sac.py:        PrioritizedReplayBuffer에 priority_max 추가
+
+
+********************************************************************************
+*  PART 8 — Round 3 수정 학습 시작 (run lidq3ydu, 300k)
+********************************************************************************
+
+  Fresh start (Round 2 보상 + 안전장치 4종)
+  WandB online, 300k total_timesteps
+  예상 시간: 12~16시간
+
+  주목할 metric:
+    - critic_loss 안정성 (Round 2 fluctuation 컸음)
+    - env/d_xy 추세
+    - env/total_success 곡선
+    - 7종 truncate 카운터 (특히 max_altitude)
+    - [WARN] 메시지 발생 여부 (hard cap 발동)
+
+
+################################################################################
+#  관련 문서 (경로: /home/juns/Drone-Bombard-Simulation/local/)
+################################################################################
+
+  - issues/master.txt                       — 안건 전체 관리
+  - issues/issue_001~016                    — 개별 안건
+  - issues/issue_016_post_success_regression — Round 3 핵심 안건
+  - design/design_review.md                 — 최종 설계 요약
+  - parameter_log.md                        — 변경 이력
+  - guides/wandb_metrics_guide.txt          — WandB metric 정의
+  - guides/post_training_verification_guide.txt — GUI 검증
+  - guides/drone_sim_tmux_training_guide.txt    — 학습 실행

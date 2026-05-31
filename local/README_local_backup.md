@@ -61,7 +61,9 @@ Drone-Bombard-Simulation/local/
 │   ├── meeting_notes_2026-05-22.txt
 │   ├── meeting_notes_2026-05-23.txt
 │   ├── meeting_notes_2026-05-25.txt  ← 브레인스토밍 + Round 1 결정
-│   └── meeting_notes_2026-05-26.txt  ← [최신] Round 1 분석 + Round 2 조율
+│   ├── meeting_notes_2026-05-26.txt  ← Round 1 분석 + Round 2 조율
+│   ├── meeting_notes_2026-05-30.txt  ← Round 2 완주 + Reset 버그 + Round 3 계획
+│   └── meeting_notes_2026-05-31.txt  ← [최신] Round 3 크래시 + Hover exploit + Round 4 시작
 │
 ├── guides/                           ← 실행 가이드
 │   ├── drone_sim_tmux_training_guide.txt      ← 학습 실행 절차
@@ -96,22 +98,34 @@ Drone-Bombard-Simulation/local/
 
 ---
 
-## 현재 상태 (2026-05-26)
+## 현재 상태 (2026-05-30)
 
-- **Branch**: `jekyun_v2` (local) + Tier 1 + Round 1 + Round 2
-- **Round 1 완주** (run ruozrv5x, 150k):
-  - 432 drops, best 4.64m, avg 14.02m, success 1건 (0.2%)
-  - d_xy 최소 평균 11.3m — auto_drop 3m 도달 0건
-  - 10m 구간 drop 보상 gradient 부족이 근본 원인
-- **Round 2 파라미터 조율** (학습 예정):
-  - w_dist: 0.5→1.0, k2: 0.5→0.2, k_prox: 0.3→0.15
-  - max_steps: 500→800, random_drop_start_step: 150→600
-  - 종료 조건 추가: max_altitude 25m, stagnation (200step/2m)
-  - WandB metric 22개→8개 정리
-  - 첫 시도 dbi74uif: 접근 실패 → start_step 600으로 수정
-- **검증 방법**: deterministic evaluate + GUI (action replay 폐기)
+- **Branch**: `junsang` (GitHub: Joshua-0922/Drone-Bombard-Simulation)
+- **Round 1** (ruozrv5x, 150k): 432 drops, best 4.64m, avg 14.02m, success 1건
+- **Round 2** (z05fx7g9, 150k):
+  - 427 drops, best **2.53m**, avg 19.09m, success **16건 (16배 증가)**
+  - 종료 조건 진화: max_altitude/stagnation 제거 → drop 시점 고도 페널티
+  - Deterministic eval: drop 0건, 모두 crash 종료
+  - 발견: Reset 버그 (n_steps=1 가짜 success 13건) — **해결**
+  - 발견: **Post-success regression** — success 직후 발산 패턴
+- Round 3 첫 시도 (q13hli0y): 지수 페널티 폭주 (-6.77e+9), 30k 중단
+- Round 3 수정 학습 (lidq3ydu, 157k 크래시):
+  - 104 drops, **best 4.32m**, success 8건 (Round 2 대비 **2배 속도**)
+  - 100~125k 최우수 (avg 13.9m, success 3건)
+  - PX4 로그 20GB 누적 → Gazebo timeout 크래시
+- Round 4 발산 (4j46qwpk, 146k 중단):
+  - per-step density 변경 → SAC auto-entropy 양성 피드백 발산
+  - ent_coef 6.03, critic_loss 230k+
+  - 교훈: per-step 보상 magnitude 변경 위험
+- **Round 5 학습 중** (sdjytkpv, 300k):
+  - Round 4 처방 전면 복원 (w_heading 0.7, distance_penalty 0)
+  - **신규**: Hover Terminal Penalty
+    - max_consecutive_still > 200 step → -15 (episode 종료 시)
+    - Drop 시 제외 — per-step density 보존 → SAC 안정성 유지
+  - PER + LR/Tau + 안전장치 4종 + PX4 로깅 비활성 유지
+- **검증 방법**: deterministic evaluate + GUI
 - **best drop 모델 저장**: auto drop 최고 기록 시 가중치 .zip 자동 저장
-- **Issues**: 15건. Round 2 적용 4건(#001,#002,#003,#006), 해결 3건(#013~#015), 확인 대기 3건, 보류 4건
+- **Issues**: 18건. Round 5 적용 1건(#017 재처방), 보류 1건(#018 Vision)
 
 ---
 
