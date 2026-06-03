@@ -1,4 +1,4 @@
-"""SAC training script for drone fly-by drop policy."""
+"""SAC training script for drone approach-to-X navigation policy."""
 
 import argparse
 import glob as _glob
@@ -8,7 +8,6 @@ import signal
 import sys
 import time
 
-import numpy as np
 import rclpy
 import yaml
 import wandb
@@ -42,46 +41,121 @@ def _emergency_save(signum, frame):
     sys.exit(0)
 
 
+_REACHED_CLOSE_THRESHOLD_M = 3.0  # drone within this distance = "reached close"
+
+
 class WandbMetricsCallback(BaseCallback):
-    """Forward SB3 rollout/train metrics + env custom metrics to WandB."""
+    """Forward SB3 rollout/train metrics + vision-approach env metrics to WandB.
+
+    Metrics logged per rollout:
+      Navigation:
+        env/mean_d_xy         — mean XY distance to X marker (↓ better)
+        env/ep_final_d_xy     — final d_xy when episode ends (↓ better)
+        env/ep_best_d_xy      — closest approach within episode (↓ better)
+
+      Reward breakdown:
+        env/rew_dist          — distance-gradient reward component
+        env/rew_orient        — heading-alignment reward component
+        env/rew_vision        — YOLO centering reward component
+        env/rew_ctrl          — stability/control penalty (r2, negative)
+        env/cos_heading       — cosine of angle between velocity and target bearing
+
+      Vision quality:
+        env/target_lost_rate  — fraction of steps with no YOLO detection (↓ better)
+
+      Episode outcomes (cumulative):
+        env/total_episodes
+        env/reached_close     — episodes where best d_xy ≤ 3 m
+        env/end_timeout       — episodes ended by step-limit
+        env/end_crash         — episodes ended by crash
+        env/end_stagnation    — episodes ended by stagnation
+        env/end_out_of_range  — episodes ended by leaving boundary
+        env/end_ang_vel       — episodes ended by attitude instability
+    """
 
     def __init__(self):
         super().__init__()
-        self._ep_drop_errors: list = []
+        # Per-step buffers (cleared each rollout)
         self._step_d_xy: list = []
-        self._step_rew_drop: list = []
+        self._step_rew_dist: list = []
+        self._step_rew_orient: list = []
+        self._step_rew_vision: list = []
+        self._step_rew_ctrl: list = []
+        self._step_cos_heading: list = []
+        self._step_target_lost: int = 0
+        self._step_total: int = 0
+
+        # Per-episode buffers (populated on done, cleared each rollout)
+        self._ep_d_xy_min: dict = {}   # env_idx → best d_xy so far this episode
+        self._ep_final_d_xy: list = []
+        self._ep_best_d_xy: list = []
+        self._ep_reward: list = []
+
+        # Cumulative episode counters
         self._total_episodes: int = 0
-        self._total_drops: int = 0
-        self._total_auto_drops: int = 0
-        self._total_success: int = 0
-        self._total_jackpot: int = 0
+        self._reached_close: int = 0
+        self._end_timeout: int = 0
+        self._end_crash: int = 0
+        self._end_stagnation: int = 0
+        self._end_out_of_range: int = 0
+        self._end_ang_vel: int = 0
 
     def _on_step(self):
         infos = self.locals.get('infos', [])
         dones = self.locals.get('dones', [])
-        for info, done in zip(infos, dones):
-            if 'd_xy' in info:
-                self._step_d_xy.append(info['d_xy'])
-            if 'rew_drop' in info:
-                self._step_rew_drop.append(info['rew_drop'])
 
+        for i, (info, done) in enumerate(zip(infos, dones)):
+            # --- Per-step accumulation ---
+            if 'd_xy' in info:
+                d = info['d_xy']
+                self._step_d_xy.append(d)
+                # Track best (min) d_xy per env for this episode
+                if i not in self._ep_d_xy_min or d < self._ep_d_xy_min[i]:
+                    self._ep_d_xy_min[i] = d
+            for key, buf in (
+                ('rew_dist',    self._step_rew_dist),
+                ('rew_orient',  self._step_rew_orient),
+                ('rew_vision',  self._step_rew_vision),
+                ('rew_ctrl',    self._step_rew_ctrl),
+                ('cos_heading', self._step_cos_heading),
+            ):
+                if key in info:
+                    buf.append(info[key])
+            if info.get('target_lost'):
+                self._step_target_lost += 1
+            self._step_total += 1
+
+            # --- On episode end ---
             if done:
                 self._total_episodes += 1
-                if 'drop_error_actual_m' in info:
-                    self._ep_drop_errors.append(info['drop_error_actual_m'])
-                    self._total_drops += 1
-                    if info.get('drop_trigger') != 'random':
-                        self._total_auto_drops += 1
-                    if info.get('is_success'):
-                        self._total_success += 1
-                    if info.get('jackpot'):
-                        self._total_jackpot += 1
+                if 'd_xy' in info:
+                    self._ep_final_d_xy.append(info['d_xy'])
+                if i in self._ep_d_xy_min:
+                    best = self._ep_d_xy_min.pop(i)
+                    self._ep_best_d_xy.append(best)
+                    if best <= _REACHED_CLOSE_THRESHOLD_M:
+                        self._reached_close += 1
+                if 'episode_reward' in info:
+                    self._ep_reward.append(info['episode_reward'])
+                reason = info.get('truncate_reason', '')
+                if reason == 'crash':
+                    self._end_crash += 1
+                elif reason == 'stagnation':
+                    self._end_stagnation += 1
+                elif reason == 'timeout':
+                    self._end_timeout += 1
+                elif reason == 'out_of_range':
+                    self._end_out_of_range += 1
+                elif reason == 'ang_vel':
+                    self._end_ang_vel += 1
         return True
 
     def _on_rollout_end(self):
         if not wandb.run:
             return
         log_dict = {}
+
+        # SB3 internal metrics
         for key in ('rollout/ep_rew_mean', 'rollout/ep_len_mean',
                      'train/actor_loss', 'train/critic_loss',
                      'train/ent_coef', 'train/ent_coef_loss',
@@ -94,26 +168,47 @@ class WandbMetricsCallback(BaseCallback):
         def _mean(lst):
             return sum(lst) / len(lst) if lst else None
 
+        # Per-step means
         if self._step_d_xy:
-            log_dict['env/d_xy'] = _mean(self._step_d_xy)
+            log_dict['env/mean_d_xy'] = _mean(self._step_d_xy)
             self._step_d_xy.clear()
-        if self._step_rew_drop:
-            log_dict['env/rew_drop'] = _mean(self._step_rew_drop)
-            self._step_rew_drop.clear()
+        for key, buf in (
+            ('env/rew_dist',    self._step_rew_dist),
+            ('env/rew_orient',  self._step_rew_orient),
+            ('env/rew_vision',  self._step_rew_vision),
+            ('env/rew_ctrl',    self._step_rew_ctrl),
+            ('env/cos_heading', self._step_cos_heading),
+        ):
+            if buf:
+                log_dict[key] = _mean(buf)
+                buf.clear()
+        if self._step_total > 0:
+            log_dict['env/target_lost_rate'] = (
+                self._step_target_lost / self._step_total)
+            self._step_target_lost = 0
+            self._step_total = 0
 
-        if self._ep_drop_errors:
-            log_dict['env/drop_error'] = _mean(self._ep_drop_errors)
-            self._ep_drop_errors.clear()
+        # Per-episode means (over episodes that finished this rollout)
+        if self._ep_final_d_xy:
+            log_dict['env/ep_final_d_xy'] = _mean(self._ep_final_d_xy)
+            self._ep_final_d_xy.clear()
+        if self._ep_best_d_xy:
+            log_dict['env/ep_best_d_xy'] = _mean(self._ep_best_d_xy)
+            self._ep_best_d_xy.clear()
+        if self._ep_reward:
+            log_dict['env/ep_reward'] = _mean(self._ep_reward)
+            self._ep_reward.clear()
 
+        # Cumulative counters (always logged)
         log_dict['env/total_episodes'] = self._total_episodes
-        log_dict['env/total_drops'] = self._total_drops
-        log_dict['env/total_auto_drops'] = self._total_auto_drops
-        log_dict['env/total_success'] = self._total_success
-        log_dict['env/total_jackpot'] = self._total_jackpot
+        log_dict['env/reached_close'] = self._reached_close
+        log_dict['env/end_timeout'] = self._end_timeout
+        log_dict['env/end_crash'] = self._end_crash
+        log_dict['env/end_stagnation'] = self._end_stagnation
+        log_dict['env/end_out_of_range'] = self._end_out_of_range
+        log_dict['env/end_ang_vel'] = self._end_ang_vel
 
         if log_dict:
-            # NOTE: time/total_timesteps 는 위 L123 fetch 에서 이미 들어가지만,
-            # 그게 None 일 경우 대비 fallback 으로 num_timesteps 사용.
             log_dict.setdefault('time/total_timesteps', self.num_timesteps)
             wandb.log(log_dict, step=self.num_timesteps)
 
@@ -203,115 +298,9 @@ class CleanupOldCheckpointsCallback(BaseCallback):
         return True
 
 
-class DropEpisodeRecorderCallback(BaseCallback):
-    """Save full trajectory data for episodes where a drop was triggered.
-
-    Each drop episode is stored as a compressed .npz containing the action
-    sequence (for replay), observations, rewards, and per-step metrics.
-    An index.csv is maintained for quick scanning.
-    """
-
-    def __init__(self, save_dir, verbose=0):
-        super().__init__(verbose)
-        self._save_dir = save_dir
-        self._best_dir = os.path.join(save_dir, 'best_drops')
-        os.makedirs(save_dir, exist_ok=True)
-        os.makedirs(self._best_dir, exist_ok=True)
-        self._buffers = {}
-        self._drop_count = 0
-        self._best_drop_error = float('inf')
-        self._index_path = os.path.join(save_dir, 'index.csv')
-        if not os.path.exists(self._index_path):
-            with open(self._index_path, 'w') as f:
-                f.write('filename,timestep,drop_error_m,is_success,'
-                        'episode_reward,n_steps\n')
-
-    def _get_buf(self, i):
-        if i not in self._buffers:
-            self._buffers[i] = {
-                'obs': [], 'act': [], 'rew': [],
-                'd_xy': [], 'd_impact': [],
-            }
-        return self._buffers[i]
-
-    def _on_step(self):
-        infos = self.locals.get('infos', [])
-        dones = self.locals.get('dones', [])
-        actions = self.locals.get('actions')
-        rewards = self.locals.get('rewards')
-        new_obs = self.locals.get('new_obs')
-
-        for i, (info, done) in enumerate(zip(infos, dones)):
-            buf = self._get_buf(i)
-            buf['act'].append(actions[i].copy())
-            buf['rew'].append(float(rewards[i]))
-            buf['obs'].append(new_obs[i].copy())
-            buf['d_xy'].append(info.get('d_xy', float('nan')))
-            buf['d_impact'].append(info.get('d_impact', float('nan')))
-
-            if done:
-                # Replace last obs with terminal observation (DummyVecEnv
-                # auto-resets and overwrites new_obs with the reset obs)
-                terminal_obs = info.get('terminal_observation')
-                if terminal_obs is not None:
-                    buf['obs'][-1] = terminal_obs.copy()
-
-                if 'drop_error_actual_m' in info:
-                    self._drop_count += 1
-                    drop_error = info['drop_error_actual_m']
-                    is_success = info.get('is_success', False)
-                    ep_reward = info.get('episode_reward', sum(buf['rew']))
-                    n_steps = len(buf['act'])
-
-                    fname = (f'drop_{self._drop_count:04d}'
-                             f'_step{self.num_timesteps}'
-                             f'_err{drop_error:.2f}m.npz')
-
-                    np.savez_compressed(
-                        os.path.join(self._save_dir, fname),
-                        actions=np.array(buf['act'], dtype=np.float32),
-                        observations=np.array(buf['obs'], dtype=np.float32),
-                        rewards=np.array(buf['rew'], dtype=np.float32),
-                        d_xy=np.array(buf['d_xy'], dtype=np.float32),
-                        d_impact=np.array(buf['d_impact'], dtype=np.float32),
-                        drop_error=np.float32(drop_error),
-                        is_success=np.bool_(is_success),
-                        episode_reward=np.float32(ep_reward),
-                        timestep=np.int64(self.num_timesteps),
-                        n_steps=np.int32(n_steps),
-                    )
-
-                    with open(self._index_path, 'a') as f:
-                        f.write(f'{fname},{self.num_timesteps},'
-                                f'{drop_error:.4f},{is_success},'
-                                f'{ep_reward:.2f},{n_steps}\n')
-
-                    if (drop_error < self._best_drop_error
-                            and info.get('drop_trigger') == 'auto'):
-                        self._best_drop_error = drop_error
-                        best_path = os.path.join(
-                            self._best_dir,
-                            f'best_err{drop_error:.2f}m_step{self.num_timesteps}')
-                        self.model.save(best_path)
-                        if self.verbose:
-                            print(f'[DropRecorder] NEW BEST (auto)! {drop_error:.3f}m '
-                                  f'→ model saved to {best_path}.zip')
-
-                    if self.verbose:
-                        print(f'[DropRecorder] Saved {fname} '
-                              f'(err={drop_error:.3f}m, rew={ep_reward:.1f},'
-                              f' {n_steps} steps)')
-
-                self._buffers[i] = {
-                    'obs': [], 'act': [], 'rew': [],
-                    'd_xy': [], 'd_impact': [],
-                }
-        return True
-
-
 def _parse_args():
     parser = argparse.ArgumentParser(
-        description='Train SAC policy for drone fly-by drop.')
+        description='Train SAC policy for drone approach-to-X navigation.')
     parser.add_argument(
         '--config', type=str,
         default=_DEFAULT_CONFIG,
@@ -358,7 +347,6 @@ def main(args=None):
 
     best_model_dir = os.path.join(checkpoint_dir, 'best_model')
     archive_dir = os.path.join(checkpoint_dir, 'archive')
-    drop_episodes_dir = os.path.join(checkpoint_dir, 'drop_episodes')
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # --- Prune stale WandB offline-run directories (older than 7 days) ---
@@ -379,21 +367,21 @@ def main(args=None):
         resume='allow',   # re-attaches to existing run after preemption
     )
 
-    # ---- WandB x축 자동 매핑 (2026-05-23 추가) ----
-    # 모든 누적 count metric (env/total_*) 의 x축을 env/total_episodes 로 자동 설정.
-    # 대시보드 UI 수동 조작 불필요. rate 그래프의 binary 진동 문제 해결.
+    # ---- WandB x축 자동 매핑 ----
+    # 누적 count metric 의 x축을 env/total_episodes 로 자동 설정.
     wandb.define_metric('env/total_episodes')
-    wandb.define_metric('env/total_*', step_metric='env/total_episodes')
+    wandb.define_metric('env/end_*',      step_metric='env/total_episodes')
+    wandb.define_metric('env/reached_*',  step_metric='env/total_episodes')
 
     num_envs = cfg_train.get('num_envs', 1)
 
-    print('=== SAC Drone Drop Training ===')
+    print('=== SAC Drone Approach-to-X Training ===')
     print(f'  Config     : {config_path}')
     print(f'  Timesteps  : {total_timesteps:,}')
     print(f'  Checkpoints: {checkpoint_dir}')
     print(f'  Best model : {best_model_dir}')
     print(f'  Archive    : {archive_dir}')
-    print(f'  Drop eps   : {drop_episodes_dir}')
+    print(f'  Close thresh: {_REACHED_CLOSE_THRESHOLD_M} m')
     print(f'  Device     : {cfg_sac.get("device", "cuda")}')
     print(f'  Num envs   : {num_envs}')
     print(f'  WandB run  : {wandb.run.name}')
@@ -433,13 +421,10 @@ def main(args=None):
         verbose=2,
     )
     wandb_metrics_callback = WandbMetricsCallback()
-    drop_recorder_callback = DropEpisodeRecorderCallback(
-        save_dir=drop_episodes_dir, verbose=1)
     callbacks = CallbackList([
         checkpoint_callback, cleanup_callback,
         best_model_callback, milestone_callback,
-        wandb_callback, wandb_metrics_callback,
-        drop_recorder_callback])
+        wandb_callback, wandb_metrics_callback])
 
     # --- Model ---
     if cli.resume:
