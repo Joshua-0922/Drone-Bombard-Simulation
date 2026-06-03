@@ -55,12 +55,15 @@
     <plugin name="gz::sim::systems::Contact"
             filename="gz-sim-contact-system"/>
 
-    <!-- Sensor systems: handle IMU, baro, GPS, magnetometer for PX4 SITL -->
-    <!-- NOTE: gz-sim-sensors-system (ogre2 camera rendering) intentionally
-         omitted for RL training. x500_bombard RL variant has no camera sensor;
-         keeping it active causes GPU rendering overhead → physics timestep
-         instability → Motor Aliasing → ODE AABB crash.
-         Re-enable only for vision-based runs on a GPU VM with use_vision=True. -->
+    <!-- Sensor systems: handle IMU, baro, GPS, magnetometer, camera for PX4 SITL -->
+    <!-- NOTE: gz-sim-sensors-system (ogre2 camera rendering) is required for
+         vision-based RL training (use_vision=True). The x500_bombard model
+         includes a downward-facing camera sensor used by the YOLO xmarker_detector.
+         GPU VM required; camera rendering overhead is acceptable at RTF=1. -->
+    <plugin name="gz::sim::systems::Sensors"
+            filename="gz-sim-sensors-system">
+      <render_engine>ogre2</render_engine>
+    </plugin>
     <plugin name="gz::sim::systems::Imu"
             filename="gz-sim-imu-system"/>
     <plugin name="gz::sim::systems::AirPressure"
