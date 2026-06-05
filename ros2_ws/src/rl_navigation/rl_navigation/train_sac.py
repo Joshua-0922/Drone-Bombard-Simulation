@@ -5,6 +5,7 @@ import glob as _glob
 import os
 import shutil
 import signal
+import subprocess
 import sys
 import time
 
@@ -41,10 +42,14 @@ class DampedEntropySAC(SAC):
     def __init__(self, *args,
                  ent_damping_threshold=5.0,
                  ent_coef_hard_cap=2.0,
+                 target_q_clip=500.0,
                  **kwargs):
         super().__init__(*args, **kwargs)
         self.ent_damping_threshold = ent_damping_threshold
         self.ent_coef_hard_cap = ent_coef_hard_cap
+        # Round 7 v2 (#021 b): critic stability via target Q clipping.
+        # Prevents bootstrap inflation from runaway feedback loop.
+        self.target_q_clip = target_q_clip
 
     def train(self, gradient_steps, batch_size=64):
         self.policy.set_training_mode(True)
@@ -71,19 +76,23 @@ class DampedEntropySAC(SAC):
             if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
                 ent_coef = th.exp(self.log_ent_coef.detach())
 
-                # Round 6: Soft damping
-                # log_prob_mean이 -target_entropy를 초과하면 (정책이 deterministic)
-                # alpha-증가 그라디언트를 감쇠
-                log_prob_mean = log_prob.mean().item()
-                # target_entropy는 보통 -|A| = -5. -target_entropy = 5
-                concentration = max(0.0, log_prob_mean - (-self.target_entropy))
-                damping = self.ent_damping_threshold / (
-                    self.ent_damping_threshold + concentration)
-                damping_factors.append(damping)
+                # Round 7 v3 (#021 a): Per-sample damping (replaces q95-based).
+                # 기존 q95 는 batch 전체에 단일 scalar damping → outlier 가
+                # 평균만 끌어올려도 모든 sample 의 contribution 이 동일하게 damped.
+                # 새 방식: 각 transition 의 log_prob 으로 concentration 계산 →
+                # element-wise damping → 정상 transition 은 그대로, outlier 만 강하게 damped.
+                concentration_per_sample = th.clamp(
+                    log_prob.detach() - (-self.target_entropy), min=0.0)
+                damping_per_sample = self.ent_damping_threshold / (
+                    self.ent_damping_threshold + concentration_per_sample)
+                # mean 으로 monitoring 만 보고 — 실제 적용은 element-wise.
+                damping_factors.append(damping_per_sample.mean().item())
 
-                ent_coef_loss = -(self.log_ent_coef * (
-                    log_prob + self.target_entropy).detach()).mean()
-                ent_coef_loss = ent_coef_loss * damping
+                ent_coef_loss = -(
+                    self.log_ent_coef
+                    * (log_prob + self.target_entropy).detach()
+                    * damping_per_sample
+                ).mean()
                 ent_coef_losses.append(ent_coef_loss.item())
             else:
                 ent_coef = self.ent_coef_tensor
@@ -112,8 +121,15 @@ class DampedEntropySAC(SAC):
                     + (1 - replay_data.dones) * self.gamma * next_q_values)
 
             current_q_values = self.critic(replay_data.observations, replay_data.actions)
+            # Round 7 v3 (#021 b): critic stability — Huber loss + target Q clipping.
+            # MSE: 큰 TD-error 에 대해 gradient 가 비례 증가 → 폭발 feedback 가능.
+            # Huber: error > 1 에서 gradient 1.0 으로 saturate → 안전한 step size.
+            # Target clip: bootstrap Q 폭주 차단 (reward scale 고려 ±target_q_clip).
+            target_q_clipped = target_q_values.clamp(
+                -self.target_q_clip, self.target_q_clip)
             critic_loss = 0.5 * sum(
-                F.mse_loss(current_q, target_q_values) for current_q in current_q_values)
+                F.smooth_l1_loss(current_q, target_q_clipped)
+                for current_q in current_q_values)
             critic_losses.append(critic_loss.item())
 
             self.critic.optimizer.zero_grad()
@@ -229,6 +245,9 @@ class WandbMetricsCallback(BaseCallback):
             'crash': 0, 'overspeed': 0, 'ang_vel': 0, 'inverted': 0,
             'timeout': 0, 'out_of_range': 0, 'max_altitude': 0,
         }
+        # Phase 1 redux v2: 현재 시점의 연속 성공 횟수.
+        # success 발생 시 +1, 그 외 (실패 drop, drop 없는 episode 끝) 시 0 리셋.
+        self._current_success_streak: int = 0
 
     def _on_step(self):
         infos = self.locals.get('infos', [])
@@ -251,8 +270,15 @@ class WandbMetricsCallback(BaseCallback):
                         self._total_auto_drops += 1
                     if info.get('is_success'):
                         self._total_success += 1
+                        self._current_success_streak += 1
+                    else:
+                        # drop 했지만 success 아님 → 실패로 보고 streak 리셋
+                        self._current_success_streak = 0
                     if info.get('jackpot'):
                         self._total_jackpot += 1
+                else:
+                    # drop 자체가 없는 episode 끝 (truncate w/o drop) → streak 리셋
+                    self._current_success_streak = 0
         return True
 
     def _on_rollout_end(self):
@@ -287,6 +313,8 @@ class WandbMetricsCallback(BaseCallback):
         log_dict['env/total_auto_drops'] = self._total_auto_drops
         log_dict['env/total_success'] = self._total_success
         log_dict['env/total_jackpot'] = self._total_jackpot
+        # Phase 1 redux v2: 현재 연속 성공 횟수 (rollout end 시점 snapshot)
+        log_dict['env/current_success_streak'] = self._current_success_streak
         for reason, count in self._truncate_counts.items():
             log_dict[f'env/total_truncate_{reason}'] = count
 
@@ -373,12 +401,119 @@ class CleanupOldCheckpointsCallback(BaseCallback):
         self._keep = keep_last
 
     def _on_step(self):
-        files = sorted(_glob.glob(
-            os.path.join(self._dir, f'{self._prefix}_*_steps.zip')))
+        # Round 6 bug fix: step 번호로 정렬 (이전엔 알파벳순 → 100k+가 75k보다
+        # 먼저 정렬되어 새 체크포인트가 즉시 삭제되는 버그)
+        files = _glob.glob(
+            os.path.join(self._dir, f'{self._prefix}_*_steps.zip'))
+        def _step_num(p):
+            name = os.path.basename(p)
+            try:
+                return int(name.replace(f'{self._prefix}_', '').replace('_steps.zip', ''))
+            except ValueError:
+                return -1
+        files = sorted(files, key=_step_num)
         for old in files[:-self._keep]:
             os.remove(old)
             if self.verbose:
                 print(f'[Cleanup] Deleted old checkpoint: {old}')
+        return True
+
+
+class InfraHealthMonitorCallback(BaseCallback):
+    """Round 7 diagnostic — track Gazebo/PX4 health + reset velocity over time.
+
+    Hypothesis: gz set_pose teleport preserves velocity → residual velocity
+    accumulates across non-drop episodes → eventually destabilises Gazebo
+    physics → gz model --list hangs → training crashes.
+
+    Measures every check_freq steps:
+      - gz model --list response time (ms) — if grows over time, registry/lock issue
+      - gz sim RSS (MB)                    — if grows, Gazebo memory leak
+      - bin/px4 RSS (MB)                   — if grows, PX4 internal state leak
+      - Latest reset velocity diag from env — pre/post velocity comparison
+    """
+
+    def __init__(self, env, check_freq=200, verbose=0):
+        super().__init__(verbose)
+        self._env = env
+        self._check_freq = check_freq
+
+    @staticmethod
+    def _rss_mb(pattern):
+        """Return RSS in MB for first process matching pattern via pgrep."""
+        try:
+            pids = subprocess.run(
+                ['pgrep', '-f', pattern], capture_output=True, text=True,
+                timeout=2.0).stdout.strip().split()
+            if not pids:
+                return -1.0
+            with open(f'/proc/{pids[0]}/status') as f:
+                for line in f:
+                    if line.startswith('VmRSS:'):
+                        return int(line.split()[1]) / 1024.0  # KB → MB
+        except (subprocess.TimeoutExpired, FileNotFoundError, ValueError, OSError):
+            return -1.0
+        return -1.0
+
+    def _on_step(self):
+        if self.num_timesteps % self._check_freq != 0:
+            return True
+
+        # gz model --list response time
+        _t0 = time.time()
+        try:
+            subprocess.run(
+                ['gz', 'model', '--list'],
+                capture_output=True, timeout=5.0)
+            gz_ms = (time.time() - _t0) * 1000.0
+            gz_ok = 1
+        except subprocess.TimeoutExpired:
+            gz_ms = 5000.0
+            gz_ok = 0
+
+        gz_rss = self._rss_mb('gz sim')
+        px4_rss = self._rss_mb('bin/px4')
+
+        # Env reset diag (DummyVecEnv: env.envs[0])
+        diag = {}
+        try:
+            inner = self._env.envs[0] if hasattr(self._env, 'envs') else self._env
+            inner = getattr(inner, 'env', inner)  # Monitor wrapper unwrap
+            diag = getattr(inner, '_reset_diag', {}) or {}
+        except (AttributeError, IndexError):
+            pass
+
+        log_dict = {
+            'infra/gz_list_ms': gz_ms,
+            'infra/gz_list_ok': gz_ok,
+            'infra/gz_rss_mb': gz_rss,
+            'infra/px4_rss_mb': px4_rss,
+        }
+        if diag:
+            log_dict.update({
+                'infra/reset_pre_v': diag.get('pre_reset_v', 0.0),
+                'infra/reset_pre_ang_v': diag.get('pre_reset_ang_v', 0.0),
+                'infra/reset_post_cruise_v': diag.get('post_cruise_v', 0.0),
+                'infra/reset_post_cruise_ang_v': diag.get('post_cruise_ang_v', 0.0),
+                'infra/reset_idx': diag.get('reset_idx', 0),
+                'infra/reset_prev_dropped': int(diag.get('prev_dropped', False)),
+                # 2차/1차 처방 진단 — postmortem용
+                'infra/used_full_restart': int(diag.get('used_full_restart', False)),
+                'infra/forced_restart_triggered': int(diag.get('forced_restart_triggered', False)),
+                'infra/consecutive_fast_resets': diag.get('consecutive_fast_resets', 0),
+                'infra/cruise_timeout_attempts': diag.get('cruise_timeout_attempts', 0),
+            })
+
+        if wandb.run:
+            wandb.log(log_dict, step=self.num_timesteps)
+
+        if self.verbose:
+            print(f'[InfraHealth] step={self.num_timesteps} '
+                  f'gz_ms={gz_ms:.0f} gz_rss={gz_rss:.0f}MB '
+                  f'px4_rss={px4_rss:.0f}MB '
+                  f'pre_v={diag.get("pre_reset_v", 0):.2f} '
+                  f'post_v={diag.get("post_cruise_v", 0):.2f}')
+
         return True
 
 
@@ -390,12 +525,17 @@ class DropEpisodeRecorderCallback(BaseCallback):
     An index.csv is maintained for quick scanning.
     """
 
-    def __init__(self, save_dir, verbose=0):
+    def __init__(self, save_dir, success_replay_dir=None, run_id=None, verbose=0):
         super().__init__(verbose)
         self._save_dir = save_dir
-        self._best_dir = os.path.join(save_dir, 'best_drops')
+        # Round 6+: success+auto_drop 모델 저장 — run_id별 폴더 (host에 영구 보관)
+        # 이전 best_drops 시스템 대체 (best 조건 제거, 모든 성공 저장)
+        if success_replay_dir and run_id:
+            self._success_replay_dir = os.path.join(success_replay_dir, run_id)
+            os.makedirs(self._success_replay_dir, exist_ok=True)
+        else:
+            self._success_replay_dir = None
         os.makedirs(save_dir, exist_ok=True)
-        os.makedirs(self._best_dir, exist_ok=True)
         self._buffers = {}
         self._drop_count = 0
         self._best_drop_error = float('inf')
@@ -465,16 +605,20 @@ class DropEpisodeRecorderCallback(BaseCallback):
                                 f'{drop_error:.4f},{is_success},'
                                 f'{ep_reward:.2f},{n_steps}\n')
 
-                    if (drop_error < self._best_drop_error
-                            and info.get('drop_trigger') == 'auto'):
-                        self._best_drop_error = drop_error
-                        best_path = os.path.join(
-                            self._best_dir,
-                            f'best_err{drop_error:.2f}m_step{self.num_timesteps}')
-                        self.model.save(best_path)
+                    # Round 6+: success + auto_drop 모델을 success_replay로 저장.
+                    # 이전 best_drops 시스템 대체 (run_id별 영구 보관, host symlink 접근).
+                    if (is_success
+                            and info.get('drop_trigger') == 'auto'
+                            and self._success_replay_dir):
+                        if drop_error < self._best_drop_error:
+                            self._best_drop_error = drop_error
+                        save_path = os.path.join(
+                            self._success_replay_dir,
+                            f'success_step{self.num_timesteps}_err{drop_error:.2f}m')
+                        self.model.save(save_path)
                         if self.verbose:
-                            print(f'[DropRecorder] NEW BEST (auto)! {drop_error:.3f}m '
-                                  f'→ model saved to {best_path}.zip')
+                            print(f'[SuccessReplay] SUCCESS (auto)! {drop_error:.3f}m '
+                                  f'→ model saved to {save_path}.zip')
 
                     if self.verbose:
                         print(f'[DropRecorder] Saved {fname} '
@@ -609,13 +753,25 @@ def main(args=None):
         verbose=2,
     )
     wandb_metrics_callback = WandbMetricsCallback()
+    # Round 6+: success_replay 경로 (host에 bind-mounted ros2_ws 통해 접근)
+    # 컨테이너: /workspace/ros2_ws/success_replay/{run_id}/
+    # Host:    /home/juns/.../ros2_ws/success_replay/{run_id}/
+    # local:   /home/juns/.../local/success_replay → ../ros2_ws/success_replay (symlink)
+    _success_replay_dir = '/workspace/ros2_ws/success_replay'
+    _success_run_id = wandb.run.id if wandb.run else 'no_wandb'
     drop_recorder_callback = DropEpisodeRecorderCallback(
-        save_dir=drop_episodes_dir, verbose=1)
+        save_dir=drop_episodes_dir,
+        success_replay_dir=_success_replay_dir,
+        run_id=_success_run_id,
+        verbose=1)
+    # Round 7 diagnostic: leak investigation
+    infra_health_callback = InfraHealthMonitorCallback(
+        env=env, check_freq=200, verbose=1)
     callbacks = CallbackList([
         checkpoint_callback, cleanup_callback,
         best_model_callback, milestone_callback,
         wandb_callback, wandb_metrics_callback,
-        drop_recorder_callback])
+        drop_recorder_callback, infra_health_callback])
 
     # --- Model ---
     if cli.resume:
@@ -628,6 +784,7 @@ def main(args=None):
             custom_objects=dict(
                 ent_damping_threshold=cfg_sac.get('ent_damping_threshold', 5.0),
                 ent_coef_hard_cap=cfg_sac.get('ent_coef_hard_cap', 2.0),
+                target_q_clip=cfg_sac.get('target_q_clip', 500.0),
             ),
         )
         # Reload replay buffer if preempt checkpoint exists.
@@ -648,6 +805,10 @@ def main(args=None):
         # Round 6: ent_coef damping + hard cap
         ent_damping_threshold = cfg_sac.get('ent_damping_threshold', 5.0)
         ent_coef_hard_cap = cfg_sac.get('ent_coef_hard_cap', 2.0)
+        # Round 7: target_entropy 명시 (default -|A| = -5는 bounded action에 부적합)
+        target_entropy = cfg_sac.get('target_entropy', 'auto')
+        # Round 7 v3 (#021): critic stability via target Q clipping.
+        target_q_clip = cfg_sac.get('target_q_clip', 500.0)
 
         sac_kwargs = dict(
             learning_rate=cfg_sac.get('learning_rate', 3e-4),
@@ -663,6 +824,8 @@ def main(args=None):
             verbose=1,
             ent_damping_threshold=ent_damping_threshold,
             ent_coef_hard_cap=ent_coef_hard_cap,
+            target_entropy=target_entropy,
+            target_q_clip=target_q_clip,
         )
         if use_per:
             print(f'[Round 3] PER enabled: alpha={per_alpha}, eps={per_eps}, priority_max={per_priority_max}')
@@ -670,6 +833,7 @@ def main(args=None):
             sac_kwargs['replay_buffer_kwargs'] = dict(
                 alpha=per_alpha, eps=per_eps, priority_max=per_priority_max)
         print(f'[Round 6] DampedEntropySAC: damping_threshold={ent_damping_threshold}, hard_cap={ent_coef_hard_cap}')
+        print(f'[Round 7] target_entropy={target_entropy} (default auto = -|A| = -5)')
         _model = DampedEntropySAC('MlpPolicy', env, **sac_kwargs)
 
     print('Starting training...')

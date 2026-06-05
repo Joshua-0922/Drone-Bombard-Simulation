@@ -13,7 +13,9 @@
 **학습 후 GUI 검증**: [guides/post_training_verification_guide.txt](guides/post_training_verification_guide.txt)
 **parameter 의미가 궁금하면**: [parameter_log.md](parameter_log.md) §1 (Glossary)
 **parameter 가 언제/왜 바뀌었는지**: [parameter_log.md](parameter_log.md) §3~4
-**지난 세션 내용**: [meeting_notes/](meeting_notes/) — 최신 = `meeting_notes_2026-05-25.txt`
+**지난 세션 내용**: [meeting_notes/](meeting_notes/) — 최신 = `meeting_notes_2026-06-03.txt`
+**Phase 2 계획**: [design/phase2_plan.md](design/phase2_plan.md) — 변경 후보들의 검토 + 실험 큐
+**Phase 1 백업**: [backups/phase1_final_round7_v3/](backups/phase1_final_round7_v3/) — Round 7 v3 종료 상태
 
 ---
 
@@ -74,11 +76,16 @@ Drone-Bombard-Simulation/local/
 │   ├── n1b_v2_200k_2026-05-22/
 │   └── junsang_v4_milestones_2026-05-23/
 │
+├── success_replay/  → ../ros2_ws/success_replay  (symlink, Round 6+)
+│   └── {wandb_run_id}/               ← 학습 중 success+auto_drop 모델 저장
+│       └── success_step{N}_err{X}m.zip
+│
 ├── conversation_backups/             ← Claude Code 대화 백업
 ├── backups/                          ← 큰 데이터 snapshot
 │
 └── archive/                          ← 완료/이전 문서 보관
     ├── A_phased_curriculum_도입방안.md  ← curriculum 원칙은 design_review로 이관
+    ├── sac_oscillation_mechanism.md     ← SAC 진동 메커니즘 참고
     └── (기타 이전 가이드, plan 등)
 ```
 
@@ -98,34 +105,49 @@ Drone-Bombard-Simulation/local/
 
 ---
 
-## 현재 상태 (2026-05-30)
+## 현재 상태 (2026-06-05)
 
 - **Branch**: `junsang` (GitHub: Joshua-0922/Drone-Bombard-Simulation)
-- **Round 1** (ruozrv5x, 150k): 432 drops, best 4.64m, avg 14.02m, success 1건
-- **Round 2** (z05fx7g9, 150k):
-  - 427 drops, best **2.53m**, avg 19.09m, success **16건 (16배 증가)**
-  - 종료 조건 진화: max_altitude/stagnation 제거 → drop 시점 고도 페널티
-  - Deterministic eval: drop 0건, 모두 crash 종료
-  - 발견: Reset 버그 (n_steps=1 가짜 success 13건) — **해결**
-  - 발견: **Post-success regression** — success 직후 발산 패턴
-- Round 3 첫 시도 (q13hli0y): 지수 페널티 폭주 (-6.77e+9), 30k 중단
-- Round 3 수정 학습 (lidq3ydu, 157k 크래시):
-  - 104 drops, **best 4.32m**, success 8건 (Round 2 대비 **2배 속도**)
-  - 100~125k 최우수 (avg 13.9m, success 3건)
-  - PX4 로그 20GB 누적 → Gazebo timeout 크래시
-- Round 4 발산 (4j46qwpk, 146k 중단):
-  - per-step density 변경 → SAC auto-entropy 양성 피드백 발산
-  - ent_coef 6.03, critic_loss 230k+
-  - 교훈: per-step 보상 magnitude 변경 위험
-- **Round 5 학습 중** (sdjytkpv, 300k):
-  - Round 4 처방 전면 복원 (w_heading 0.7, distance_penalty 0)
-  - **신규**: Hover Terminal Penalty
-    - max_consecutive_still > 200 step → -15 (episode 종료 시)
-    - Drop 시 제외 — per-step density 보존 → SAC 안정성 유지
-  - PER + LR/Tau + 안전장치 4종 + PX4 로깅 비활성 유지
-- **검증 방법**: deterministic evaluate + GUI
-- **best drop 모델 저장**: auto drop 최고 기록 시 가중치 .zip 자동 저장
-- **Issues**: 18건. Round 5 적용 1건(#017 재처방), 보류 1건(#018 Vision)
+- **Phase 1 마감** — Round 7 v3 (436xl0bb, 685k 자연 종료):
+  - **6,055 episodes, 162 drops, 87 auto, 16 successes, best 1.32m**
+  - 모든 처방 효과 입증:
+    - per-sample damping → ent_coef cap 1.0 → 0.055 회복
+    - Huber + target_q_clip=500 → critic_loss 200k → 35 안정
+    - 1·2차 처방 (#021) → forced restart 29회 정상, gz timeout 0회
+  - 백업: `local/backups/phase1_final_round7_v3/` (609 MB)
+    - sac_drop_final.zip, success_replay_436xl0bb/ (15 models), drop_episodes/, wandb_run/, 코드/설정 snapshot
+- **Phase 1 eval 진단**:
+  - deterministic eval 5 EP: 0-1 drops, episode 의존성 발견
+  - 정책이 random_drop 보조 없이는 reliable auto_drop 못함
+  - 14.87m 거리는 학습 난이도 너무 높음
+- **Phase 1 redux v1** (ayi27a56, 89k 수동 중단):
+  - target_enu (11, 10) → (4, 3) — spawn 부터 5m
+  - random_drop_prob 0.005 → 0
+  - 결과: 1,205 episodes, 830 drops, **799 successes (96.3% at 5m)**
+  - **best drop 0.809m** (Round 7 v3 의 1.32m 갱신)
+  - fps 18 → 2 (drop 빈번 → infra restart 누적)
+  - preempt 백업: `archive/phase1_redux_v1_pause_89k/` (86 MB)
+- **Phase 1 redux v2 진행 중** (za9zxdh6, resume from 89k):
+  - **curriculum learning** — 이전 96% (5m) 정책 위에 정밀화 학습
+  - auto_drop_threshold 3.0 → **1.0m**
+  - success_threshold 5.0 → **1.0m**
+  - jackpot_threshold 0.1 → **0.3m** (도달 가능 영역)
+  - `_kill_infra` timeout 5s → **2s** (fps 회복)
+  - 코드 추가: `env/current_success_streak` metric (callback only, 다음 학습부터)
+  - 누적 target ~390k step
+- **Phase 2 검토 노트**: `local/design/phase2_plan.md` — 변경 후보들의 분석
+- **이전 라운드 요약** (간략):
+  - Round 1~3: 학습 안정성 처방 누적
+  - Round 4-6: SAC entropy 발산 (Issue #019) 진단 + 처방 진화
+  - Round 7 1차~v2: target_entropy=-15 도입 + #021 인프라 버그 수습
+  - Round 7 v3: critic 안정 처방 + Phase 1 완성
+- **검증 방법**: deterministic + stochastic eval + GUI
+- **모델 저장 시스템**:
+  - **SuccessReplay** (Round 6+): `is_success AND drop_trigger=='auto'` 만 저장
+    - 위치: `local/success_replay/{wandb_run_id}/` (symlink → ros2_ws/success_replay)
+  - 160k Round 6 v2 best: `local/success_replay/round6_v2_recovered/success_step160625_err4.36m.zip`
+  - 1.32m Round 7 v3 best: `local/backups/phase1_final_round7_v3/success_replay_436xl0bb/success_step454091_err1.32m`
+- **Issues**: 21건 (#021 신규). Phase 1 redux 적용 6건 (#017, #019, #020, #021 + target/random_drop)
 
 ---
 

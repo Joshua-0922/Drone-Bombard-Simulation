@@ -447,6 +447,20 @@ class DroneDropEnv(gym.Env):
         # --- Reset recursion guard ---
         self._reset_depth = 0
 
+        # --- Diagnostic (Round 7 leak investigation) ---
+        # Tracks velocity at end-of-episode (pre-reset) vs at CRUISE (post-reset).
+        # If pre_v stays large but post_v ≈ 0 → PX4 EKF absorbs the discontinuity.
+        # If post_v grows over many resets → residual velocity accumulation hypothesis.
+        self._reset_count = 0
+        self._reset_diag = {}
+
+        # --- 2차 처방: 누적 fast-path reset 방지 (periodic forced full restart) ---
+        # drop 없이 fast-path teleport reset 이 N회 연속되면 강제 _kill_infra/_start_infra.
+        # 누적 가설이 사실이면 cap 전에 청소; 가설이 틀려도 비용은 ~4% slowdown 뿐.
+        self._consecutive_fast_resets = 0
+        self._cfg_max_consecutive_fast_resets = int(cfg_env.get(
+            'max_consecutive_fast_resets', 100))
+
         # --- Start ROS2 ---
         if not rclpy.ok():
             rclpy.init()
@@ -484,6 +498,13 @@ class DroneDropEnv(gym.Env):
         # 1. Clear episode state
         # Save dropped state BEFORE clearing — used below to decide infra restart path.
         _prev_dropped = self.dropped
+
+        # Round 7 diagnostic: capture velocity at END of previous episode
+        # (this is the residual velocity that set_pose CANNOT reset).
+        with self._state_lock:
+            _pre_reset_v = float(np.linalg.norm(self._node.vel_enu))
+            _pre_reset_ang_v = float(np.linalg.norm(self._node.ang_vel))
+
         self._step_count = 0
         self.dropped = False
         self._episode_reward = 0.0
@@ -535,12 +556,28 @@ class DroneDropEnv(gym.Env):
         #    Fix: full infra restart (kill Gazebo+PX4 and restart) — DetachableJoint
         #    is re-created cleanly from SDF. Slower (~30s) but crash-free.
         #    If no drop occurred, the faster teleport path is sufficient.
-        if _prev_dropped:
+        #
+        # Round 7 (2차 처방): drop 없이 fast-path 가 N회 연속이면 강제 full restart.
+        # Round 3/6 v2/7 의 gz model --list timeout crash 가설:
+        #   set_pose 가 velocity reset 못함 → 누적 → Gazebo deadlock.
+        # 가설 검증 무관하게 누적 자체 차단.
+        _forced_restart = (
+            self._consecutive_fast_resets
+            >= self._cfg_max_consecutive_fast_resets)
+
+        if _prev_dropped or _forced_restart:
             self._obs_ready.clear()  # ensure _start_infra() waits for fresh PX4 data
             self._kill_infra()
             self._start_infra()
+            self._consecutive_fast_resets = 0
+            if _forced_restart and rclpy.ok():
+                self._node.get_logger().info(
+                    f'[RL Env] Forced full restart after'
+                    f' {self._cfg_max_consecutive_fast_resets}'
+                    ' consecutive fast resets (no drop)')
         else:
             self._gz_reset_poses()   # fast teleport (joint still intact)
+            self._consecutive_fast_resets += 1
 
         # 4. Start fresh episode processes
         self._start_episode()
@@ -598,7 +635,27 @@ class DroneDropEnv(gym.Env):
         # 7. Seed d_xy_prev from the initial CRUISE position (no kinematic prediction)
         with self._state_lock:
             pos = self._node.pos_enu.copy()
+            # Round 7 diagnostic: capture velocity at CRUISE (post-reset stabilized).
+            _post_cruise_v = float(np.linalg.norm(self._node.vel_enu))
+            _post_cruise_ang_v = float(np.linalg.norm(self._node.ang_vel))
         self.d_xy_prev = self._compute_d_xy(pos)
+
+        # Round 7 diagnostic: store reset diag for callback to read
+        self._reset_count += 1
+        self._reset_diag = {
+            'pre_reset_v': _pre_reset_v,
+            'pre_reset_ang_v': _pre_reset_ang_v,
+            'post_cruise_v': _post_cruise_v,
+            'post_cruise_ang_v': _post_cruise_ang_v,
+            'reset_idx': self._reset_count,
+            'prev_dropped': bool(_prev_dropped),
+            # 2차 처방 + 1차 처방 진단 — 다음 crash 시 직전 100 sample 으로
+            # 가설 검증 가능하도록 추가 기록.
+            'used_full_restart': bool(_prev_dropped or _forced_restart),
+            'forced_restart_triggered': bool(_forced_restart),
+            'consecutive_fast_resets': self._consecutive_fast_resets,
+            'cruise_timeout_attempts': _cruise_attempt,
+        }
 
         obs = self._get_obs()
         return obs, {}
@@ -1095,6 +1152,11 @@ class DroneDropEnv(gym.Env):
 
         Used by _start_infra() to decide whether to reuse existing infra
         (avoiding the PX4 sensor re-init delay that causes preflight fails).
+
+        Round 7 resilience: if `gz model --list` times out, Gazebo is
+        unresponsive → return False so caller triggers full restart instead
+        of raising. Previously the exception propagated up and killed training
+        (4 historical crashes: 2026-05-28, 5-30, 5-31, 6-2).
         """
         gz_up = subprocess.run(
             ['pgrep', '-f', 'gz sim'], capture_output=True).returncode == 0
@@ -1103,9 +1165,16 @@ class DroneDropEnv(gym.Env):
         if not (gz_up and px4_up):
             return False
         # Check drone model exists in Gazebo (pre-spawned in world SDF)
-        result = subprocess.run(
-            ['gz', 'model', '--list'],
-            capture_output=True, text=True, timeout=5.0)
+        try:
+            result = subprocess.run(
+                ['gz', 'model', '--list'],
+                capture_output=True, text=True, timeout=5.0)
+        except subprocess.TimeoutExpired:
+            if rclpy.ok():
+                self._node.get_logger().warning(
+                    '[RL Env] gz model --list timed out — infra treated as'
+                    ' unhealthy (triggers full restart)')
+            return False
         return self._model_name in result.stdout
 
     def _spin_loop(self):
@@ -1420,7 +1489,9 @@ class DroneDropEnv(gym.Env):
             if proc.poll() is None:
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                    proc.wait(timeout=5)
+                    # Phase 1 redux v2: 5s → 2s.
+                    # drop 빈도 높을 때 _kill_infra 가 자주 호출되어 fps 폭락 원인.
+                    proc.wait(timeout=2)
                 except (ProcessLookupError, subprocess.TimeoutExpired):
                     try:
                         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -1465,7 +1536,10 @@ class DroneDropEnv(gym.Env):
             if proc.poll() is None:
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                    proc.wait(timeout=5)
+                    # Round 8 (Phase 2 speedup): 5s → 2s.
+                    # 5s timeout 이 짧은 episode + 자주 reset 시 누적 오버헤드 큼.
+                    # 2s 도 정상 SIGTERM 응답엔 충분; 안 끝나면 SIGKILL escalation.
+                    proc.wait(timeout=2)
                 except (ProcessLookupError, subprocess.TimeoutExpired):
                     try:
                         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
@@ -1522,11 +1596,12 @@ class DroneDropEnv(gym.Env):
         self._episode_procs.append(proc)
 
         # drop_calculator (no PX4 topics) — use per-instance target coordinates
+        # Phase 1 redux fix: x_marker_x 도 cfg 사용 (이전엔 11.0 hardcoded).
         proc = subprocess.Popen(
             ['ros2', 'run', 'drop_calculator', 'calculator',
              '--ros-args',
-             '-p', 'x_marker_x:=11.0',
-             '-p', f'x_marker_y:={self._cfg_target_y}'],   # 10.0 + iid * 150.0
+             '-p', f'x_marker_x:={self._cfg_target_x}',
+             '-p', f'x_marker_y:={self._cfg_target_y}'],   # _cfg_target_y = cfg + iid * 150.0
             env=ep_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             preexec_fn=os.setsid,
         )

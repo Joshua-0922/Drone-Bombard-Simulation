@@ -1,0 +1,179 @@
+================================================================================
+ Drone-Bombard-Simulation 작업 정리 — 2026-06-03
+ 세션 기간 : 2026-06-01 ~ 2026-06-03
+ 직전 노트 : meeting_notes_2026-05-31.txt
+ 핵심 변화 : Round 6 v2 OOM 분석 → 근본 원인 (bounded action + target_entropy)
+            정확히 파악 → Round 7 (target_entropy=-15) 근본 처방
+================================================================================
+
+
+********************************************************************************
+*  PART 1 — Round 6 v2 학습 결과 + OOM 분석
+********************************************************************************
+
+  학습 추이 (95k에서 resume, 294k에서 OOM):
+    95k~120k:  32 drops, avg 24m, success 1   (정상 시작)
+    120k~145k: 34 drops, avg 35m              (변동)
+    145k~170k: 27 drops, avg 23m, success 2   ★ best 4.36m @ step 160625
+    170k~195k: 26 drops, avg 22m, ep_rew 양수 (정점)
+    195k~220k: 12 drops, avg 35m              (발산 시작)
+    220k~245k: 12 drops, avg 25m
+    245k~270k: 10 drops, avg 53m              (심각)
+    270k~295k: 7 drops, critic_loss 14M+     (OOM)
+
+  발산 메커니즘:
+    1) Hard cap 2.0이 ent_coef 잡았으나 그 값에서 학습 망가짐
+    2) ent_coef=2.0 → entropy 보너스 = 2 × 3.5 = +7 per step
+    3) reward ~0.7 vs entropy bonus +7 → policy 거의 random
+    4) Critic이 random policy 따라가려고 → loss 14M 폭증
+    5) 메모리 폭발 → container OOM (exit 137)
+
+  체크포인트 회수:
+    Rolling 75k~95k (이전 Round 6 v1)
+    Milestone 50k, 100k, 150k, 200k, 250k (Round 6 v2)
+    best_drops/ 폴더 (4건의 success 모델)
+
+  교훈: damping/cap은 증상 완화. 근본 원인은 다른 곳.
+
+
+********************************************************************************
+*  PART 2 — 근본 원인 정밀 분석 (Bounded Action + Target Entropy)
+********************************************************************************
+
+  사용자 질문: "결국 action이 [-1,1] bounded되어서 그런 거야?"
+  → 정확한 진단. 이게 핵심.
+
+  SAC 자동 entropy 튜닝 메커니즘:
+    ent_coef_loss = -(log_alpha * (log_prob + target_entropy).detach()).mean()
+    d_loss / d_log_alpha = -(log_prob + target_entropy)
+
+    log_prob > -target_entropy 이면 alpha ↑
+    log_prob < -target_entropy 이면 alpha ↓
+
+  Bounded action space (tanh squash) 의 특성:
+    a = tanh(N(μ, σ²))
+    log π(a|s) = log N(u|μ,σ) - Σ log(1 - tanh²(u_i))
+                  가우시안 부분  - Jacobian 보정
+
+    Jacobian 보정이 자연스럽게 큰 양수 (action이 ±1 근처)
+    → log_prob가 일반적으로 큰 양수
+    → log_prob > 5는 정상 학습 시에도 흔함
+
+  target_entropy = -5 (default = -|A|) 의 문제:
+    -target_entropy = 5
+    log_prob > 5 → alpha ↑ 압력 거의 항상
+    → 학습 진행될수록 ent_coef 계속 증가
+    → hard cap에 갇힘
+
+  비유:
+    "중력이 위쪽으로 작용하는 세계 + 천장(cap)"
+    → 천장에 영원히 붙음 ← Round 6 v2
+
+  해결: target_entropy = -15
+    -target_entropy = 15
+    log_prob > 15는 매우 극단적 (거의 발생 X)
+    → 대부분 alpha ↓ gradient
+    → cap 안 닿거나 닿아도 자기 복구
+
+  비유:
+    "중력이 아래쪽으로 작용하는 세계 + 천장(cap)"
+    → 가끔 위로 튀어 올라도 다시 내려옴 ← Round 7 예상
+
+
+********************************************************************************
+*  PART 3 — SuccessReplay 시스템 도입 + best_drops 활용
+********************************************************************************
+
+  Round 6 v2의 best_drops 저장 발견:
+    /workspace/ros2_ws/rl_checkpoints/drop_episodes/best_drops/
+      best_err3.71m_step16891   (역대 최고, 이전 라운드)
+      best_err4.36m_step160625  ← Round 6 v2 최고 (160k)
+      best_err4.37m_step160213  ← Round 6 v2 두 번째 (160k)
+      best_err5.50m_step156561
+      best_err8.45m_step5158
+      best_err8.61m_step124172
+      best_err14.69m_step122441
+
+  사용자가 160k best 모델 GUI로 확인:
+    1 episode: 5.75m drop (약간 빗나감)
+    다음 episode들: 일부 drop, 일부 crash
+    → 학습된 정책이 fragile
+
+  GUI watcher 도입:
+    별도 tmux 세션에서 gz sim -g 자동 재실행
+    Episode 사이 sim restart로 GUI 죽어도 자동 복구
+
+  사용자 결정:
+    "옵션 C로 가자" — 160k best만 success_replay에 백업
+    local/success_replay/round6_v2_recovered/success_step160625_err4.36m.zip
+
+
+********************************************************************************
+*  PART 4 — Round 7 처방 결정 (보수적)
+********************************************************************************
+
+  PER alpha 0.6 유지 — Round 3에서 검증, 일관성 위해
+  ent_coef_hard_cap: 2.0 → 1.0 (안전망 강화)
+  target_entropy: -5 → -15 (근본 처방)
+  total_timesteps: 300000 → 150000 (우선 검증)
+
+  코드 변경:
+    train_sac.py:
+      DampedEntropySAC 생성자에 target_entropy 전달
+      cli.resume 경로에도 target_entropy 적용
+      print 로그: [Round 7] target_entropy=-15.0
+    config/hyperparams.yaml:
+      sac.target_entropy: -15.0
+      sac.ent_coef_hard_cap: 1.0
+      training.total_timesteps: 150000
+      wandb.run_name: round7_target_entropy_conservative
+
+  발산 방어 4계층:
+    1차: target_entropy = -15  ← 근본 원인 차단
+    2차: percentile damping     ← alpha 증가 둔화
+    3차: hard cap = 1.0         ← 절대 상한 (학습 가능 수준)
+    4차: reward hard cap        ← 단일 step reward 폭주 차단
+
+  Round 7 시작 (run iobwvcrm, 150k)
+
+
+********************************************************************************
+*  PART 5 — 미해결 사항 / 추후 계획
+********************************************************************************
+
+  1. GUI 통합 프로그램 (학습 종료 후):
+     - 모델 자동 선택 (best_drops + success_replay 통합)
+     - Episode 수/배속/hold 시간 선택
+     - GUI watcher 내장
+     - 사용자 옵션 D로 결정
+
+  2. Round 6 v2 archive 처리:
+     - drop_episodes 백업
+     - best_drops는 그대로 유지 (160k는 이미 success_replay에 백업)
+     - milestone들은 archive로 이동
+
+  3. 모니터링 지표:
+     - ent_coef 0.3~0.5 안정 유지하는지
+     - ent_damping 변화 (이제 거의 1.0 유지 예상)
+     - critic_loss 정상 범위 (100~500)
+     - success_rate 점진 증가
+     - Round 6 v2 같은 학습 망가짐 없는지
+
+
+################################################################################
+#  관련 문서 (경로: /home/juns/Drone-Bombard-Simulation/local/)
+################################################################################
+
+  - issues/master.txt                       — 안건 전체 관리
+  - issues/issue_001~020                    — 개별 안건
+  - issues/issue_016_post_success_regression — Round 3 처방
+  - issues/issue_017_hover_exploit          — Round 4/5/6/7 진행
+  - issues/issue_018_vision_based_observation — Round 7 이후 후보 (보류)
+  - issues/issue_019_sac_entropy_divergence  — 근본 원인 발견, Round 7 처방
+  - issues/issue_020_checkpoint_save_bug    — 해결됨
+  - design/design_review.md                 — 최종 설계 요약
+  - parameter_log.md                        — 변경 이력
+  - guides/wandb_metrics_guide.txt          — WandB metric 정의
+  - guides/post_training_verification_guide.txt — GUI 검증
+  - guides/drone_sim_tmux_training_guide.txt    — 학습 실행
+  - archive/sac_oscillation_mechanism.md    — SAC oscillation 메커니즘

@@ -4,7 +4,9 @@
  직전 노트 : meeting_notes_2026-05-30.txt
  핵심 변화 : Round 3 수정 학습 → 7시간 후 Gazebo timeout 크래시 →
             원인 진단 (PX4 20GB 로그) → Hover exploit 분석 →
-            Round 4 (A+C 조합) 시작
+            Round 4 (A+C 조합) 시작 → Round 4 발산 (ent_coef 6.03) →
+            Round 5 (Hover Terminal Penalty) → Round 5도 발산 (ent_coef 6.16) →
+            SAC entropy 발산 근본 처방 → Round 6 (DampedEntropySAC) 시작
 ================================================================================
 
 
@@ -224,15 +226,211 @@
   Round 5 학습 시작 (run sdjytkpv, 300k)
 
 
+********************************************************************************
+*  PART 8 — Round 5 발산 + SAC Entropy 발산 근본 처방
+********************************************************************************
+
+  Round 5 학습 진행:
+    sdjytkpv (0~65k): 학습 잘 됨 — ep_rew +13~+20, success 12.5%
+                      하지만 ent_coef 0.6 → 1.3 단조 증가 (조용한 발산)
+    사용자 이동 사유로 일시 중지
+
+    mnlr1zpe (resume from 65k, ~83k 추가 진행 = 148k):
+      ent_coef 1.30 → 6.16 폭주
+      critic_loss 5,000+
+      ep_rew +13 → -37.9
+      success 12.5% → 5%
+      ep_len: 296 → 372 (감소 후 증가, 회복 같았지만 ent_coef는 증가)
+
+  핵심 발견:
+    Round 4 (per-step 처방)와 Round 5 (terminal 처방) 모두 동일 발산.
+    → 처방 형태 무관, SAC + PER + sparse reward 본질적 발산 모드.
+    → Hover 처방 더 시도해도 SAC entropy 발산 우회 불가.
+
+  사용자 통찰:
+    "policy가 한 전략에 집중할수록 alpha 증가치를 줄이는"
+    "우리가 의도적으로 deterministic되는걸 제어하는 거지"
+    → SAC가 자연스러운 deterministic 수렴 막지 않도록.
+
+
+********************************************************************************
+*  PART 9 — SAC Entropy 발산 메커니즘 (Issue #019)
+********************************************************************************
+
+  SAC 자동 entropy 튜닝:
+    target_entropy = -|action_dim| = -5
+    ent_coef_loss = -(log_alpha * (log_prob + target_entropy)).mean()
+    → log_prob > 5 (정책 deterministic)이면 alpha ↑
+
+  Bounded Action Space 발산:
+    1. Policy 한 전략 집중 → log_prob ↑
+    2. SAC: "exploration 부족" → ent_coef ↑
+    3. 정책 sigma 증가 시도
+    4. Action [-1, 1] squash → entropy 못 늘어남
+    5. SAC: "여전히 부족" → ent_coef 더 ↑
+    6. 무한 양성 피드백 → 발산
+
+  ent_coef = 6의 실제 영향:
+    per-step reward 0.7 vs entropy 보너스 α × H ≈ 6 × 3 = +18
+    agent 동기 96%가 "random 행동"
+    → 학습 실질적 불가
+
+  해결 방안 5가지 검토:
+    A. Hard cap (단순 차단)
+    B. Soft damping (사용자 의도) ★
+    C. Target entropy 적응형 조정
+    D. Asymmetric update (비대칭)
+    E. TD3 전환 (entropy 제거)
+
+
+********************************************************************************
+*  PART 10 — Round 6 결정: DampedEntropySAC (B + A 조합)
+********************************************************************************
+
+  결정: Soft damping + Hard cap (이중 안전망)
+
+  코드 변경 (train_sac.py):
+    NEW class DampedEntropySAC(SAC):
+      train() override:
+        # Soft damping
+        concentration = max(0, log_prob_mean - (-target_entropy))
+        damping = ent_damping_threshold / (ent_damping_threshold + concentration)
+        ent_coef_loss *= damping
+
+        # Hard cap
+        self.log_ent_coef.clamp_(max=log(ent_coef_hard_cap))
+
+      새 metric: train/ent_damping (현재 damping factor)
+    SAC 대신 DampedEntropySAC 사용 (fresh + resume 모두)
+
+  yaml 추가:
+    ent_damping_threshold = 5.0
+    ent_coef_hard_cap = 2.0
+
+  예상 효과:
+    log_prob | concentration | damping | alpha 변화
+    -5 (정상)| 0             | 1.00    | 정상
+    0        | 5             | 0.50    | 절반
+    5        | 10            | 0.33    | 1/3
+    10       | 15            | 0.25    | 1/4
+    + 모든 경우 ent_coef ≤ 2.0 보장
+
+  Round 6 학습 시작 (run bfv4la9a, 300k)
+  archive/round5_diverged_2026-05-31/
+
+
+********************************************************************************
+*  PART 11 — Round 6 v1 mean damping 실패 + v2 percentile 처방
+********************************************************************************
+
+  Round 6 v1 (bfv4la9a, 162k 중단):
+    학습 진행:
+      9k:   ent_coef 0.528, critic_loss 114 (정상)
+      40k:  ent_coef 0.615, critic_loss 784 (정상)
+      130k: ent_coef 1.30 (서서히 상승)
+      162k: ent_coef 1.68 (hard cap 2.0 직전)
+    문제: ent_damping = 1.0 유지 (작동 안 함)
+      Mean 기반 damping의 한계:
+        - batch 256개 중 일부만 극단 집중
+        - mean(log_prob)이 5 이하 → concentration = 0 → damping = 1.0
+        - 그러나 outlier가 큰 gradient → alpha 증가
+        - 평균은 정상이지만 극단값이 발산 야기
+        - PER 환경에서 priority sampling으로 더 비대칭
+    Hard cap 2.0이 막아주긴 함 — 학습 정체 (ep_rew -111 유지, success 5→4%)
+
+  체크포인트 버그 동시 발견 (Issue #020):
+    95k 이후 새 체크포인트 저장 안 됨
+    원인: CleanupOldCheckpointsCallback의 sorted() 알파벳순
+      - '100000' < '75000' (알파벳)
+      - 새 100k 파일이 정렬 첫 번째 → cleanup으로 즉시 삭제
+      - 75k~95k의 옛 5개만 영구 보존
+    영향:
+      Round 3 lidq3ydu, Round 6 v1 모두 같은 버그 영향 받음
+      다행히 95k 시점이 발산 직전이라 resume 가능했음
+
+  v2 처방 (즉시 적용):
+    1) damping 공식 mean → percentile(0.95)
+       ```python
+       log_prob_q95 = th.quantile(log_prob.detach(), 0.95).item()
+       concentration = max(0, log_prob_q95 - 5)
+       ```
+       의미: 상위 5% transition의 집중도 측정
+       일부 극단 집중도 감지 가능
+
+    2) 체크포인트 정렬 알파벳 → step 번호 기반
+       ```python
+       files = sorted(files, key=_step_num_func)
+       ```
+
+  Round 6 v2 학습 (run 6b8bslmz, 95k에서 resume):
+    즉시 검증:
+      ent_coef: 1.08 (정상)
+      ent_damping: 0.527 ← 작동 확인! (이전 1.0)
+      critic_loss: 449 (정상)
+    → Percentile damping이 outlier 감지하여 alpha 증가 둔화 중
+
+  사용자 통찰 정확히 구현됨:
+    "policy가 한 전략에 집중할수록 alpha 증가치를 줄이는"
+    Mean()으로는 outlier 못 잡았지만 percentile로 잡음.
+
+
+********************************************************************************
+*  PART 12 — SuccessReplay 시스템 도입 (best_drops 대체)
+********************************************************************************
+
+  기존 시스템 (best_drops) 한계:
+    저장 조건: drop_error < 이전 best AND drop_trigger == 'auto'
+    문제:
+      - 매 라운드 재시작 시 우리가 폴더 청소 (rm -rf best_drops/*)
+      - "best 갱신" 조건이 너무 좁음 (4.5m success 후 4.8m success는 저장 안 됨)
+      - container 안에만 저장 (host 접근은 ros2_ws bind mount로 가능했지만 의도 X)
+    결과: 현재 비어있음 (Round 6 v2 시작 시 폴더 청소)
+
+  새 시스템 (success_replay):
+    저장 조건: is_success (drop_error ≤ 5m) AND drop_trigger == 'auto'
+      - "best 갱신" 조건 제거
+      - 모든 정밀 drop 모델 보관
+    저장 위치: /workspace/ros2_ws/success_replay/{wandb_run_id}/
+      - host의 ros2_ws/success_replay에 bind-mounted (container 비대 X)
+      - symlink: local/success_replay → ../ros2_ws/success_replay
+    파일명: success_step{N}_err{X.XX}m.zip
+    run_id별 영구 보관 (라운드 재시작 영향 X)
+
+  코드 변경:
+    train_sac.py:
+      - DropEpisodeRecorderCallback 시그니처에
+        success_replay_dir, run_id 인자 추가
+      - 내부 best_drops 분기 → success_replay 분기
+      - main()에서 wandb.run.id 사용
+    .gitignore:
+      - ros2_ws/success_replay/ 추가 (모델 .zip 크기)
+      - local/success_replay symlink 추가
+
+  Bind mount 원리 (사용자 질문):
+    Docker bind mount: host 디렉토리를 container 안에 그대로 비춤
+    container에서 /workspace/ros2_ws/X에 저장 = host의 ros2_ws/X에 실제 저장
+    container overlay는 비대해지지 않음
+    container 삭제해도 host 데이터 살아남음
+    Round 3 PX4 로그 20GB 누적은 /opt/PX4-Autopilot/log/가 overlay에 있었기 때문
+
+  현재 학습 (Round 6 v2)은 영향 없음 (Python 메모리 캐시).
+  다음 학습 시작/resume부터 SuccessReplay 작동.
+
+  best_drops 처리:
+    이번 학습 종료 후 백업하고 폴더 폐기 예정 (사용자 결정)
+
+
 ################################################################################
 #  관련 문서 (경로: /home/juns/Drone-Bombard-Simulation/local/)
 ################################################################################
 
   - issues/master.txt                       — 안건 전체 관리
-  - issues/issue_001~018                    — 개별 안건
+  - issues/issue_001~019                    — 개별 안건
   - issues/issue_016_post_success_regression — Round 3 처방
-  - issues/issue_017_hover_exploit          — Round 4 실패, Round 5 새 접근
-  - issues/issue_018_vision_based_observation — Round 5 이후 후보 (보류)
+  - issues/issue_017_hover_exploit          — Round 4/5 실패, Round 6 진행 중
+  - issues/issue_018_vision_based_observation — Round 7 후보 (보류)
+  - issues/issue_019_sac_entropy_divergence  — Round 6 핵심
+  - issues/issue_020_checkpoint_save_bug    — 체크포인트 정렬 버그 (해결, NEW)
   - design/design_review.md                 — 최종 설계 요약
   - parameter_log.md                        — 변경 이력
   - guides/wandb_metrics_guide.txt          — WandB metric 정의

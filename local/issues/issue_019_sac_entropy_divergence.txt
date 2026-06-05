@@ -1,0 +1,256 @@
+================================================================================
+ Issue #019 — SAC Auto-Entropy Divergence (ent_coef 폭주)
+================================================================================
+생성일 : 2026-05-31
+상태   : Round 6에서 처방 (DampedEntropySAC)
+관련   : Issue #017 (hover exploit), Round 4/5 발산
+
+
+================================================================================
+ 1. 문제점
+================================================================================
+
+Round 4 (4j46qwpk)와 Round 5 (sdjytkpv/mnlr1zpe) 모두 학습 도중
+ent_coef가 6.0+ 수준으로 폭주하며 학습 망가짐.
+
+  Round 4 (146k): ent_coef 0.58 → 1.5 → 6.03, critic_loss 230,000+
+  Round 5 (148k): ent_coef 1.30 → 6.16, ep_rew -37.9, success 12%→5%
+
+ent_coef = 6의 실제 영향:
+  per-step reward 0.7 vs entropy 보너스 α × H ≈ 6 × 3 = +18
+  → agent의 동기 96%가 "random하게 행동"
+  → 학습 실질적 불가
+
+
+================================================================================
+ 2. 원인 분석 (SAC 알고리즘 메커니즘)
+================================================================================
+
+SAC 자동 entropy 튜닝:
+  target_entropy = -|action_dim| = -5 (5D action)
+  ent_coef_loss = -(log_alpha * (log_prob + target_entropy)).mean()
+  → log_prob > -target_entropy = 5 이면 alpha ↑
+
+Bounded Action Space 발산 모드:
+
+  1. Policy가 한 전략에 집중 (sparse reward 환경)
+     - log_prob 높아짐
+  2. SAC: "정책 너무 deterministic, exploration 부족"
+     - ent_coef ↑ (학습률 따라)
+  3. 정책의 sigma 증가 시도
+  4. 그러나 action [-1, 1]로 squash → 실제 entropy 못 늘어남
+  5. log_prob 여전히 높음
+  6. SAC: "여전히 부족" → ent_coef 더 ↑
+  7. 양성 피드백 루프 → 발산
+
+  Round 4 + 5 공통: per-step + drop 보상의 sparsity ratio 변경이
+  이 발산 모드를 트리거.
+
+
+================================================================================
+ 3. 일반 oscillation vs 진짜 발산 (구분)
+================================================================================
+
+정상 oscillation (회복 가능):
+  - ep_len/ep_rew 일시적 하락 → 회복
+  - critic_loss 일시 spike → 안정화
+  - ent_coef 안정 범위 (0.3~1.0) 유지
+
+진짜 발산 (회복 불가):
+  - ent_coef 단조 증가, 줄어들지 않음
+  - 1.0 → 1.5 → 3.0 → 6.0... 무한 추격
+  - 외부 개입 없이 자연 회복 불가능
+
+
+================================================================================
+ 4. 해결 방안 검토 (5가지)
+================================================================================
+
+  A. Hard cap (단순)
+     ent_coef = min(auto_tuned, MAX)
+     장점: 1줄, 검증된 발산 방지
+     단점: 단순 차단, 유동적 X
+
+  B. Soft damping (사용자 의도)
+     집중도 높을수록 alpha 증가폭 감소
+     장점: 자연 수렴 허용 + 폭주 방지
+     단점: threshold 튜닝 필요
+
+  C. Target entropy 적응형 조정
+     target_entropy를 정책 능력 따라 낮춤
+     장점: SAC 메커니즘 활용
+     단점: schedule 설계 어려움
+
+  D. Asymmetric update
+     alpha 증가만 둔화, 감소는 정상
+     장점: 비대칭 자연
+     단점: convergence 보장 약화
+
+  E. SAC 대신 TD3 사용
+     entropy 메커니즘 자체 제거
+     장점: 발산 원천 차단
+     단점: 큰 변경
+
+
+================================================================================
+ 5. Round 6 결정: B + A 조합 (Soft damping + Hard cap)
+================================================================================
+
+  사용자 의도:
+    "policy가 한 전략에 집중할수록 alpha 증가치를 줄이는"
+    → SAC가 정책의 자연스러운 deterministic 수렴을 막지 않음
+
+  구현:
+    DampedEntropySAC (SAC 서브클래스)
+
+    1) Soft damping
+       concentration = max(0, log_prob_mean + target_entropy)
+       damping = ent_damping_threshold / (ent_damping_threshold + concentration)
+       ent_coef_loss *= damping
+
+    2) Hard cap (안전망)
+       self.log_ent_coef.clamp_(max=log(ent_coef_hard_cap))
+
+  파라미터:
+    ent_damping_threshold = 5.0  (집중도 5일 때 damping=0.5)
+    ent_coef_hard_cap = 2.0       (절대 상한)
+
+  예상 효과:
+    log_prob | concentration | damping | alpha 변화
+    -5 (정상)| 0             | 1.00    | 정상
+    0        | 5             | 0.50    | 절반 속도
+    5        | 10            | 0.33    | 1/3 속도
+    10       | 15            | 0.25    | 1/4 속도
+    + 모든 경우 ent_coef ≤ 2.0 보장
+
+
+================================================================================
+ 6. 결정 이력
+================================================================================
+
+  [2026-05-31] Round 4 (4j46qwpk) 146k에서 ent_coef 6.03 발산.
+               원인 추정: w_heading 0.7→0.3 + distance_penalty 신규
+                        → per-step 보상 축소 → reward sparsity 증가
+                        → SAC auto-entropy 양성 피드백
+
+  [2026-05-31] Round 5 (sdjytkpv) 65k에서 일시 중지 후 재개 (mnlr1zpe).
+               148k에서 ent_coef 6.16 재발산.
+               Round 4와 처방 다름에도 동일 패턴
+               → 처방 무관, SAC + PER + sparse reward 환경 본질적 문제 확인
+
+  [2026-05-31] 사용자 제안: "policy 집중도에 따라 alpha 증가폭 조절"
+               5가지 옵션 검토 → B (Soft damping) + A (Hard cap) 결정.
+               DampedEntropySAC 구현 (train_sac.py).
+               Round 6 학습 시작 (run bfv4la9a, 300k).
+
+  [2026-05-31] Round 6 v1 (bfv4la9a) 162k까지 진행, ent_coef 1.68 도달.
+               증상: ent_damping = 1.0 (작동 안 함) + ent_coef 단조 증가
+               원인 분석:
+                 mean() 기반 damping의 한계:
+                 - batch 256개 중 일부 transition만 극단 집중
+                 - mean()은 낮게 나옴 (≤ 5)
+                 - 그러나 outlier가 큰 gradient 만들어 alpha 증가
+                 - mean 기반 damping은 발동 안 함
+                 - 특히 PER 환경에서 priority sampling으로 더 비대칭
+               Hard cap 2.0이 막아주긴 했으나 학습 진전 없음 (ep_rew -111 유지).
+
+  [2026-05-31] Round 6 v2 처방: Percentile 기반 damping
+               변경:
+                 log_prob_q95 = th.quantile(log_prob.detach(), 0.95).item()
+                 concentration = max(0, log_prob_q95 - (-target_entropy))
+               의미:
+                 상위 5% transition의 집중도 측정
+                 일부만 집중되어도 damping 작동
+               95k 체크포인트에서 resume (run 6b8bslmz).
+               즉시 효과: ent_damping = 0.527 (이전 1.0 → 작동 확인).
+
+  [2026-06-03] Round 6 v2 결과 (run 6b8bslmz, ~294k에서 중단):
+               증상:
+                 - Hard cap 2.0에 ent_coef 도달 → 갇힘
+                 - critic_loss 14,000,000+ 폭주
+                 - ep_rew -37 ~ -45 유지
+                 - 195k 이후 학습 망가짐
+               긍정적:
+                 - 95k~195k까지는 잘 학습 (success 4건!)
+                 - 160k 부근 정점 (4.36m best)
+               종료 원인 정정 (2026-06-03 추가 분석):
+                 - 이전: "컨테이너 OOM (exit 137)" → 틀림
+                 - docker inspect: OOMKilled=false, 정상 종료 시퀀스
+                 - wandb output.log 마지막에 gz model --list TimeoutExpired
+                 - Round 3 (lidq3ydu), Round 7 (iobwvcrm) 와 동일 버그 = #021
+                 - SAC entropy 문제와 별개 layer 인 인프라 버그
+               결론: hard cap이 너무 높음 (2.0). 그러나 cap 자체가 문제 아니라
+                     target_entropy=-5 (default)로 인해 SAC가 항상 alpha를
+                     위로 밀어 cap에 영원히 갇힘.
+                     294k 종료는 SAC 발산 + #021 인프라 버그 동시 발생.
+
+  [2026-06-03] 근본 원인 정밀 분석 — Bounded Action Space + Target Entropy:
+               SAC 자동 튜닝 그라디언트:
+                 d_loss/d_log_alpha = -(log_prob + target_entropy)
+                 log_prob > -target_entropy 이면 alpha ↑
+               Bounded action (tanh squash) 환경:
+                 - log_prob에 Jacobian 보정으로 자연스럽게 큰 양수
+                 - log_prob > 5는 흔함
+                 - target_entropy = -5 (default)면 alpha 항상 ↑ 압력
+                 - hard cap에 영원히 갇힘 (Round 6 v2)
+               해결: target_entropy = -15
+                 - log_prob > 15는 매우 극단적 상황
+                 - 대부분 alpha ↓ 방향으로 gradient
+                 - cap에 닿아도 자기 복구 가능
+
+  [2026-06-03] Round 7 처방 결정 (보수적):
+               target_entropy: -5 (auto) → -15 (근본 처방)
+               ent_coef_hard_cap: 2.0 → 1.0 (안전망 강화)
+               per_alpha: 0.6 유지 (Round 3에서 검증됨)
+               이중 안전망 + 근본 해결
+               Round 7 학습 시작 (run iobwvcrm, 150k).
+
+  [2026-06-04] Round 7 v3 처방 추가 — Critic 폭주 차단:
+               Round 7 v2 (385k 중단) 분석 결과:
+                 critic_loss 68 → 17,100 (250x) 첫 점프 → millions 폭주
+                 → bootstrap target Q inflation → 정책 비정상 행동 → log_prob 거대화
+                 → SAC alpha ↑ → cap 도달
+                 결론: **critic 폭주가 entropy 발산의 원인**
+               처방 (Round 7 v3 = run 436xl0bb):
+                 1) Huber loss (smooth_l1): MSE → Huber, outlier gradient saturation
+                 2) target_q_clip = 500: bootstrap inflation 차단
+                 3) Per-sample damping (q95 → element-wise):
+                    각 sample 의 log_prob 으로 concentration 계산 → 그 sample 의
+                    contribution 만 damped. q95 의 batch-wide scalar 보다 더 정확.
+
+  [2026-06-05] Round 7 v3 자연 종료 — 처방 효과 입증:
+               결과 (685k step):
+                 - 6055 episodes / 162 drops / 87 auto / 16 successes
+                 - best drop 1.32m (이전 4.36m 갱신)
+                 - critic_loss: 17,800 → 35-40 안정 (clip + Huber 효과)
+                 - ent_coef: 1.0 cap (resume 시작) → 0.055 회복 (per-sample damping 효과)
+                 - #021 인프라 crash 0회 (1·2차 처방도 검증)
+               결론: SAC entropy 발산 + critic 폭주 두 layer 모두 해결.
+                     Phase 1 마감. Phase 1 redux 로 진입 (보상/환경 변경).
+
+  [2026-06-05] Phase 1 eval 진단 — 새 발견:
+               1.32m success snapshot 모델 deterministic eval (5 EP):
+                 0 drops. 모두 crash. 정책이 직접 auto_drop trigger 못함.
+               milestone_600000 + A2 hybrid eval (5 EP):
+                 1 random drop. 의존성 일부 해소 but 정책 자체 능력 부족.
+               결론: SAC 발산은 해결됐지만 **정책이 random_drop 보조에 의존**.
+                     #019 와 별개 문제: 학습 task 자체 난이도 + random_drop 의 학습 신호 비중.
+                     → Phase 1 redux (closer target + random_drop=0) 로 진정한 학습 능력 측정.
+
+
+================================================================================
+ 7. 연관 안건
+================================================================================
+
+  Issue #016 — Post-success regression (Round 3 부분 처방)
+  Issue #017 — Hover exploit (Round 4/5 시도 모두 SAC 발산으로 무산)
+  Issue #018 — Vision-based observation (Round 6 결과 후 검토)
+
+
+================================================================================
+ 8. 참고
+================================================================================
+
+  - SAC 원논문 (Haarnoja et al. 2018): "Soft Actor-Critic Algorithms and Applications"
+  - 자동 entropy 튜닝 설명: appendix B of SAC paper
+  - Bounded action 발산 사례: archive/sac_oscillation_mechanism.md

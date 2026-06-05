@@ -203,7 +203,10 @@
 | 16 | 2026-05-26~30 | dbi74uif(첫시도), z05fx7g9(최종) | jekyun_v2/junsang (round2) | **Round 2: gradient + max800 + 종료조건 진화** | dbi74uif: 접근실패 (start_step 150 문제). z05fx7g9: success 16건(16배), best 2.53m, 평균 19.09m, post-success regression 발견 |
 | 17 | 2026-05-30~31 | q13hli0y(발산), lidq3ydu(157k 크래시) | junsang (round3) | **Round 3 (조합 C): PER + LR 1e-4 + Tau 0.002 + Sigmoid alt + 4가지 안전장치** | 104 drops, success 8건 (Round 2 대비 2배 속도), PX4 로그 20GB 누적 → gz timeout 크래시 |
 | 18 | 2026-05-31 | vo1l9wl6(14k 버그), 4j46qwpk(146k 발산) | junsang (round4) | **Round 4 (A+C): Hover per-step 차단** — w_heading 0.3, w_distance_penalty 0.03 | 학습 발산 — ent_coef 6.03 폭주, critic_loss 230k+. 원인: per-step density 축소 → reward sparsity → SAC auto-entropy 양성 피드백 |
-| 19 | 2026-05-31 | sdjytkpv (학습 중) | junsang (round5) | **Round 5: Hover terminal penalty** — Round 4 복원, episode 종료 시 -15 (sustained hover만) | (학습 중 — 300k) |
+| 19 | 2026-05-31 | sdjytkpv(65k pause), mnlr1zpe(148k 발산) | junsang (round5) | **Round 5: Hover terminal penalty** — Round 4 복원 + episode-end hover -15 | 또 발산 — ent_coef 6.16 (Round 4와 동일). 처방 무관, SAC 본질 문제 확인 |
+| 20 | 2026-05-31 | bfv4la9a (162k 중단) | junsang (round6 v1) | **Round 6 v1: DampedEntropySAC (mean)** | Mean damping 작동 안 함 (ent_damping=1.0 유지). ent_coef 1.68. 체크포인트 95k 이후 저장 안 됨 (#020) |
+| 21 | 2026-05-31~06-03 | 6b8bslmz (294k OOM) | junsang (round6 v2) | **Round 6 v2: Percentile damping + 체크포인트 정렬 fix** | ent_damping 작동, 95~195k 학습 성공 (success 4건, best 4.36m). 그러나 hard cap 2.0 갇힘 → critic 14M 폭주 → OOM |
+| 22 | 2026-06-03 | iobwvcrm (학습 중) | junsang (round7) | **Round 7: target_entropy=-15 근본 처방 + hard cap 1.0** | (학습 중 — 150k) |
 
 ---
 
@@ -1010,9 +1013,447 @@ WandB run: `sdjytkpv` (학습 중)
   - Sigmoid alt penalty, max_alt truncate, hard cap
   - PX4 로깅 비활성
 
-**결과**: (학습 중 — 300k)
+**Round 5 결과**:
+  sdjytkpv (65k pause): ent_coef 1.30, ep_rew +13, success 12.5%
+    - 표면적으로 좋아 보였으나 ent_coef는 단조 증가 중
+  mnlr1zpe (resume from 65k, 148k 발산):
+    - ent_coef 6.16 (Round 4와 동일 수준)
+    - critic_loss 5,000+, ep_rew -37.9, success 12.5% → 5%
+    - episode 짧아졌다 길어졌다 oscillation은 SAC 발산 중에도 발생
 
-**결론 / 다음**: ...
+**핵심 발견**:
+  Round 4 (per-step 처방)와 Round 5 (terminal 처방) 모두 동일 발산 패턴
+  → Hover 처방 형태 무관
+  → SAC + PER + sparse reward 환경 자체의 발산 모드 (Issue #019)
+  archive/round5_diverged_2026-05-31/
+
+**결론 / 다음**:
+  Hover 처방 더 시도해도 SAC entropy 발산 우회 불가.
+  SAC auto-entropy 자체를 통제 → Round 6 (DampedEntropySAC)
+
+---
+
+### #20. 2026-05-31 — **Round 6: DampedEntropySAC** (SAC entropy 발산 근본 처방)
+
+WandB run: `bfv4la9a` (학습 중)
+**Base**: #19 (Round 5 발산)
+
+**문제 식별 (Issue #019)**:
+  SAC + PER + bounded action space + sparse reward 환경:
+  1. Policy 한 전략 집중 → log_prob ↑
+  2. SAC: "exploration 부족" → ent_coef ↑
+  3. Action clipped → 실제 entropy 못 늘어남
+  4. ent_coef 무한 추격 → 발산
+
+  사용자 통찰: "policy가 한 전략에 집중할수록 alpha 증가치를 줄이는"
+  → SAC가 자연스러운 deterministic 수렴 막지 않도록
+
+**변경 (코드, NEW DampedEntropySAC 클래스)**:
+- `train_sac.py`: `class DampedEntropySAC(SAC)` 추가
+  - Soft damping in train():
+    ```python
+    concentration = max(0, log_prob_mean + target_entropy)
+    damping = ent_damping_threshold / (ent_damping_threshold + concentration)
+    ent_coef_loss *= damping
+    ```
+  - Hard cap after optimizer step:
+    ```python
+    self.log_ent_coef.clamp_(max=log(ent_coef_hard_cap))
+    ```
+  - 새 metric: `train/ent_damping` (현재 damping factor 추적)
+- SAC 대신 DampedEntropySAC 사용 (fresh + resume 모두)
+
+**yaml 추가**:
+- NEW `sac.ent_damping_threshold` = **5.0**
+  - **이유**: concentration이 5일 때 damping=0.5 (절반 속도)
+- NEW `sac.ent_coef_hard_cap` = **2.0**
+  - **이유**: 절대 상한. log(2.0)으로 log_ent_coef clamp.
+
+**유지** (Round 3+5):
+  - PER (alpha=0.6, eps=0.1, priority_max=30)
+  - learning_rate=1e-4, tau=0.002
+  - 보상 구조 (w_heading 0.7, w_dist 1.0, k2 0.2, k_prox 0.15)
+  - Hover terminal penalty (200 step, -15)
+  - max_steps 800, random_drop_start 600
+  - 4가지 안전장치 (sigmoid alt, max_alt truncate, PER cap, hard cap)
+  - PX4 로깅 비활성
+
+**예상 효과**:
+  log_prob | concentration | damping | alpha 변화
+  -5 (정상)| 0             | 1.00    | 정상 (정상 학습)
+  0        | 5             | 0.50    | 절반 (둔화 시작)
+  5        | 10            | 0.33    | 1/3 (더 둔화)
+  10       | 15            | 0.25    | 1/4
+  + 모든 경우 ent_coef ≤ 2.0 강제
+
+  자연 수렴 허용 + 폭주 차단.
+
+**Round 6 v1 결과 (run bfv4la9a, 162k 중단)**:
+  Mean 기반 damping이 작동 안 함:
+    - batch 256개 중 일부만 극단 집중
+    - mean()이 5 미만이라 concentration = 0
+    - ent_damping이 1.0 유지
+    - 그러나 outlier가 큰 gradient → ent_coef 단조 증가
+    - 1.0 → 1.46 → 1.68 (hard cap 2.0 직전)
+  Hard cap이 막아주긴 함 — 학습 정체 (ep_rew -111 유지)
+  또한 체크포인트 95k 이후 저장 안 됨 (Issue #020 발견)
+
+**결론 / 다음**:
+  Mean 기반 damping → Percentile 기반으로 수정 필요
+  체크포인트 정렬 버그도 fix
+
+---
+
+### #21. 2026-05-31 — **Round 6 v2: Percentile Damping + Checkpoint fix**
+
+WandB run: `6b8bslmz` (학습 중)
+**Base**: #20 (Round 6 v1) — 95k 체크포인트에서 resume
+
+**변경 (코드)**:
+- `train_sac.py` DampedEntropySAC.train():
+  - mean() → percentile(0.95) 사용
+    ```python
+    log_prob_q95 = th.quantile(log_prob.detach(), 0.95).item()
+    concentration = max(0, log_prob_q95 - (-target_entropy))
+    ```
+  - **이유**: mean()은 outlier 못 감지 (PER 환경에서 특히)
+- `train_sac.py` CleanupOldCheckpointsCallback (Issue #020):
+  - 알파벳순 → step 번호 기반 정렬
+    ```python
+    files = sorted(files, key=lambda p: int(...step_num...))
+    ```
+  - **이유**: '100000'이 '95000'보다 알파벳상 앞 → 새 체크포인트 즉시 삭제 버그
+
+**즉시 검증 (resume 직후)**:
+  ent_coef: 1.08 (정상 범위)
+  ent_damping: **0.527** (이전 1.0 → 작동 확인!)
+  → log_prob 상위 5%가 집중 → damping 작동 → alpha 증가 둔화
+
+**유지** (Round 6 v1):
+  - DampedEntropySAC 클래스
+  - ent_coef_hard_cap = 2.0
+  - ent_damping_threshold = 5.0
+  - PER, LR/Tau, hover terminal penalty, 4가지 안전장치, PX4 로깅 비활성
+
+**결과**: (학습 중 — 95k에서 시작, 300k 목표)
+
+**Round 6 v2 추가 변경 (학습 중)**:
+- NEW: `SuccessReplay 시스템` (best_drops 대체)
+  - 조건: `is_success` (drop_error ≤ 5m) AND `drop_trigger == 'auto'`
+  - 이전 `best_drops`의 "best 갱신 시만" 조건 제거 — 모든 정밀 drop 보관
+  - 저장 위치: `/workspace/ros2_ws/success_replay/{wandb_run_id}/`
+    - host에 bind-mounted 상태로 접근 (container 비대 X)
+    - local symlink: `local/success_replay → ../ros2_ws/success_replay`
+  - 파일명: `success_step{N}_err{X.XX}m.zip`
+  - **다음 학습부터 적용** (현재 실행 중 학습은 영향 X)
+- 코드 변경: DropEpisodeRecorderCallback 내부 best_drops 로직 → success_replay 로직
+
+**Round 6 v2 최종 결과 (294k에서 컨테이너 OOM 중단)**:
+  학습 추이:
+    95k~120k:  32 drops, avg 24m, success 1
+    120k~145k: 34 drops, avg 35m
+    145k~170k: 27 drops, avg 23m, success 2 (160k에 best 4.36m!)
+    170k~195k: 26 drops, avg 22m (정점, ep_rew 양수)
+    195k~220k: 12 drops → 학습 발산
+    245k~270k: 10 drops, avg 53m (심각)
+    270k+: critic_loss 14M → OOM
+  자료:
+    - Hard cap 2.0이 ent_coef 잡았으나 그 값에서 학습 망가짐
+    - 160k 부근 best 모델 (best_err4.36m_step160625) 살아있음
+    - 100k/150k/200k/250k milestone 살아있음
+  archive/round6_v2_oom_2026-06-03/ (예정)
+
+**결론 / 다음**:
+  근본 원인 = bounded action + target_entropy=-5 부조화
+  Round 7에서 target_entropy=-15로 근본 처방.
+
+---
+
+### #22. 2026-06-03 — **Round 7: target_entropy=-15 근본 처방**
+
+WandB run: `iobwvcrm` (학습 중)
+**Base**: #21 (Round 6 v2 OOM)
+
+**근본 원인 분석 (Issue #019 v2)**:
+  SAC 자동 entropy 튜닝 그라디언트:
+    d_loss/d_log_alpha = -(log_prob + target_entropy)
+    log_prob > -target_entropy 이면 alpha ↑
+
+  Bounded action space (tanh squash):
+    log_prob에 Jacobian 보정 자연스럽게 큰 양수
+    log_prob > 5는 정상 학습 시에도 흔함
+    target_entropy = -5 (default)면 → alpha 항상 ↑ 압력
+    → hard cap에 영원히 갇힘 (Round 4/5/6 v1/6 v2 공통)
+
+  해결책: target_entropy = -15
+    log_prob > 15는 매우 극단적 (거의 발생 X)
+    대부분 alpha ↓ 방향으로 gradient
+    cap에 닿아도 자기 복구 가능
+
+**변경**:
+- `sac.target_entropy`: 'auto' (-5) → **-15.0**
+  - **이유**: bounded action space 자연 entropy 범위 감안
+  - default(-|A|)는 unbounded Gaussian 가정. squash 환경에 부적합.
+- `sac.ent_coef_hard_cap`: 2.0 → **1.0**
+  - **이유**: 2.0은 학습 불가능 수준 (entropy 보너스 7 >> reward 0.7)
+  - 1.0이면 entropy 보너스 3.5로 학습 가능
+  - 안전망으로서 더 효과적
+- `training.total_timesteps`: 300000 → **150000**
+  - **이유**: target_entropy fix 우선 검증. 잘 되면 resume으로 확장 가능.
+
+**유지** (Round 6 v2):
+  - DampedEntropySAC + percentile damping
+  - PER (alpha=0.6, eps=0.1, priority_max=30)
+  - learning_rate=1e-4, tau=0.002
+  - SuccessReplay 시스템
+  - 보상 구조 (Round 5 hover terminal penalty 포함)
+  - 4가지 안전장치
+
+**예상 효과**:
+  Round 6 v2 vs Round 7:
+    Round 6 v2: ent_coef 1.0→1.5→2.0 (cap 갇힘) → critic 14M
+    Round 7:    ent_coef 0.3~0.5 안정 유지 (cap 안 닿음)
+
+  자기 복구 가능성:
+    이전: cap 도달 후 그 값에서 영원히 (target_entropy 압력)
+    Round 7: cap 도달해도 다음 step에 자연 감소 (target_entropy fix)
+
+**결과**: 14.9k 에서 #021 gz timeout crash (SAC 처방은 정상 작동).
+  - ent_coef 안정 (0.29) ← target_entropy=-15 처방 검증됨
+  - ep_rew_mean -33 → -25 (학습 진행)
+  - 종료: gz model --list TimeoutExpired (Round 3, Round 6 v2 와 동일 버그)
+
+---
+
+### #23. 2026-06-03 — **Round 7 diag run + resilient v1 (#021 처방)**
+
+WandB run: `9qocfk9y` (진단), `y6mxu5q2` (resilient v1)
+**Base**: #22 (target_entropy=-15) + 진단 코드 + 1·2차 처방
+
+**추가** (NEW):
+- `env.max_consecutive_fast_resets` = **100**
+  - **이유**: #021 gz timeout 누적 가설 차단.
+  - drop 없이 fast-path teleport reset 이 100회 누적되면 강제 _kill_infra/_start_infra.
+  - 100 episode 마다 ~30s 추가 → ~4% slowdown.
+  - 0 = 비활성화 (기존 동작과 동일).
+- 코드 측: drone_drop_env.py `_check_infra_healthy` 의 TimeoutExpired catch (1차 처방).
+  - gz model --list 가 5s timeout 시 unhealthy 처리 → full restart 자동 진입.
+- 코드 측: train_sac.py `InfraHealthMonitorCallback` (200 step 간격).
+  - 진단 영구화. 다음 #021 발생 시 postmortem 데이터 자동 수집.
+  - infra/gz_list_ms, gz_rss_mb, px4_rss_mb, reset_pre_v, post_cruise_v 등.
+
+**진단 run 결과 (9qocfk9y, 39k 수동 SIGINT 중단)**:
+  - **success 2건** (step 14995 err 3.63m, step 19807 err 3.82m)
+    ← target_entropy=-15 정책 검증, SuccessReplay 첫 작동
+  - 진단 데이터:
+    - gz_list_ms ~470ms baseline (정상, degradation 신호 약함)
+    - gz_rss 196MB 안정 (메모리 leak 신호 약함)
+    - post_v 대체로 작음 (velocity 누적 가설 약함)
+    - reset 16~390 범위에서 추세 없음
+  - 결론: 누적 가설들 신호 미약. #021 는 trigger 못 됨 (intermittent 재확인).
+
+**Resilient v1 시작 (y6mxu5q2)**:
+  - success_step19807 에서 resume + 1·2차 처방 활성
+  - 다음 crash 시 진단 100 sample 으로 가설 검증 자동
+
+**결론 / 다음**:
+  - SAC #019 처방 → 검증됨 (39k 진단 run)
+  - 인프라 #021 처방 → 적용. 효과 검증은 다음 학습 또는 다음 crash 시.
+
+---
+
+### #24. 2026-06-04 — **Round 7 v3 critic-stable (Huber + target_q_clip + per-sample damping)**
+
+WandB run: `436xl0bb` (round7_v3_critic_stable)
+**Base**: #23 — preempt 에서 resume (385k → 685k)
+
+**근본 원인 분석 (Round 7 v2 의 cap 도달)**:
+  - critic_loss 가 68 → 17,100 (250x) 으로 첫 점프 → 이후 millions 까지 폭주
+  - 폭주 → bootstrap target Q 값 inflation → 정책 행동 비정상 → log_prob 거대화
+  - SAC: log_prob 크면 alpha ↑ 해석 → cap 도달
+  - **critic 폭주가 entropy 발산의 원인** (반대 아님)
+
+**변경**:
+- 코드: `DampedEntropySAC.train()` 의 critic loss
+  - **MSE → Huber loss (smooth_l1)**: gradient saturation 으로 outlier impact 차단
+  - **target_q_values.clamp(±target_q_clip)**: bootstrap inflation 차단
+- `sac.target_q_clip` = 500.0 (신규)
+  - **이유**: reward 스케일 ±200 고려 ±500 으로 충분히 넓고 폭주 차단
+- 코드: per-sample damping (q95 → element-wise)
+  - **이유**: q95 단일 scalar 는 batch 전체 동일 damping → outlier 만 강하게 damped 가 더 정확
+
+**유지**: target_entropy=-15, ent_coef_hard_cap=1.0, max_consecutive_fast_resets=100, 등 모두
+
+**결과** (685k 자연 종료):
+  - **best drop 1.32m** (이전 4.36m 갱신)
+  - 6,055 episodes / 162 drops / 87 auto / **16 successes** / 0 jackpots
+  - ent_coef: 1.0 cap (resume 시작 시) → 0.055 회복 ← **per-sample damping 효과 입증**
+  - critic_loss: 17,800 (resume 시작) → ~35-40 stable ← **Huber + clip 효과 입증**
+  - Forced restart 29회 정상 (1·2차 처방 작동)
+  - #021 gz timeout crash 0회
+  - fps 5 (cumulative since resume) — 짧은 episode + reset overhead 누적
+
+**결론 / 다음**:
+  - SAC + 인프라 처방 모두 검증 완료
+  - Phase 1 마감 → 백업 (`local/backups/phase1_final_round7_v3/`, 609 MB)
+  - Phase 2 검토 → Phase 1 redux 결정 (target relocation + random_drop=0)
+
+---
+
+### #25. 2026-06-05 — **kill_episode timeout 5s → 2s (Phase 2 speedup)**
+
+WandB run: (Phase 1 redux 부터 적용)
+**Base**: #24
+
+**배경**:
+  - Phase 1 종료 후 fps 5 분석 → 짧은 episode + reset overhead 가 원인
+  - `_kill_episode` 의 `proc.wait(timeout=5)` 가 누적 비용
+  - 50 step episode 의 경우 7.5s 중 5s 가 reset (66% 오버헤드)
+
+**변경**:
+- 코드: `drone_drop_env.py:_kill_episode` (line 1540)
+  - `proc.wait(timeout=5)` → `proc.wait(timeout=2)`
+  - **이유**: SIGTERM 응답 정상이면 1s 안에 종료. 2s 도 충분. 안 끝나면 SIGKILL escalation.
+- `_kill_infra` 의 timeout=5 는 유지 (drop/forced restart 시만 호출, 영향 작음)
+
+**예상 효과**:
+  - 짧은 episode 케이스: ~50% reset 시간 감소 → fps 2-3배 증가
+  - 정상 episode 도 약간 가속
+
+---
+
+### #26. 2026-06-05 — **Phase 1 redux: target (4,3) + random_drop=0**
+
+WandB run: `phase1_redux_target43_norandomdrop` (진행 중, fresh start)
+**Base**: #24 + #25
+
+**배경 (Phase 1 종료 후 eval 진단)**:
+  - 1.32m success snapshot 모델 5 EP eval: 0 drops, 모두 crash
+  - milestone_600000 + A2 hybrid: 1 random drop / 5 EP
+  - 결론: 정책이 random_drop 보조 없이 reliable auto_drop 못함
+  - 14.87m 거리는 학습 어려움 (auto_drop_threshold 3m 도달 못함)
+
+**변경**:
+- `environment.target_enu_x`: 11.0 → **4.0**
+- `environment.target_enu_y`: 10.0 → **3.0**
+  - **이유**: spawn-to-target 14.87m → 5m, 정책이 auto_drop 학습 가능한 범위
+- `reward.random_drop_prob`: 0.005 → **0.0**
+  - **이유**: 정책 자체 drop 학습 강제. 학습 시그널은 적어도 진짜 정책 능력 측정 가능
+- `wandb.run_name`: "phase1_redux_target43_norandomdrop"
+- Gazebo world SDF: `x_marker_0` pose (11,10,0) → **(4,3,0)**
+- 코드 fix: drop_calculator launch 의 `x_marker_x:=11.0` hardcoded → `:=cfg_target_x`
+  - **이유**: 버그. 이전엔 환경 변경 시 drop_calculator 만 옛 값 보유 가능성
+
+**유지**: target_entropy=-15, target_q_clip=500, ent_coef_hard_cap=1.0, per_alpha=0.6, kill_episode timeout=2s, 모든 처방
+
+**Fresh start 이유**: 보상 분포 자체 변경 (target 위치 + random_drop). Replay buffer 의 모든 transitions 이 옛 값 기준 → resume 부적합.
+
+**초기 결과** (step 1593):
+  - fps 18 (이전 5 대비 **3.6배 가속**)
+  - ep_len_mean 398 step (이전 50 step 대비 **8배 ↑**)
+  - critic_loss 1.03 (매우 안정)
+  - ent_coef 0.943 (fresh start default)
+  - 예상 학습 시간: 약 4-5시간 (300k step)
+
+**검증 가설**:
+  1. closer target 으로 정책이 auto_drop 학습 가능?
+  2. random_drop 없이 success_rate 의미 있게 증가?
+  3. drop_error 분포가 bimodal 에서 unimodal 로?
+
+**결론 / 다음**: 자연 종료 후 deterministic eval + stochastic eval 비교
+
+---
+
+### #27. 2026-06-05 — **Phase 1 redux v1 중간 결과 + v2 진입 (tight thresholds)**
+
+WandB run: `ayi27a56` (v1, 89k 중단), `za9zxdh6` (v2, 진행 중)
+**Base**: #26 (Phase 1 redux v1)
+
+**Phase 1 redux v1 중간 결과 (89k 수동 중단)**:
+  - 1,205 episodes, **830 drops** (모두 auto, random_drop=0 효과)
+  - **799 successes (96.3% — 5m 기준)** ← 강력 학습 입증
+  - best drop **0.809m** (Round 7 v3 의 1.32m 갱신)
+  - drop_error 분포:
+    < 5m: 96.2%, < 3m: 0.5%, < 2m: 0.1%, < 1m: 0.1%, < 0.3m: 0%
+  - jackpots 0 (jackpot_threshold 0.1m 너무 빡빡)
+  - 정책 deterministic 화: ent_coef 0.001 수준 (이전 0.055 대비 50배 작음)
+  - critic_loss 3-7 안정
+  - 학습 초기 fps 18, 중후반 drop 빈번 → _kill_infra 자주 호출 → fps 2 폭락
+  - 예상 잔여 30시간 → 충분히 학습 입증 → 수동 중단
+
+**교훈**:
+  1. closer target (5m) + random_drop=0 조합 매우 효과적
+  2. _kill_infra timeout 이 drop 빈번 시 fps 폭락 원인 (이전 분석 검증)
+  3. 5m success 임계는 너무 헐거움 → 정밀화 단계 진입 필요
+  4. jackpot 0.1m 는 도달 불가 → 늘려야 발화 가능
+
+**Phase 1 redux v2 처방 (curriculum learning)**:
+
+- `reward.auto_drop_threshold`: 3.0 → **1.0m**
+  - **이유**: 정책이 더 정밀하게 접근해야 trigger. 0.809m 달성 가능 입증됨.
+- `reward.success_threshold`: 5.0 → **1.0m**
+  - **이유**: success 정의 자체를 정밀화. 96% (5m) → 새 기준 0.1% 예상.
+- `reward.jackpot_threshold`: 0.1 → **0.3m**
+  - **이유**: 0.1m 는 도달 불가능 (이전 0건). 0.3m 도 도전적이지만 best 0.809m 에서 추가 학습으로 가능.
+- 코드: `drone_drop_env.py:_kill_infra` 의 `proc.wait(timeout=5)` → 2s
+  - **이유**: drop 빈도 높을 때 fps 폭락의 주 원인. _kill_episode 와 일치.
+- `wandb.run_name`: "phase1_redux_v2_tight_thresholds"
+
+**유지**:
+  - target_enu (4, 3), random_drop_prob 0.0
+  - target_entropy=-15, target_q_clip=500, ent_coef_hard_cap=1.0, per_alpha=0.6
+  - 모든 Phase 1 처방
+
+**Resume vs Fresh 결정**:
+  - **Resume from 89k preempt** (curriculum learning)
+  - 이전 96% (5m) 정책 = 접근 능력 검증됨, 정밀화만 추가 학습
+  - Replay buffer 의 stale reward 영향 작음 (100k step 후 자연 refresh)
+  - 89k 학습 시간 보존
+
+**목표 metrics**:
+  - 새 1m 기준 success_rate > 50%
+  - 첫 jackpot 발화 (drop_error < 0.3m)
+  - best drop < 0.3m
+  - fps 5-10 회복 (kill_infra timeout 효과)
+
+**결론 / 다음**: 학습 진행 중. Rolling 100 episode buffer refresh 후 (~30분) 진짜 1m 기준 success_rate 확인 가능.
+
+---
+
+### #28. 2026-06-05 — **current_success_streak metric 추가 (Callback only)**
+
+WandB run: (다음 학습부터 적용)
+**Base**: #27
+
+**배경 — 사용자 요청 평가 도구**:
+  - 학습 전체 누적 metric 보다 시점별 (point-in-time) 성능 측정 필요
+  - SB3 의 `rollout/success_rate` 이미 rolling-100 (마지막 100 episodes 평균)
+  - 추가로 "지금 진행 중인 연속 성공 횟수" 필요 — streak 정보
+
+**연속 성공 가산점 (reward) 검토 — 기각**:
+  - SAC 의 Markov 가정 위반: replay buffer 의 random sampling 시 streak 맥락 없음
+  - Variance 증가, safe-play 편향, credit assignment 망가짐
+  - obs 에 prev_episode_success 명시 추가 시 가능하지만 비용 큼
+  - → reward 로는 적용 X. Metric only 로 한정.
+
+**변경 (코드만, env 무수정)**:
+- `train_sac.py:WandbMetricsCallback`:
+  - `__init__`: `self._current_success_streak = 0`
+  - `_on_step` (done block):
+    - drop with is_success → streak += 1
+    - drop without is_success → streak = 0 (실패로 리셋)
+    - no drop in episode → streak = 0 (실패로 리셋)
+  - `_on_rollout_end`: `log_dict['env/current_success_streak'] = self._current_success_streak`
+
+**WandB 에서 보임**:
+  - `env/current_success_streak` 시계열 chart
+  - 0 → 1 → 2 → ... → 0 (실패 시 즉시) → ... 패턴
+
+**적용 범위**:
+  - 현재 진행 중인 v2 학습: **❌ 없음** (이미 메모리 로드된 옛 코드)
+  - 다음 학습부터: **✓ 자동 적용**
+
+**결론 / 다음**: 평가 도구만 추가. 학습 영향 X. v2 종료 후 다음 학습에서 활용.
 
 ---
 

@@ -1,7 +1,7 @@
 ================================================================================
  Issues Master — 안건 관리 매뉴얼
 ================================================================================
-최종 갱신 : 2026-05-31 (Round 4 발산 분석 + Hover terminal penalty 처방 + Round 5 시작)
+최종 갱신 : 2026-06-05 (Phase 1 redux v1 99% success → v2 진입: tight thresholds 1m/1m/0.3m + curriculum)
 
 
 ================================================================================
@@ -65,28 +65,153 @@
     교훈: per-step 보상 magnitude 변경 위험 — terminal 신호로 대체 필요
     archive/round4_4j46qwpk_diverged_2026-05-31/
 
-  Round 5 학습 중 (run sdjytkpv, 300k):
+  Round 5 발산 (run sdjytkpv 65k pause, mnlr1zpe 148k 발산):
     적용: #017 (Hover Terminal Penalty)
-    복원: w_heading 0.7, w_distance_penalty 0 (Round 4 처방 되돌림)
-    신규: Episode 종료 시 hover 페널티
-      - max_consecutive_still > 200 step → -15
-      - hover_speed_threshold = 1.0 m/s
-      - Drop (terminated) 제외 — 정밀 hover 정당
-    Per-step density 보존 → SAC 안정성 유지
+    Round 5도 ent_coef 6.16 발산 — Round 4와 동일 패턴
+    교훈: 처방 무관, SAC + PER + sparse reward 본질적 발산 모드
+    archive/round5_diverged_2026-05-31/
 
-  Round 5 후 확인:
+  SAC entropy 발산 문제 (Issue #019 신규):
+    원인: bounded action space + sparse reward → SAC auto-entropy 양성 피드백
+    처방: DampedEntropySAC (Soft damping + Hard cap)
+
+  Round 6 v1 실패 (run bfv4la9a, 162k 중단):
+    적용: #017, #019 (DampedEntropySAC v1)
+    문제: mean() 기반 damping이 작동 안 함 (ent_damping=1.0 유지)
+      - batch outlier는 mean에 묻혀서 못 감지
+      - ent_coef 1.0 → 1.68까지 단조 증가
+      - Hard cap이 막아주긴 했으나 학습 정체 (ep_rew -111)
+    또한 #020 체크포인트 버그 발견 — 95k 이후 저장 안 됨
+
+  Round 6 v2 학습 (run 6b8bslmz, ~294k 중단):
+    적용: #017, #019, #020
+    결과:
+      - 95k~195k: 잘 학습 (success 4건, 160k에 best 4.36m)
+      - Hard cap 2.0 도달, critic_loss 14M+ 폭주, ep_rew -45
+      - 종료 원인: gz model --list TimeoutExpired (#021 — 이전 "OOM" 기록 정정)
+    교훈: damping/cap은 증상 완화. SAC 근본 원인은 target_entropy.
+          그러나 동시에 #021 인프라 버그 도 활성. 두 layer 분리 필요.
+
+  Round 7 1차 시도 (run iobwvcrm, 14.9k crash):
+    적용: #017, #019, #020 (SAC 근본 처방)
+    핵심 변경:
+      - target_entropy: -5 (default) → -15  ← 근본 해결
+      - ent_coef_hard_cap: 2.0 → 1.0       ← 안전망 강화
+      - per_alpha: 0.6 유지                 ← 검증됨
+    결과:
+      - ent_coef 안정 (0.29) ← #019 처방 작동 확인
+      - ep_rew_mean -33 → -25 (학습 진행)
+      - 종료 원인: #021 — 같은 gz model --list TimeoutExpired
+    교훈: #019 효과는 검증되었으나 #021 별개 버그가 여전. 처방 필요.
+
+  Round 7 진단 run (run 9qocfk9y, 39k 수동 중단):
+    적용: + InfraHealthMonitor (200 step 마다 gz_ms/rss/velocity 로깅)
+    결과:
+      - success 2건 (success_step14995_err3.63m, step19807_err3.82m)
+        ← SuccessReplay 첫 작동 확인 (target_entropy=-15 정책 검증)
+      - 진단 데이터: gz_ms ~470ms baseline 안정, gz_rss 196MB 안정,
+        post_v 대체로 작음 → 메모리 leak 가설 약함, velocity 누적 가설 약함
+      - 39k step 내 #021 trigger 안 됨 (intermittent 성격 재확인)
+    중단 이유: 1·2차 처방 적용 위해 SIGINT (preempt save 못함 — SIGTERM 만 등록)
+
+  Round 7 resilient v1 (run y6mxu5q2, success_step19807에서 resume):
+    적용: #017, #019, #020, #021 (1차+2차)
+    핵심 추가:
+      - 1차 처방: _check_infra_healthy 의 gz model --list TimeoutExpired catch
+                  → 한 번 hang 으로 학습 안 죽음, full restart 자동 진입
+      - 2차 처방: max_consecutive_fast_resets=100
+                  → 100 episode drop 없으면 강제 full restart (누적 차단)
+      - 진단 instrumentation 유지: 다음 crash 시 postmortem 자동 수집
+    의미: SAC + 인프라 두 layer 모두 처방. 가설 검증과 시스템 견고화 분리.
+
+  Round 7 v3 critic-stable (run 436xl0bb, 자연 종료 685k):
+    적용: 위 모두 + Huber loss + target_q_clip=500 + per-sample damping
+    결과:
+      - 6,055 episodes / 162 drops / 87 auto_drops / 16 successes
+      - Best 1.32m (이전 4.36m 갱신)
+      - ent_coef 1.0 cap → 0.055 회복 (per-sample damping 효과)
+      - critic_loss 200k → 35 (clip + Huber 효과)
+      - Forced restart 29회 정상 작동
+      - #021 gz timeout crash 0회 (1·2차 처방 검증됨)
+    종료: 자연 종료 (685k step), 모든 처방 효과 입증
+    백업: local/backups/phase1_final_round7_v3/ (609 MB)
+
+  Phase 1 Eval 진단 (Round 7 v3 모델):
+    Deterministic eval 5 episodes (1.32m success snapshot):
+      - 0 drops, 모두 d_xy 10-15m 에서 crash
+      - EP2/EP3 d_xy 정확 일치 (10.89m) → episode 의존성 발견
+    A2 hybrid (gz_world_reset) eval — milestone_600000:
+      - 1 random drop / 5 episodes
+      - d_xy 분산 14.5m (independence 부분 개선)
+      - 일부 episode timeout (800 step 최대) — 정책 hover만 함
+    결론:
+      - 정책이 random_drop 보조 없이는 reliable auto_drop 못함
+      - 14.87m 거리는 학습 어려움
+      - → Phase 1 redux 필요 (closer target + random_drop=0)
+
+  Phase 2 검토 노트 (자세한 분석):
+    local/design/phase2_plan.md — 변경 후보들의 메커니즘/기대/위험/resume 가능성
+
+  Phase 1 redux v1 (run ayi27a56, fresh start, 89k 수동 중단):
+    핵심 변경:
+      - target_enu (11, 10) → (4, 3) — spawn 부터 14.87m → 5m
+      - random_drop_prob 0.005 → 0 (정책 자체 drop 학습 강제)
+      - drop_calculator x_marker_x hardcoded 11.0 → cfg 사용 (버그 fix)
+      - x_marker_world.sdf 의 x_marker_0 pose 도 (4, 3, 0) 변경
+      - _kill_episode timeout 5s → 2s (Phase 2 speedup 적용)
+    결과 (89k에서 수동 중단, success 충분히 입증):
+      - 1,205 episodes, **830 drops (모두 auto)**, **799 successes (96.3%)**
+      - best drop **0.809m** (Round 7 v3 의 1.32m 갱신)
+      - drop_error 분포: <5m=96.2%, <3m=0.5%, <2m=0.1%, <1m=0.1%, <0.3m=0%
+      - jackpots 0 (0.1m 임계 너무 빡빡)
+      - ent_coef 0.00145 (매우 deterministic)
+      - critic_loss 3-7 안정
+      - 초기 fps 18 → drop 자주 발생하며 _kill_infra restart 빈도 → fps 2 폭락
+      - 예상 잔여 30시간 → 수동 중단 + 다음 단계 (v2)
+    교훈:
+      1. closer target (5m) + random_drop=0 → 정책 auto_drop 강력 학습 ✓
+      2. _kill_infra timeout 5s 가 drop 빈번 시 fps 폭락 원인
+      3. success_threshold 5m, jackpot 0.1m 너무 헐거움/빡빡 → tightening 필요
+
+  Phase 1 redux v2 (run za9zxdh6, resume from 89k preempt, 진행 중):
+    핵심 변경 (curriculum learning approach):
+      - auto_drop_threshold 3.0 → **1.0m** (정밀 drop trigger)
+      - success_threshold 5.0 → **1.0m** (정밀 명중 강제)
+      - jackpot_threshold 0.1 → **0.3m** (현재 best 0.809m, 0.3m 도전 가능)
+      - _kill_infra timeout 5s → **2s** (fps 회복)
+    이전 정책 (96% 5m 성공) → curriculum 으로 정밀화 학습.
+    목표:
+      - 새 1m 기준 success_rate > 50% (정밀화 입증)
+      - 첫 jackpot (드론 본 학습 전체에서 처음)
+      - best drop < 0.3m
+      - fps 5-10 회복
+
+  코드 추가 — current_success_streak metric (callback only):
+    WandbMetricsCallback 에 streak counter 추가.
+    success 시 +1, 실패 시 0 리셋.
+    학습 평가 도구로 활용 (학습 영향 X — reward 아니라 monitoring).
+    적용: 다음 학습부터 (현재 진행 중 v2 는 적용 안 됨).
+
+  Phase 1 redux 후 확인:
     #004 — deterministic eval
     #007 — CCIP 갭
     #009 — Phase 1 기준
     #016 — Post-success regression
-    #017 — Terminal penalty 효과
+    #017 — Hover 차단 효과
+    #019 — target_entropy fix 효과 ← 39k 진단에서 성공 2건 확인
+    #020 — 체크포인트 정상 저장 여부
+    #021 — 1·2차 처방 효과 + 진단 데이터 추세 (특히 next crash 시 가설 검증)
 
   보류:
     #005 — replay buffer      500k+ 학습 시 재검토
     #008 — obs/action 충분성  분석 완료, 추가 조치 불필요
     #011 — drop infra restart  속도 최적화 (후순위)
     #012 — 멀티 드론 병렬      #011 선결 필요
-    #018 — Vision-based obs   Round 4 결과 후 결정 (Round 5 후보)
+    #018 — Vision-based obs   Round 6 결과 후 결정 (Round 7 후보)
+
+  신규 안건:
+    #021 — gz timeout 재발     2026-05-28 이후 4 run crash. 1·2차 처방 적용.
+                              근본 원인 미확정 (next crash 시 진단 데이터로 가설 검증)
 
 
 ================================================================================

@@ -1,0 +1,358 @@
+================================================================================
+ Drone-Bombard-Simulation 작업 정리 — 2026-06-05
+ 세션 기간 : 2026-06-04 ~ 2026-06-05
+ 직전 노트 : meeting_notes_2026-06-03.txt
+ 핵심 변화 : Round 7 v3 685k 자연 종료 → Phase 1 마감 → Phase 1 redux 시작
+================================================================================
+
+
+********************************************************************************
+*  PART 1 — Round 7 v3 자연 종료 + Phase 1 마감
+********************************************************************************
+
+  Round 7 v3 (run 436xl0bb) 자연 종료까지 완주:
+    학습: 약 14시간 (resume from preempt @ 385k → 자연 종료 685k)
+    fps: 5 (cumulative since resume, 짧은 episode + reset overhead 원인)
+
+  최종 결과:
+    6,055 episodes
+    162 drops / 87 auto / 16 successes / 0 jackpots
+    Best drop: 1.32m (이전 4.36m 갱신)
+    Median drop_error: 15.12m
+    드롭 정밀도 분포:
+      < 1m: 0
+      < 2m: 2 (1.32, 1.51)
+      < 3m: 4
+      < 5m (success): 16 (10%)
+
+  학습 안정성:
+    ent_coef: 1.0 cap → 0.055 회복
+      → per-sample damping 효과 입증
+    critic_loss: 17,800 → 35 안정
+      → Huber + target_q_clip=500 효과 입증
+    Forced restart 29회 정상 작동
+    #021 gz timeout crash 0회 (1·2차 처방 검증)
+
+  Phase 1 백업 완료:
+    경로: local/backups/phase1_final_round7_v3/ (609 MB)
+    내용:
+      - sac_drop_final.zip (685k endpoint)
+      - success_replay_436xl0bb/ (15 success models)
+      - drop_episodes/ (679 npz + index.csv)
+      - wandb_run/ (전체 metric history)
+      - hyperparams.yaml + train_sac.py + drone_drop_env.py snapshot
+      - README.md (전체 컨텍스트 + Phase 2 시작점)
+
+
+********************************************************************************
+*  PART 2 — Phase 1 Eval 진단 + 핵심 발견
+********************************************************************************
+
+  GUI 통합 도구 v1 작성 + 버그 fix:
+    파일: local/tools/eval_gui.sh
+    기능: 모델 자동 검색 + 대화형 선택 + GUI watcher + 결과 요약
+    v1 bug: heredoc 이 nested bash -c 안에서 작동 X → 옛 eval_inner.py 그대로
+    v1.1 fix: docker cp 방식으로 변경 (호스트 임시파일 → 컨테이너 cp)
+
+  Deterministic eval 결과 (1.32m success snapshot 모델, 5 EP):
+    EP1: d_xy=12.15m, crash, 0 drops
+    EP2: d_xy=10.89m, crash, 0 drops
+    EP3: d_xy=10.89m, crash, 0 drops  ← EP2 와 정확히 동일!
+    EP4: d_xy=11.48m, crash
+    EP5: d_xy=15.18m, crash
+    SUMMARY: 0 drops / 5 EP
+
+  EP2 와 EP3 d_xy 정확히 일치 (10.89m) → episode 의존성 발견!
+
+  의존성 원인 분석:
+    _gz_reset_poses() 가 position 만 reset, velocity/EKF state carry-over.
+    학습 중엔 drop 자주 → infra restart → 자연 정화.
+    Eval 에선 drop 거의 안 됨 → 의존성 누적.
+    이건 Issue #021 가설과 같은 메커니즘.
+
+  A2 Hybrid 해결책 시도 (milestone_600000 모델, 5 EP):
+    Episode 사이 _gz_world_reset(model_only) 호출.
+    drop 시는 env 의 _kill_infra+start_infra 자동 (DetachableJoint 안전).
+    결과:
+      1 random drop / 5 EP
+      d_xy 분산 14.5m (이전 4.3m 대비 3배 — 의존성 부분 해소)
+      일부 episode 800 step 끝까지 (timeout)
+
+  핵심 발견:
+    1. 정책이 random_drop 보조 없이 reliable auto_drop 못함
+    2. 14.87m 거리는 학습 어려움 (auto_drop_threshold 3m 도달 X)
+    3. Deterministic eval 의 mean action 이 stochastic train 의 lucky sample 재현 X
+    4. PX4 EKF state 도 episode-to-episode carry-over (A2 도 완전 해결 X)
+
+
+********************************************************************************
+*  PART 3 — Phase 2 검토 노트 + 결정
+********************************************************************************
+
+  Phase 2 계획서 작성:
+    경로: local/design/phase2_plan.md
+    목적: 변경 후보들에 대해 메커니즘/기대/위험/resume 가능성 분석
+    영구 문서 아님 — 이 시점의 검토 + 결정 기록
+
+  검토 후보들 (mechanism → expectation → worst case):
+    1. random_drop_prob 0.005 → 0: 노이즈 제거, drop signal starvation 위험
+    2. w_heading 0.7 → 0.9: 정렬 강제, reward hacking 위험
+    3. target_entropy -15 → -20: 더 deterministic 허용, exploration 죽음
+    4. auto_drop_threshold 3 → 2: 정밀화, signal 폭락 위험
+    5. r_jackpot 50 → 100: 정밀 incentive, critic 흔들림
+    6. w_distance_penalty 0 → 0.05: 거리 페널티, crash 증가
+
+  Phase 2a (Resumable) vs Phase 2b (Fresh Start) 구분:
+    Resumable: SAC 하이퍼파라미터, trigger 조건 변경 (영향 작음)
+    Fresh: dense reward 변경 (replay buffer 전체 stale)
+
+  최종 결정 — Phase 1 redux 로 전환:
+    Phase 2 의 단일 파라미터 변경 보다 더 근본적 변경 필요.
+    Eval 진단 결과: 정책 자체가 정확한 drop 학습 못함.
+    → 학습 task 자체를 쉽게 + drop 능력 강제
+      - target_enu (11, 10) → (4, 3) — spawn 부터 5m
+      - random_drop_prob 0.005 → 0 — 정책 자체 학습 강제
+
+
+********************************************************************************
+*  PART 4 — Phase 1 redux 시작 + Phase 2 speedup 적용
+********************************************************************************
+
+  코드 변경 사항:
+    1. drone_drop_env.py:_kill_episode timeout
+       proc.wait(timeout=5) → proc.wait(timeout=2)
+       이유: 짧은 episode 의 reset overhead 가 fps 의 주 원인
+       _kill_infra timeout 은 5s 유지 (forced restart 시만 호출)
+
+    2. drone_drop_env.py:_start_episode (drop_calculator launch)
+       x_marker_x:=11.0 (hardcoded) → x_marker_x:=cfg_target_x
+       이유: 버그. 환경 변경 시 drop_calculator 만 옛 값 → 부조화
+
+  설정 변경 (yaml):
+    target_enu_x: 11.0 → 4.0
+    target_enu_y: 10.0 → 3.0
+    random_drop_prob: 0.005 → 0.0
+    run_name: phase1_redux_target43_norandomdrop
+
+  Gazebo world SDF 변경:
+    x_marker_world.sdf 의 x_marker_0 pose
+    (11, 10, 0) → (4, 3, 0)
+    (x_marker_1, _2, _3 는 multi-instance용, 그대로)
+
+  Fresh start 진행 (run phase1_redux_target43_norandomdrop):
+    target_timesteps: 300000 (절대값, no resume)
+    초기 결과 (step 1593):
+      fps: 18 (이전 5 대비 3.6배 가속)
+      ep_len_mean: 398 (이전 50 대비 8배 ↑)
+      critic_loss: 1.03 (매우 안정)
+      ent_coef: 0.943 (fresh start default)
+    예상 학습 시간: 약 4-5시간
+
+  검증 가설:
+    1. closer target → 정책이 auto_drop 학습 가능?
+    2. random_drop 없이도 success_rate 의미 있게 증가?
+    3. drop_error 분포가 bimodal → unimodal?
+
+
+********************************************************************************
+*  PART 5 — 유용한 명령 alias 정리
+********************************************************************************
+
+  추가된 alias (~/.bashrc):
+    train-kill      : targeted SIGTERM (preempt save 보장)
+    train-cleanup   : 강제 죽이기 + 인프라 청소
+    train-check     : 학습 살아있는지
+    train-log       : 실시간 로그 (현재 phase1_redux.log)
+    train-status    : 한방 metric 요약
+    train-drops     : drop 빈도
+    train-restarts  : 2차 처방 작동 횟수
+    train-best      : success 모델 리스트 (err 작은 순)
+    train-wandb     : 현재 wandb run id
+    train-eval      : GUI 통합 eval 도구 실행
+    train-archive   : 현재 preempt 를 archive 폴더로 (함수)
+
+  graceful kill 메모리 정정:
+    이전 메모리: "SIGINT 가 preempt save 한다" (틀림)
+    정정: 실제 코드는 SIGTERM 만 등록 (train_sac.py:626)
+    바른 방법: pkill -f "install/.../train_sac" 의 정확 PID 찾아 kill -15
+
+
+********************************************************************************
+*  PART 6 — 미해결 사항 / 추후 계획
+********************************************************************************
+
+  Phase 1 redux 진행 중. 결과 보고 결정:
+    1. 학습이 잘 됨 → success_rate 측정 → 진짜 베이스라인 확보
+    2. 학습이 안 됨 → 추가 처방 필요
+      - target 더 가까이? (예: 3m)
+      - 다른 hyperparameter?
+      - reward 구조 자체 재검토 (Phase 3 직행)
+
+  GUI eval 도구 (eval_gui.sh) v1.1 bug 남음:
+    Archive 모델이 중복 표시됨 (사용자 체감 불편)
+    수정 방향: basename 기반 dedup 추가
+    Phase 1 redux 끝나고 eval 할 때 v1.2 작성
+
+  통합 GUI 도구 + A2 hybrid 결합:
+    eval_gui.sh 의 prepare_eval_script 가 A2 hybrid 패턴 (gz_world_reset) 포함하도록 갱신
+    아직 v1.1 은 단순 deterministic eval 만 함
+
+  Phase 1 redux 결과에 따라:
+    - 좋으면: Phase 2a 시작 (jackpot threshold, target_entropy 등)
+    - 나쁘면: Phase 3 직행 (reward 재설계, vision obs 등)
+
+
+********************************************************************************
+*  PART 7 — Phase 1 redux v1 중간 결과 (89k 수동 중단)
+********************************************************************************
+
+  학습 진행 (run ayi27a56):
+    89k step 도달 시점에 충분히 학습 입증 → 수동 중단
+    실제 학습 시간 약 10시간
+    1,205 episodes / 830 drops (모두 auto, random_drop=0 효과)
+
+  결과 수치:
+    drops:    830 (모두 auto, random_drop_prob=0 검증)
+    success:  799 (5m 기준 96.3%)
+    jackpot:  0 (0.1m 너무 빡빡)
+    best:     0.809m ← Round 7 v3 의 1.32m 갱신
+    crashes:  130 (10.8% — drone 거의 안 crash)
+
+  drop_error 분포:
+    < 5m:   96.2%  (현재 success 기준)
+    < 3m:    0.5%  (4 of 825)
+    < 2m:    0.1%
+    < 1m:    0.1%  (1 of 825 — 0.809m best)
+    < 0.3m:  0%
+
+  학습 안정성:
+    ent_coef:    0.001 수준 (Round 7 v3 의 0.055 대비 50배 작음 — 매우 deterministic)
+    critic_loss: 3-7 안정
+    ent_damping: 0.83 (per-sample damping 정상)
+    Forced restart: 1회만 (drop 잦아서 자연 cleanup)
+
+  fps trajectory:
+    학습 초: 18 (이전 5 대비 3.6배 가속)
+    학습 중반: 점진 하락
+    학습 후반: **fps 2** (drop 매우 잦음 → _kill_infra 5s 누적)
+    예상 잔여: 30시간 (수용 불가)
+    → 수동 중단 결정
+
+  교훈:
+    1. closer target (5m) + random_drop=0 조합 매우 효과적
+    2. _kill_infra timeout 이 drop 잦은 후기 fps 폭락 핵심 원인
+    3. 5m success 임계는 헐거움 → 정밀화 단계 진입 시점
+    4. jackpot 0.1m 도달 불가 → 임계 완화 필요
+
+
+********************************************************************************
+*  PART 8 — Phase 1 redux v2: Tight thresholds + curriculum (진행 중)
+********************************************************************************
+
+  설정 변경 (yaml + 코드):
+    auto_drop_threshold: 3.0 → 1.0m   (정밀 drop trigger)
+    success_threshold:   5.0 → 1.0m   (success 정의 정밀화)
+    jackpot_threshold:   0.1 → 0.3m   (도달 가능 영역, 첫 jackpot 도전)
+    _kill_infra timeout: 5s → 2s     (fps 회복, _kill_episode 와 일치)
+    run_name: phase1_redux_v2_tight_thresholds
+
+  Resume vs Fresh 결정 — Resume (curriculum):
+    이전 v1 정책 = 96% success (5m 기준) = 접근 능력 검증됨
+    Resume 하면 그 능력 위에 정밀화만 추가 학습 — 효율적
+    Replay buffer stale 영향 작음 (100k step 후 자연 refresh)
+    89k 학습 시간 보존
+
+  Resume 진행 (run za9zxdh6, 시작 step 89,964):
+    누적 target: 89k + 300k (yaml) = 약 390k step
+    fps 복귀: 8-12 (이전 2 대비 회복, 다만 success_rate 보정 후 추세 봐야)
+    초기 critic_loss 5-7 (정상)
+    ent_coef 0.0014 (deterministic 유지)
+
+  의심 — rolling success_rate 0.97 카리오버:
+    Resume 직후 30분간 success_rate 계속 0.97 표시.
+    원인: SB3 ep_info_buffer rolling-100 이 이전 episodes 포함.
+    Buffer refresh 시간: 약 100 episode 새로 진행 후
+    → ~30분 (episode 15-30s × 100)
+
+
+********************************************************************************
+*  PART 9 — 평가 도구 확장: rolling success_rate + current_success_streak
+********************************************************************************
+
+  사용자 통찰:
+    학습 전체 누적 metric < 시점별 (point-in-time) 성능 측정
+    → 학습이 잘 되고 있는지 현재 시점 평가에 더 유용
+
+  Rolling success_rate:
+    이미 SB3 에 존재: `rollout/success_rate`
+    Definition: ep_info_buffer (default 100 episodes) 의 is_success 평균
+    학습 중간 시점 성능 측정 = 마지막 100 episodes 의 성공 비율
+    WandB 의 `rollout/success_rate` 로 자동 기록
+
+  Current_success_streak 추가:
+    학습 도구만 (reward 영향 X):
+      success 시 +1
+      실패 (drop with non-success, 또는 drop 없는 episode 끝) 시 0
+    동작:
+      time: e1  e2  e3  e4  e5  e6  e7  e8
+      result: S   S   S   F   S   S   F   S
+      streak: 1   2   3   0   1   2   0   1
+
+    WandB metric: env/current_success_streak (시계열 chart)
+
+  연속 성공 가산점 (reward) 검토 — 기각:
+    SAC 의 Markov 가정 위반 가능성:
+      Replay buffer 의 random sampling 시 streak 맥락 없음
+      Variance 증가
+      Safe-play 편향 (best drop 정밀도 저하 risk)
+      Credit assignment 망가짐
+    → reward 로는 적용 X. Metric only 로 한정.
+
+  구현 (callback only, env 무수정):
+    train_sac.py:WandbMetricsCallback 에:
+      __init__: self._current_success_streak = 0
+      _on_step done block:
+        drop & is_success: streak += 1
+        drop & not is_success: streak = 0
+        no drop: streak = 0
+      _on_rollout_end: log_dict['env/current_success_streak'] = ...
+
+  적용 범위:
+    현재 v2 (이미 실행 중): ❌ (옛 코드 메모리에 로드됨)
+    다음 학습부터: ✓ 자동 적용
+
+
+********************************************************************************
+*  PART 10 — Phase 1 redux v2 의 검증 목표
+********************************************************************************
+
+  목표 metrics:
+    1. 새 1m success_rate > 50%
+       (이전 96% at 5m 정책의 정밀화 가능성 입증)
+    2. 첫 jackpot 발화 (drop_error < 0.3m)
+       (학습 전체 모든 라운드에서 처음)
+    3. best drop < 0.3m (jackpot 영역)
+       (현재 0.809m → 0.3m 미만으로 정밀화)
+    4. fps 5-10 회복
+       (kill_infra timeout 효과 측정)
+
+  Decision tree:
+    1m success > 50% 도달 → curriculum learning 성공 → 더 좁은 임계 시도 가능
+    1m success < 20% → 정책 한계 도달 → reward 구조 재검토 (Phase 3)
+    Jackpot 발화 → 정책 정밀도 새 단계 → Phase 2 jackpot 활용 가능
+    Fps 5+ 회복 → kill_infra timeout 처방 검증
+    Fps 여전히 < 3 → 다른 원인 (e.g. obs_wait_timeout, gz_ms degradation)
+
+
+################################################################################
+#  관련 문서 (경로: /home/juns/Drone-Bombard-Simulation/local/)
+################################################################################
+
+  - issues/master.txt                       — 안건 전체 관리 (Phase 1 redux 추가됨)
+  - issues/issue_021_gz_timeout_recurrence — #021 처방 + Round 7 v3 결과
+  - design/design_review.md                 — 최종 설계 요약 (Phase 1 redux 반영)
+  - design/phase2_plan.md                   — Phase 2 검토 노트 + 실험 큐
+  - parameter_log.md                        — Entry #24, #25, #26 (Round 7 v3, kill timeout, Phase 1 redux)
+  - tools/eval_gui.sh                       — GUI 통합 evaluate 도구 v1.1
+  - backups/phase1_final_round7_v3/         — Phase 1 종료 데이터 (609 MB)
+  - guides/post_training_verification_guide.txt — GUI eval 절차

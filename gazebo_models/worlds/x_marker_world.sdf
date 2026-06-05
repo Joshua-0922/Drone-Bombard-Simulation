@@ -247,7 +247,7 @@
     <include>
       <uri>model://x_marker</uri>
       <name>x_marker_0</name>
-      <pose>11 10 0 0 0 0</pose>
+      <pose>4 3 0 0 0 0</pose>
     </include>
     <include>
       <uri>model://x_marker</uri>

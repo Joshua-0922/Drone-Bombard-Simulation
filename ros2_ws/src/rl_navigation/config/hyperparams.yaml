@@ -1,5 +1,5 @@
 training:
-  total_timesteps: 300000   # Round 3 — LR 1e-4 + tau 0.002 → 더 긴 수렴 필요
+  total_timesteps: 300000   # Round 7 resilient v1 → v2: 99807에서 resume, 300k 목표
   checkpoint_freq: 5000
   max_checkpoints_kept: 5
   checkpoint_dir: "/workspace/ros2_ws/rl_checkpoints"
@@ -25,11 +25,18 @@ sac:
   per_priority_max: 30.0   # Round 3: priority 상한 (outlier 폭주 방지)
   # Round 6: ent_coef 발산 방지 (Round 4/5에서 ent_coef 6.0+ 폭주)
   ent_damping_threshold: 5.0   # log_prob 집중도 임계 (soft damping)
-  ent_coef_hard_cap: 2.0       # ent_coef 절대 상한 (안전망)
+  ent_coef_hard_cap: 1.0       # Round 7: 2.0→1.0 (안전망 강화, 발산 시도 학습 가능 수준)
+  # Round 7: target_entropy 명시 — bounded action space에 맞게 deterministic 허용
+  # default(-|A|=-5)는 unbounded Gaussian 기준이라 squash 환경에서 alpha 폭주 유발
+  target_entropy: -15.0
+  # Round 7 v3 (#021): critic stability — target Q clipping + Huber loss.
+  # critic_loss 폭발 (Round 7 v2 에서 68 → 2.13M 관찰) → ent_coef 발산 trigger.
+  # reward 스케일 ±200 고려 ±500 으로 boost 차단. 0 = 비활성화.
+  target_q_clip: 500.0
 
 environment:
-  target_enu_x: 11.0
-  target_enu_y: 10.0
+  target_enu_x: 4.0       # Phase 1 redux: 11 → 4 (spawn 부터 거리 14.87m → 5m, 쉬운 task)
+  target_enu_y: 3.0       # 10 → 3
   pos_scale: 50.0
   vel_scale: 15.0
   ang_vel_scale: 3.14159265
@@ -48,16 +55,20 @@ environment:
   obs_wait_timeout: 0.02
   cruise_poll_timeout: 60.0
   use_vision: false
+  # Round 7 (2차 처방): drop 없이 fast-path reset 누적 cap.
+  # 100 episode 마다 강제 full restart → Gazebo 누적 leak 차단.
+  # 비용 ~4% slowdown. 0 = 비활성화.
+  max_consecutive_fast_resets: 100
 
 reward:
   # --- Physics ---
   g: 9.81
 
   # --- Drop trigger (hybrid: manual + auto safety net) ---
-  auto_drop_threshold: 3.0     # Issue #006: 10.0 → 3.0 (안전망, manual drop이 주력)
+  auto_drop_threshold: 1.0     # Phase 1 redux v2: 3.0 → 1.0 (정밀 drop 강제)
   # manual drop 비활성 — action[4] 무시 ("drop ASAP" exploit 방지)
   random_drop_start_step: 600  # Round 2: 150→600 (600 step 자유 접근 확보)
-  random_drop_prob: 0.005      # 매 step 0.5% 확률로 random drop
+  random_drop_prob: 0.0        # Phase 1 redux: 0.005 → 0 (정책 자체 drop 능력 학습 강제)
   drop_wait_timeout: 10.0
 
   # --- Approach shaping (Layer 3) ---
@@ -82,8 +93,8 @@ reward:
   k_prediction: 0.1            # Issue #010: prediction gap 감쇠 (0.1 = 완만, gap 12m에서도 신호 유지)
   w_drop_base: 100.0
   r_success_jackpot: 50.0      # Issue #003: 100 → 50 (스케일 축소)
-  success_threshold: 5.0            # total_success_count 기준 (중간 목표)
-  jackpot_threshold: 0.1            # total_jackpot_count 기준 (최종 목표)
+  success_threshold: 1.0            # Phase 1 redux v2: 5.0 → 1.0 (정밀 명중 강제)
+  jackpot_threshold: 0.3            # Phase 1 redux v2: 0.1 → 0.3 (10cm 너무 빡빡 → 30cm 도전 가능)
   penalty_instability: 50.0
   limit_ang_vel: 2.0
   limit_tilt: 0.26
@@ -117,7 +128,7 @@ reward:
 wandb:
   project: "drone-bombard-sac"
   entity: "nayoonho0922-seoul-national-university"
-  run_name: "round6_damped_entropy"
+  run_name: "phase1_redux_v2_tight_thresholds"
   tags: ["sac", "spot-vm", "l4-gpu", "round1"]
   save_model_artifact: true
   log_freq: 1000
