@@ -34,3 +34,16 @@ type: reference
 | 2026-03-20 | 8otphxy8 | 114K | — | **선형 거리 보상 + CRUISE retry.** 마지막 정상 베이스라인. → [[experiments/exp_001_8otphxy8_linear_reward]] |
 | 2026-03-22 | — | — | — | **보상 패치 적용 (학습 없음).** anti-milking, w_time 5×, truncation penalty. Fresh start 필요. → [[experiments/exp_002_reward_shaping_patches]] |
 | 2026-04-16 | mtx7ud6o / x8jq9fsy / u8w3xn0w | 5500×3 (dry-run) | — | **RTF dry-run 비교.** RTF 1/2/4 순차 측정. **RTF=2 최적 (avg 59.5 fps, 61s/4Kstep).** RTF=4는 Python 병목으로 역전. → [[experiments/exp_003_rtf_dryrun]] |
+| 2026-05-20 | 0rho5l9f | 5K (smoke) | 23.95m | SAC default baseline smoke. drops=1, ep_rew 평탄. |
+| 2026-05-20 | pwkujvev | 10K (smoke) | 14.87m | H1+H2+H3+M1+M2 적용 (buffer 500k, gamma 0.995, gradient_steps 4, terminal scale↓, action 5d→4d). drops=1 (38%↓). |
+| 2026-05-22 | um8txjvk | 200K | — | **N1=B v2 (w_impact=8) — 실패.** deterministic 0/5 drops, takeoff도 실패. 14m systematic offset 진단 → `jekyun_v2` branch 교체. |
+| 2026-05-22 | tzbebmm4 | 1K (dry-run) | — | jekyun_v2 base (junsang_v2). Training complete, sim 정상 동작 확인. |
+| 2026-05-22 | zn7xrm7e | 200K | 9.02m | **junsang_v2 본학습 — 실패.** critic 폭주 17K@63k, ent_coef 1.13 진동. 원인: M2(gradient_steps=4) + jekyun 큰 terminal reward 충돌. 14m offset은 해소(인프라 patch). |
+| 2026-05-23 | w9flirvp | ~159K | ~20m | **junsang_v3 (M2 revert 4→1) — 실패.** SAC 안정성 회복했으나 정책 학습 안 됨 (mean_d_xy 20m 정체). env/reward 측 근본 문제로 판단. |
+| 2026-05-23 | ujvpo8ry(5k) / krxfl97k(200k) | 200K | 12~14m | **junsang_v4 Tier 1 (P1~P11).** action scale 8 + rate limit 0.2 + curriculum 10m + bad_attitude 검사. success=0, inverted 44%. (숨은 버그: drop_attempt_bonus/truncation_penalty hardcoded 발견·수정) |
+| 2026-05-24~25 | wdwoim34(19k crash) / xk7rw5e1(112k) | 112K | 13.15m | DropEpisodeRecorder 추가 + 재학습. success=0, 이전과 동일 양상. |
+| 2026-05-25 | ruozrv5x | 150K | 14.02m (best 4.64) | **Round 1: #001+#002+#003+#006** — hybrid drop + 보상 스케일 축소 + 종료조건 정비. 432 drops, success 1건. d_xy 11.3m 정체. |
+| 2026-05-26~30 | dbi74uif / z05fx7g9 | 150K | 19.09m (best 2.53) | **Round 2: gradient + max_steps 800 + 종료조건 진화.** success 16건 (16배↑). **post-success regression 발견.** (dbi74uif는 random_drop_start 150 너무 일러 접근 실패) |
+| 2026-05-30~31 | q13hli0y(발산) / lidq3ydu(157k) | 157K (crash) | 22.42m (best 4.32) | **Round 3 (조합 C): PER(α0.6) + LR 1e-4 + Tau 0.002 + Sigmoid alt penalty + 4 안전장치.** success 8건 (Round 2 대비 2배 속도), 100~125k 최우수(avg 13.9m). PX4 로그 20GB 누적 → `gz model --list` timeout 크래시. → [[experiments/exp_004_round5_hover_junsang]] |
+| 2026-05-31 | vo1l9wl6(14k 버그) / 4j46qwpk(146k) | 146K (발산) | — | **Round 4 (A+C): Hover per-step 차단** — w_heading 0.7→0.3, w_distance_penalty 0.03 신규. **학습 발산** — ent_coef 6.03, critic_loss 230K+. 원인: per-step density 축소 → reward sparsity↑ → SAC auto-entropy 양성 피드백. → [[research/sac_reward_density_junsang]] |
+| 2026-05-31 | sdjytkpv | 300K (학습 중) | — | **Round 5: Hover Terminal Penalty** — Round 4 처방 복원(w_heading 0.7, distance_penalty 0) + episode 종료 시 -15 (sustained hover만, drop 시 제외). per-step density 보존 → SAC 안정성 유지. → [[experiments/exp_004_round5_hover_junsang]] |

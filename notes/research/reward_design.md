@@ -93,6 +93,14 @@ $$R_{trunc} = -50 \quad \text{if step = 500 and not dropped}$$
 |------|----------|
 | 2026-03-20 | 선형 거리 보상 도입 (지수 포텐셜 → 선형), $w_{dist}$ 10.0 → 1.0 |
 | 2026-03-22 | Anti-milking speed gate, $w_{time}$ 0.01→0.05, Truncation penalty −50 추가 |
+| 2026-05-22 | **branch `jekyun_v2`(reward v3) 채택.** $w_{drop\_base}$ 50→100, $k_2$ 5.0→0.3(먼 거리도 보상), NEW $drop\_attempt\_bonus$=150, $truncation\_penalty$=−80. (이후 N1=B per-step 강화 w_impact=8은 실패로 폐기) |
+| 2026-05-25 | **Round 1: hybrid drop + terminal scale 축소.** manual drop 비활성, random_drop(step≥150, 0.5%/step) + auto_drop 병행. $w_{drop\_base}$ 100, $k_2$ 0.2 |
+| 2026-05-26 | **Round 2: orbit-milking 대응.** $w_{dist}$ 0.5→1.0, $w_{heading}$ 0.3→0.7, proximity bonus 추가($30e^{-0.15 d_{xy}}$), random_drop_start 150→600, max_steps 500→800. success 16건(16배↑) |
+| 2026-05-30 | **Round 3: 발산 방어.** Drop 고도 페널티 지수→Sigmoid(max −50), max_alt truncate 50m, Reward Hard Cap [−200,+300] (지수 페널티 −6.77e9 폭주 후 교체) |
+| 2026-05-31 | **Round 4 (폐기): per-step density 변경 → SAC 발산.** $w_{heading}$ 0.7→0.3 + $w_{distance\_penalty}$ 0.03 신규 → ent_coef 6.03 폭주. → [[research/sac_reward_density_junsang]] |
+| 2026-05-31 | **Round 5: Hover Terminal Penalty.** Round 4 복원($w_{heading}$ 0.7, distance_penalty 0) + episode 종료 시 −15 (sustained hover만, drop 시 제외). per-step density 보존 |
+
+> ⚠️ **현행 값은 이 노트와 다름.** 위 수식·표는 2026-03-22 시점 설계 기준이다. 5월 Round 1~5의 최신 파라미터·드롭 메커니즘 전체는 `local/design/design_review.md`(최종 설계) 및 `local/parameter_log.md`(키별 변경 이력) 참조.
 
 ---
 
@@ -100,3 +108,6 @@ $$R_{trunc} = -50 \quad \text{if step = 500 and not dropped}$$
 
 - [[experiments/exp_001_8otphxy8_linear_reward]] — 선형 보상 첫 적용 run
 - [[experiments/exp_002_reward_shaping_patches]] — anti-milking + truncation penalty
+- [[experiments/exp_004_round5_hover_junsang]] — Round 4 발산 + Round 5 hover terminal penalty
+- [[research/sac_reward_density_junsang]] — per-step density와 SAC 발산
+- [[research/rl_rules]] — Rule 8(density), Rule 9(post-success regression)

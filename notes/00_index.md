@@ -9,6 +9,8 @@ type: index
 
 > **프로젝트:** CCIP 기반 잔차 강화학습 활용 드론 정밀 투하
 > **스택:** ROS 2 Humble · Docker · PX4 SITL · SAC (SB3) · Gazebo Harmonic · L4 GPU
+>
+> **개인 대시보드:** [[00_index_junsang]]
 
 ---
 
