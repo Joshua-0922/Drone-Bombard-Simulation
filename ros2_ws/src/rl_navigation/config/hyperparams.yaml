@@ -36,9 +36,9 @@ environment:
   ground_contact_altitude: 0.5  # Issue #002: 신규 — altitude < 0.5m → 무조건 crash
   max_distance: 100.0           # Issue #002: 신규 — d_xy > 100m → out_of_range truncate
   max_altitude: 25.0            # Round 2: 고도 상한 — 25m 초과 시 truncate
-  stagnation_window: 200        # Round 2: 정체 감지 — 200 step 동안
-  stagnation_min_progress: 2.0  # Round 2: d_xy 최소 2m 감소 필요
-  stagnation_start_step: 200    # Round 2: step 200 이후부터 체크
+  stagnation_window: 300        # vision-fix: 300 step 동안
+  stagnation_min_progress: 3.0  # vision-fix: d_xy 최소 3m 감소 필요
+  stagnation_start_step: 400    # vision-fix: step 400 이후부터 체크 (탐색 시간 확보)
   obs_wait_timeout: 0.02
   cruise_poll_timeout: 60.0
   use_vision: true
@@ -74,7 +74,7 @@ reward:
 wandb:
   project: "drone-bombard-sac"
   entity: "nayoonho0922-seoul-national-university"
-  run_name: "round2_gradient_tuning"
+  run_name: "rl_yolo_v2_proximity_fix"
   tags: ["sac", "spot-vm", "l4-gpu", "round1"]
   save_model_artifact: true
   log_freq: 1000

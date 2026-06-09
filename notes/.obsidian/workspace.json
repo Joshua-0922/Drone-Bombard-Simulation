@@ -4,17 +4,21 @@
     "type": "split",
     "children": [
       {
-        "id": "054882b968ca2768",
+        "id": "e613f78dac4fd09a",
         "type": "tabs",
         "children": [
           {
-            "id": "e58fb39b56c9efb5",
+            "id": "cf950e8e9ffcc7ba",
             "type": "leaf",
             "state": {
-              "type": "graph",
-              "state": {},
-              "icon": "lucide-git-fork",
-              "title": "그래프 뷰"
+              "type": "markdown",
+              "state": {
+                "file": "daily/daily_2026-04-17.md",
+                "mode": "preview",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "daily_2026-04-17"
             }
           }
         ]
@@ -49,7 +53,7 @@
             "state": {
               "type": "search",
               "state": {
-                "query": "",
+                "query": "tag:#daily",
                 "matchingCase": false,
                 "explainSearch": false,
                 "collapseAll": false,
@@ -70,7 +74,8 @@
               "title": "북마크"
             }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "horizontal",
@@ -174,11 +179,26 @@
       "bases:새 베이스 생성하기": false
     }
   },
-  "active": "e58fb39b56c9efb5",
+  "active": "cf950e8e9ffcc7ba",
   "lastOpenFiles": [
-    "sessions/commands.md",
+    "daily/daily_2026-06-09.md",
+    "daily/daily_2026-06-09.md.tmp.4284.435f3c398112",
+    "errors/err_20260520_spin_thread_recursive_reset.md",
+    "daily/daily_2026-04-23.md",
     "daily/daily_2026-04-14.md",
+    "daily/daily_2026-04-16.md",
+    "daily/daily_2026-04-17.md",
+    "daily/무제.base",
     "daily/_template.md",
+    "무제.base",
+    "무제.canvas",
+    "00_index.md.tmp.19193.1776388044231",
+    "research/phase1_plan.md",
+    "research/rtf_fps_analysis.md",
+    "sessions/session_2026-04-16.md",
+    "experiments/exp_003_rtf_dryrun.md",
+    "experiments/exp_002_reward_shaping_patches.md",
+    "sessions/commands.md",
     "daily",
     "00_index.md",
     "research/system_overview.md",

@@ -723,12 +723,15 @@ class DroneDropEnv(gym.Env):
         r3_orient = self._cfg_w_heading * cos_heading * speed_gate
 
         # Vision centering: reward X marker being close to camera centre.
+        # Gated by proximity so hovering far away yields near-zero reward;
+        # the drone must approach before centering pays off.
         # u_norm, v_norm ∈ [-1,1] where 0 = centre of frame.
         if self._cfg_use_vision and conf > 0.0:
             u_n = (pix[0] / 640.0) * 2.0 - 1.0
             v_n = (pix[1] / 480.0) * 2.0 - 1.0
             center_dist = math.sqrt(u_n * u_n + v_n * v_n)   # 0 at centre, √2 at corner
-            r3_vision = self._cfg_w_vision_center * max(0.0, 1.0 - center_dist) * conf
+            proximity_factor = max(0.0, 1.0 - d_xy / 30.0)   # 0 at ≥30 m, 1 at 0 m
+            r3_vision = self._cfg_w_vision_center * max(0.0, 1.0 - center_dist) * conf * proximity_factor
         else:
             r3_vision = 0.0
 
