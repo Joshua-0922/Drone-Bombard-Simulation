@@ -23,11 +23,34 @@ class MissionManagerNode(Node):
 
         # --- [1] 파라미터 ---
         self.target_altitude = 5.0    # 순항 고도 5m (RL: reduced for faster reset)
-        
+
         # (1, 1) 방향으로 움직이게 설정
         self.cruise_speed_x = 1.0     # 북쪽(X) 속도 (m/s)
         self.cruise_speed_y = 1.0     # 북쪽(Y) 속도 (m/s)
-        
+
+        self.rl_mode = self.declare_parameter('rl_mode', False).value
+        # Number of consecutive 10 Hz ticks with target visible before
+        # CRUISE → TRACKING transition fires (0.5 s of stable detection).
+        # Proximity trigger is the primary TRACKING mechanism; this is secondary.
+        self._stable_detect_ticks = 5
+        self._stable_detect_count = 0
+        # Proximity fallback: transition to TRACKING when within this distance
+        # of target (NED metres), regardless of YOLO.  Guards against camera
+        # misconfiguration causing YOLO to never (or always) fire.
+        # Target EKF NED: drone_controller negates y (compensates for PX4 SITL's
+        # EKF East = -Gazebo_East convention). Marker at Gazebo ENU (East=11, North=10)
+        # → EKF NED (North=10, East=-11) = NED (10, -11).
+        _t_ned_x = self.declare_parameter('target_ned_x', 10.0).value
+        _t_ned_y = self.declare_parameter('target_ned_y', -11.0).value
+        self._target_ned = [_t_ned_x, _t_ned_y]
+        self._proximity_threshold = self.declare_parameter('proximity_m', 4.0).value
+        # Mandatory cruise gate: ignore ALL detection/proximity triggers for this
+        # many seconds after entering CRUISE.  Prevents spurious TRACKING from
+        # stale /target/pixel_coords data or brief YOLO false-positives at startup.
+        # At cruise_speed (1,1) NED @ 1 m/s, 8 s ≈ 11 m toward the marker.
+        self._cruise_gate_secs = self.declare_parameter('cruise_gate_secs', 2.0).value
+        self._cruise_enter_time = 0.0
+
         # --- [2] Publishers ---
         self.pos_pub = self.create_publisher(Vector3, '/drone/cmd/position', 10)
         self.vel_pub = self.create_publisher(Twist, '/drone/cmd/velocity', 10)
@@ -96,6 +119,15 @@ class MissionManagerNode(Node):
         if self.state not in (STATE_CRUISE, STATE_TRACK):
             return
         if msg.z > 0.0:
+            # Spatial filter: reject detections far from image center (640×480).
+            # Real marker (directly below at cruise altitude) appears within ~200px
+            # of center; edge-of-frame detections are false positives from distant
+            # ground patterns that happen to look X-like.
+            dx = msg.x - 320.0
+            dy = msg.y - 240.0
+            pixel_dist = math.sqrt(dx * dx + dy * dy)
+            if pixel_dist > 200.0:
+                return
             self.target_visible = True
             self.target_u = msg.x
             self.target_v = msg.y
@@ -170,29 +202,74 @@ class MissionManagerNode(Node):
                 # Clear any stale detections accumulated during TAKEOFF
                 self.target_visible = False
                 self.last_detection_time = 0
+                self._cruise_enter_time = time.time()
 
         elif self.state == STATE_CRUISE:
-            # 타겟 발견 시
-            if self.target_visible:
-                self.get_logger().warn("TARGET DETECTED! Engaging Intercept Mode.")
-                self.state = STATE_TRACK
+            # Mandatory cruise gate — keep flying toward (1,1) for the first N seconds
+            # regardless of YOLO detections or proximity.  Prevents spurious TRACKING
+            # from stale topic data or brief false-positives at infra startup.
+            gate_elapsed = time.time() - self._cruise_enter_time
+            if gate_elapsed < self._cruise_gate_secs:
+                self._stable_detect_count = 0
+                self.cruise_target_x += (self.cruise_speed_x * 0.1)
+                self.cruise_target_y += (self.cruise_speed_y * 0.1)
+                self.send_position_cmd(
+                    self.cruise_target_x, self.cruise_target_y, self.target_altitude)
+                if int(gate_elapsed) != int(gate_elapsed - 0.1):
+                    self.get_logger().info(
+                        f'[CRUISE GATE] {gate_elapsed:.1f}/{self._cruise_gate_secs:.0f}s '
+                        f'— target NED ({self.cruise_target_x:.1f}, {self.cruise_target_y:.1f})')
                 return
 
-            # (1, 1) 방향으로 목표점 갱신
-            self.cruise_target_x += (self.cruise_speed_x * 0.1)
-            self.cruise_target_y += (self.cruise_speed_y * 0.1)
-            
-            self.send_position_cmd(self.cruise_target_x, self.cruise_target_y, self.target_altitude)
+            # Proximity fallback: switch to TRACKING when drone is close
+            # regardless of YOLO (guards against camera misconfiguration).
+            dx = self.current_pos[0] - self._target_ned[0]
+            dy = self.current_pos[1] - self._target_ned[1]
+            d_xy = math.sqrt(dx * dx + dy * dy)
+            if d_xy <= self._proximity_threshold:
+                self.get_logger().warn(
+                    f"PROXIMITY TRIGGER: d_xy={d_xy:.1f} m <= {self._proximity_threshold:.1f} m. "
+                    "Switching to TRACKING.")
+                self.state = STATE_TRACK
+                self._stable_detect_count = 0
+                return
+
+            if self.target_visible:
+                # Marker in view — hold position and wait for stable lock
+                # before handing control to TRACKING / RL.
+                self._stable_detect_count += 1
+                if self._stable_detect_count >= self._stable_detect_ticks:
+                    self.get_logger().warn(
+                        f"TARGET STABLY DETECTED ({self._stable_detect_count} ticks)! "
+                        "Switching to TRACKING.")
+                    self.state = STATE_TRACK
+                    self._stable_detect_count = 0
+                    return
+                # Hold at current cruise waypoint while counting.
+                self.send_position_cmd(
+                    self.cruise_target_x, self.cruise_target_y, self.target_altitude)
+            else:
+                # No detection — reset counter and keep flying in (1, 1) direction.
+                self._stable_detect_count = 0
+                self.cruise_target_x += (self.cruise_speed_x * 0.1)
+                self.cruise_target_y += (self.cruise_speed_y * 0.1)
+                self.send_position_cmd(
+                    self.cruise_target_x, self.cruise_target_y, self.target_altitude)
 
         elif self.state == STATE_TRACK:
-            # 타겟 놓치면 다시 순항
             if not self.target_visible:
-                self.get_logger().info("Target Lost... Resuming Search.")
-                self.state = STATE_CRUISE
-                self.cruise_target_x = self.current_pos[0]
-                self.cruise_target_y = self.current_pos[1]
-                return
-            
+                if self.rl_mode:
+                    # In RL mode the env manages episode termination.
+                    # Do NOT revert to CRUISE here — that would publish
+                    # position commands that conflict with RL velocity commands.
+                    pass
+                else:
+                    self.get_logger().info("Target Lost... Resuming Search.")
+                    self.state = STATE_CRUISE
+                    self.cruise_target_x = self.current_pos[0]
+                    self.cruise_target_y = self.current_pos[1]
+                    return
+
             # 추적은 rl_navigation 노드가 /drone/cmd/velocity로 담당
             pass
 
