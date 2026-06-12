@@ -12,16 +12,16 @@ type: index
 
 ---
 
-## 현재 상태 (2026-04-23)
+## 현재 상태 (2026-06-12)
 
 - **알고리즘:** SAC, `net_arch=[256,256]`, L4 GPU
-- **보상 함수:** 2026-03-22 패치 완료, **Fresh 1M-step 학습 대기 중**
-- **RTF:** **2** (dry-run 실험으로 RTF=2 최적 확정, avg 59.5 fps)
-- **마지막 정상 체크포인트:** `sac_drop_preempt.zip` (run `8otphxy8`, ~114K steps)
-- **VM:** Spot VM 전환 완료 (IP: `130.211.241.166`) — startup.sh + watchdog CF + Scheduler 배포 완료
-- **자동화:** 선점 → 5분 내 자동 재시작 파이프라인 완성 (무인 야간 학습 가능)
+- **현재 학습:** `rl_yolo_debug` (WandB: `esmtny0a`) — 2026-06-12 04:28 시작, 128+ 에피소드
+- **방식:** Vision 기반 — YOLO X마커 탐지 → TRACKING, RL이 시각 서보잉 학습
+- **주요 버그 수정 (2026-06-12):**
+  - `_target_ned = [10, -11]` (EKF East 반전 보정, 기존 [10,11] 오류)
+  - YOLO 이중 노드 제거, conf 필터 + 공간 필터 추가
+  - Proximity 작동 확인: `d_xy=3.9m ≤ 4m` ✅
 - **Phase 1 계획:** CCIP 기반 자율 접근 비행 제어기 → [[research/phase1_plan]]
-- **다음 행동:** hyperparams_rtf2.yaml 수정 → colcon build 확인 → Exp 004-dryrun → Exp 005a 야간 (Spot VM 무인 실행)
 
 ---
 
@@ -30,8 +30,9 @@ type: index
 | # | Run ID | Steps | 상태 | 비고 |
 |---|--------|-------|------|------|
 | 001 | 8otphxy8 | 114K | ✅ 완료 | 선형 보상 + CRUISE retry |
-| 002 | — | 0 | ⏳ 대기 | 보상 패치 Fresh Start 필요, RTF=2 |
+| 002 | — | 0 | ✅ 완료 | 보상 패치 적용 (학습 없음) |
 | 003 (dry-run) | mtx7ud6o/x8jq9fsy/u8w3xn0w | 5500×3 | ✅ 완료 | RTF 1/2/4 비교 → RTF=2 최적 |
+| 004 | esmtny0a | 33K+ | 🔄 진행 중 | Vision YOLO 접근 + EKF East 버그 수정 → [[experiments/exp_004_rl_yolo_debug_vision]] |
 
 ## 에러 현황
 
@@ -76,6 +77,7 @@ type: index
 - [[research/architecture]] — Method A (1-World-4-Payload) 아키텍처
 - [[research/system_overview]] — 전체 시스템 (패키지, 토픽, 좌표계, 브리지)
 - [[research/rl_rules]] — RL 실험 규칙, WandB 메트릭, Known Failure Modes
+- [[research/ekf_east_reversal]] — PX4 SITL Gazebo Harmonic에서 EKF East 축 반전 패턴 (2026-06-12 확인)
 - [[research/rtf_fps_analysis]] — RTF vs FPS 분석. RTF=2 최적, Python 루프 병목 규명
 
 ### 실험 (experiments/)

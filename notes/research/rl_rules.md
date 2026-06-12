@@ -140,3 +140,6 @@ if 'd_xy' in info:
 | CRUISE 타임아웃 | PX4 arm race / 드론 뒤집힘 | `reset()` 1회 재시도; 10에피소드당 >1회면 조사 |
 | `ep_rew_mean` 나선형 하락 | CRUISE 타임아웃 → 크래시 페널티 에피소드 버퍼 오염 | CRUISE 타임아웃 근본 원인 수정; fps 하락 확인 |
 | fps 급감 | CRUISE 타임아웃 (65 s 대기) 또는 ODE 크래시 | 로그에서 "Timed out waiting for CRUISE" 확인 |
+| **전체 에피소드 stagnation** (ep_rew ~-174, 128 에피소드) | `_target_ned` 좌표가 EKF East 반전을 반영 못 함 → proximity 절대 미도달 | `_target_ned = [10, -11]` 사용. 상세: [[research/ekf_east_reversal]] |
+| YOLO 탐지 무효 (silent) | ultralytics Boxes boolean 인덱싱 silent fail | `detections[:0]` 정수 슬라이스로 대체 |
+| 이중 YOLO 노드 실행 | 수동 기동 + env 기동 중복 | env가 YOLO를 `_infra_procs`로 관리; 추가 수동 기동 금지 |
