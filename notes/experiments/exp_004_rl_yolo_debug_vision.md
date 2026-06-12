@@ -67,7 +67,28 @@ Boolean 텐서 인덱싱 `detections[bool_tensor]`가 이 버전에서 silent fa
 ## 결과 (수정 후: 13:xx~)
 
 - 첫 2에피소드: `PROXIMITY TRIGGER: d_xy=3.9 m ≤ 4.0 m` 확인 ✅
-- 학습 진행 중
+- RL env `TARGET_ENU_X` 버그도 발견 (11.0 → -11.0 수정) — fresh run 필요
+
+## Exp 005: rl_yolo fresh — 2M 타임스텝 (WandB: 45l8vkw5)
+
+| 항목 | 값 |
+|------|-----|
+| WandB Run | `45l8vkw5` (run name: `rl_yolo`) |
+| 시작 | 2026-06-12 13:24 |
+| Timesteps | 2,000,000 |
+| 실행 방식 | nohup (PID 1370970, 터미널 종료해도 지속) |
+
+### 8 에피소드 검증 (2383 timesteps)
+
+| 항목 | 수치 | 판정 |
+|------|------|------|
+| TRACKING 진입 d_xy (정상) | 3.2–3.7m (7/9 에피소드) | ✅ 근접 트리거 정상 |
+| TRACKING 진입 d_xy (EKF 드리프트) | 16.8m, 19.0m (2/9) | ⚠️ 기존 문제 |
+| YOLO 마커 탐지 | step 186, conf=0.25, d_xy=2.1m | ✅ |
+| ep_rew_mean | -151 (4ep) → -181 (8ep) | 아직 random exploration 단계 |
+| fps | 2 | ⚠️ CRUISE timeout infra 재시작 지연 |
+
+**EKF East 수정 효과 확인**: d_xy 3.2–3.7m (이전 19–22m).
 
 ## 관련 노트
 

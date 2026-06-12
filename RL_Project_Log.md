@@ -6,7 +6,7 @@
 
 # 1. Current State
 
-**업데이트:** 2026-04-16
+**업데이트:** 2026-06-12
 
 ### 활성 보상 공식 (2026-03-22 패치, 미적용)
 
@@ -38,6 +38,7 @@
 
 # 2. Recent Progress
 
+- **2026-06-12:** Vision 기반 RL 학습 인프라 완성. EKF East 반전 버그 2종 수정. fresh run `rl_yolo` (WandB: `45l8vkw5`) nohup 실행 중 (2M steps). TRACKING 진입 d_xy=3.2–3.7m 확인.
 - **2026-04-16:** RTF dry-run 3종 완료 (RTF 1/2/4). **RTF=2 최적** (avg 59.5 fps, 61s/4Kstep). RTF=4는 Python 병목으로 역전. Exp 002 RTF=2로 결정.
 - **2026-04-16:** WandB API key 영구 연결 (`/opt/drone-bombard/.wandb.env`, `--env-file` 방식). Docker image `drone-bombard-px4built:latest` — PX4 빌드 + 커스텀 airframes 4016-4019 포함.
 - **2026-04-14:** Obsidian 연구 비서 시스템 초기화. `notes/` 구조 구축, CLAUDE.md + RL_Project_Log.md 간소화.
@@ -50,11 +51,11 @@
 
 # 3. Remaining Tasks (Next Steps)
 
-- [ ] **Fresh 1M-step 학습 시작** — 보상 패치 이후 fresh start (run `exp_002`), **RTF=2**로 진행
-- [x] **RTF > 1 조사** — dry-run 완료. RTF=2 최적 확정.
-- [ ] **EvalCallback 추가** — 10K steps마다 deterministic 평가, `best_model.zip` 저장
-- [ ] **커스텀 SB3 policy** — PyTorch AMP (mixed precision)으로 L4 GPU 활용도 향상
-- [ ] **Phase 2 커리큘럼** — policy가 표적 도달 안정화 후 manual drop 재활성화
+- [x] **Vision 기반 RL 인프라 완성** — YOLO + SAC 시각 서보잉 파이프라인 구축
+- [x] **EKF East 반전 버그 수정** — proximity target + RL env reward target 좌표 수정
+- [ ] **WandB `45l8vkw5` 100+ 에피소드 ep_rew_mean 추세 확인** (현재: -181@8ep)
+- [ ] **EKF drift 방어 로직** — 에피소드 시작 시 d_xy>10m이면 즉시 reset (현재 ~22% 불량 에피소드)
+- [ ] **fps=2 개선** — CRUISE timeout으로 인한 full infra restart 줄이기
 - [ ] **PX4 로그 /dev/null 리다이렉트** — `/tmp/px4_{i}.log` 100+ MB 증가 방지
 
 ---
@@ -71,4 +72,5 @@
 | 2026-03-20 | 8otphxy8 | 114K | 선형 거리 보상 + CRUISE retry. 마지막 정상 베이스라인. |
 | 2026-03-22 | — | — | 보상 패치 적용 (학습 없음). Fresh start 대기 중. |
 | 2026-04-16 | mtx7ud6o/x8jq9fsy/u8w3xn0w | 5500×3 | RTF 1/2/4 dry-run. RTF=2 최적 (59.5 fps). |
-| _TBD_ | exp_002 | — | 보상 패치 후 Fresh 1M-step 학습, RTF=2 |
+| 2026-06-12 | esmtny0a | 33K | Vision SAC. proximity 버그로 128ep stagnation. 폐기. |
+| 2026-06-12 | 45l8vkw5 | 진행 중 | rl_yolo, 2M steps, EKF East 수정 후 fresh start. TRACKING d_xy=3.2-3.7m ✅ |
