@@ -99,6 +99,11 @@ class WandbMetricsCallback(BaseCallback):
         self._end_stagnation: int = 0
         self._end_out_of_range: int = 0
         self._end_ang_vel: int = 0
+        self._end_inverted: int = 0
+        self._end_overspeed: int = 0
+        self._end_max_altitude: int = 0
+        self._end_ekf_drift: int = 0
+        self._end_unknown: int = 0
 
     def _on_step(self):
         infos = self.locals.get('infos', [])
@@ -148,6 +153,16 @@ class WandbMetricsCallback(BaseCallback):
                     self._end_out_of_range += 1
                 elif reason == 'ang_vel':
                     self._end_ang_vel += 1
+                elif reason == 'inverted':
+                    self._end_inverted += 1
+                elif reason == 'overspeed':
+                    self._end_overspeed += 1
+                elif reason == 'max_altitude':
+                    self._end_max_altitude += 1
+                elif reason == 'ekf_drift':
+                    self._end_ekf_drift += 1
+                elif reason and reason != '':
+                    self._end_unknown += 1
         return True
 
     def _on_rollout_end(self):
@@ -207,6 +222,11 @@ class WandbMetricsCallback(BaseCallback):
         log_dict['env/end_stagnation'] = self._end_stagnation
         log_dict['env/end_out_of_range'] = self._end_out_of_range
         log_dict['env/end_ang_vel'] = self._end_ang_vel
+        log_dict['env/end_inverted'] = self._end_inverted
+        log_dict['env/end_overspeed'] = self._end_overspeed
+        log_dict['env/end_max_altitude'] = self._end_max_altitude
+        log_dict['env/end_ekf_drift'] = self._end_ekf_drift
+        log_dict['env/end_unknown'] = self._end_unknown
 
         if log_dict:
             log_dict.setdefault('time/total_timesteps', self.num_timesteps)
@@ -289,8 +309,12 @@ class CleanupOldCheckpointsCallback(BaseCallback):
         self._keep = keep_last
 
     def _on_step(self):
-        files = sorted(_glob.glob(
-            os.path.join(self._dir, f'{self._prefix}_*_steps.zip')))
+        # Sort by modification time (oldest first) so checkpoints from
+        # a previous run with higher step numbers don't outlive the current
+        # run's newer-but-lower-numbered files.
+        files = sorted(
+            _glob.glob(os.path.join(self._dir, f'{self._prefix}_*_steps.zip')),
+            key=os.path.getmtime)
         for old in files[:-self._keep]:
             os.remove(old)
             if self.verbose:
@@ -348,6 +372,16 @@ def main(args=None):
     best_model_dir = os.path.join(checkpoint_dir, 'best_model')
     archive_dir = os.path.join(checkpoint_dir, 'archive')
     os.makedirs(checkpoint_dir, exist_ok=True)
+
+    # On a fresh start (no --resume), remove any checkpoint files left over
+    # from a previous run so CleanupOldCheckpointsCallback doesn't keep
+    # higher-numbered old files and delete the current run's newer ones.
+    if cli.resume is None:
+        stale = _glob.glob(os.path.join(checkpoint_dir, 'sac_drop_*_steps.zip'))
+        for f in stale:
+            os.remove(f)
+        if stale:
+            print(f'[Startup] Removed {len(stale)} stale checkpoint(s) from previous run.')
 
     # --- Prune stale WandB offline-run directories (older than 7 days) ---
     _wandb_dir = os.path.join(os.getcwd(), 'wandb')

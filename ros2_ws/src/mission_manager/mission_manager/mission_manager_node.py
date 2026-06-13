@@ -43,7 +43,7 @@ class MissionManagerNode(Node):
         _t_ned_x = self.declare_parameter('target_ned_x', 10.0).value
         _t_ned_y = self.declare_parameter('target_ned_y', -11.0).value
         self._target_ned = [_t_ned_x, _t_ned_y]
-        self._proximity_threshold = self.declare_parameter('proximity_m', 4.0).value
+        self._proximity_threshold = self.declare_parameter('proximity_m', 2.5).value
         # Mandatory cruise gate: ignore ALL detection/proximity triggers for this
         # many seconds after entering CRUISE.  Prevents spurious TRACKING from
         # stale /target/pixel_coords data or brief YOLO false-positives at startup.

@@ -32,6 +32,7 @@ try:
         VehicleAngularVelocity,
         VehicleAttitude,
         VehicleCommand,
+        EstimatorStatusFlags,
     )
     _PX4_AVAILABLE = True
 except ImportError:
@@ -44,8 +45,9 @@ POS_SCALE = 50.0
 VEL_SCALE = 15.0
 ANG_VEL_SCALE = math.pi
 
-TARGET_ENU_X = 11.0   # East  — overridable via yaml
-TARGET_ENU_Y = 10.0   # North — overridable via yaml
+TARGET_ENU_X = -11.0  # EKF East (= -Gazebo_East). Gazebo marker at East=11,
+                       # but PX4 SITL EKF East = -Gazebo_East, so target = -11.
+TARGET_ENU_Y = 10.0   # EKF North = Gazebo_North — unchanged
 
 
 def _load_config(config_path):
@@ -72,6 +74,7 @@ class _RLBridgeNode(Node):
         self.pitch = 0.0
         self.pixel_coords = np.zeros(3, dtype=np.float32)   # u, v, conf
         self.mission_state = 'IDLE'
+        self.ekf_in_air = True   # assume airborne until EKF says otherwise
 
         # PX4 -i N publishes to /px4_N/fmu/out/* topics on the same
         # ROS_DOMAIN_ID.  Instance 0 (no -i flag) uses /fmu/out/*.
@@ -102,6 +105,12 @@ class _RLBridgeNode(Node):
                 VehicleAttitude,
                 f'{pfx}/fmu/out/vehicle_attitude',
                 self._on_attitude,
+                px4_qos,
+            )
+            self.create_subscription(
+                EstimatorStatusFlags,
+                f'{pfx}/fmu/out/estimator_status_flags',
+                self._on_estimator_flags,
                 px4_qos,
             )
         else:
@@ -200,12 +209,25 @@ class _RLBridgeNode(Node):
         with self._lock:
             self.mission_state = msg.data
 
+    def _on_estimator_flags(self, msg):
+        with self._lock:
+            self.ekf_in_air = msg.cs_in_air
+
     # ------------------------------------------------------------------
     # Action helpers
     # ------------------------------------------------------------------
 
     def publish_velocity(self, vx, vy, vz, yaw_rate):
-        """Send DISARM command directly to PX4.
+        """Publish a velocity Twist to /drone/cmd/velocity (drone_controller forwards to PX4)."""
+        msg = Twist()
+        msg.linear.x = float(vx)
+        msg.linear.y = float(vy)
+        msg.linear.z = float(vz)
+        msg.angular.z = float(yaw_rate)
+        self.vel_pub.publish(msg)
+
+    def send_disarm(self):
+        """Force-disarm PX4 between episodes.
 
         Called during episode reset so PX4 is disarmed before the new
         drone_controller starts.  This ensures the drone_controller 5 s EKF
@@ -315,6 +337,9 @@ class DroneDropEnv(gym.Env):
         self._cfg_sim_speed_factor = int(cfg_env.get('sim_speed_factor', 1))
         # use_vision=False: skip camera termination + synthesise conf=1.0 in obs
         self._cfg_use_vision = cfg_env.get('use_vision', True)
+        # How long to wait (s) for the drone to detect the marker (CRUISE→TRACKING transition)
+        # after takeoff before giving up and resetting the episode.
+        self._cfg_tracking_wait_timeout = cfg_env.get('tracking_wait_timeout', 120.0)
 
         # --- Reward constants (3-Layer Hierarchical) ---
         r = cfg_reward
@@ -358,6 +383,7 @@ class DroneDropEnv(gym.Env):
         self.d_xy_prev = 0.0          # 2D horizontal distance to target at previous step
         self.action_prev = np.zeros(4, dtype=np.float32)
         self._d_xy_history = {}       # step→d_xy for stagnation detection
+        self._rl_detection_printed = False  # printed once per episode on first RL-phase detection
 
         # --- Infra state ---
         self._infra_procs = []        # Popen handles for infra processes
@@ -388,13 +414,14 @@ class DroneDropEnv(gym.Env):
         """Reset simulation and return initial observation."""
         super().reset(seed=seed)
 
-        # Guard against infinite recursion when CRUISE is permanently unreachable
-        # (e.g. spin thread died). Allow at most 2 nested retries total.
+        # Guard against infinite recursion when CRUISE/TRACKING is permanently unreachable.
+        # Allow up to 5 nested retries (each tracking timeout burns 120s, so 5 × 120s = 10 min
+        # before giving up — enough for EKF to settle after a difficult reset).
         self._reset_depth += 1
-        if self._reset_depth > 2:
+        if self._reset_depth > 5:
             self._reset_depth = 0
             raise RuntimeError(
-                '[RL Env] reset() called recursively more than 2 times. '
+                '[RL Env] reset() called recursively more than 5 times. '
                 'Spin thread may be dead or infra is unrecoverable. Aborting.')
 
         # 1. Clear episode state
@@ -419,8 +446,32 @@ class DroneDropEnv(gym.Env):
         # 2. Kill previous episode processes.
         self._kill_episode()
 
+        # 2b. Force-disarm PX4 so the new drone_controller's 5s EKF warmup runs
+        #     from a freshly-armed state rather than carrying over armed+offboard.
+        self._node.send_disarm()
+        time.sleep(0.2)
+
         # 3. Reset drone to spawn position (fast teleport path — payload always attached).
         self._gz_reset_poses()
+
+        # 3b. Wait for PX4 EKF to reconverge to ground position after teleport.
+        #     EKF2 carries over cs_in_air=True from the previous episode after
+        #     teleport; PX4 refuses to arm (pre_flight_checks_pass=False) while
+        #     cs_in_air is True.  Actively poll until EKF reports cs_in_air=False
+        #     instead of using a fixed sleep, so fast resets don't waste time and
+        #     slow resets (large position delta) don't time out prematurely.
+        _ekf_settle_deadline = time.time() + 30.0
+        while time.time() < _ekf_settle_deadline:
+            with self._state_lock:
+                _in_air = self._node.ekf_in_air
+            if not _in_air:
+                break
+            time.sleep(0.5)
+        else:
+            self._node.get_logger().warn(
+                '[RL Env] EKF still reports cs_in_air=True after 30 s — '
+                'proceeding anyway; arming may be slow.'
+            )
 
         # 4. Start fresh episode processes
         self._start_episode()
@@ -454,6 +505,13 @@ class DroneDropEnv(gym.Env):
                 with self._state_lock:
                     self._node.mission_state = 'IDLE'
                 self._gz_reset_poses()   # teleport drone+payload to spawn
+                # Wait for EKF cs_in_air to clear (same logic as main reset path)
+                _t0 = time.time()
+                while time.time() - _t0 < 30.0:
+                    with self._state_lock:
+                        if not self._node.ekf_in_air:
+                            break
+                    time.sleep(0.5)
                 self._start_episode()
             else:
                 self._node.get_logger().warn(
@@ -475,7 +533,29 @@ class DroneDropEnv(gym.Env):
 
         self._reset_depth = 0  # success — clear depth counter
 
-        # 7. Seed d_xy_prev from the initial CRUISE position (no kinematic prediction)
+        # 7. Wait for TRACKING state — mission_manager transitions CRUISE→TRACKING on
+        #    first YOLO detection.  RL episode begins only once the marker is visible.
+        self._wait_for_tracking()
+        with self._state_lock:
+            _reached_tracking = (self._node.mission_state == 'TRACKING')
+        if not _reached_tracking:
+            self._node.get_logger().warn(
+                '[RL Env] TRACKING timeout — drone did not detect marker. '
+                'Full infra restart to get clean EKF, then retry.')
+            # After TRACKING timeout the drone may have been cruising far from spawn.
+            # EKF cannot reconverge via gz_reset_poses+sleep alone from a large position
+            # delta (10+ m).  Kill and respawn Gazebo+PX4 so EKF starts fresh at (0,0,0),
+            # avoiding the CRUISE-timeout cascade that follows a recursive reset() without
+            # a clean EKF.
+            self._kill_episode()
+            self._kill_infra()
+            self._obs_ready.clear()
+            with self._state_lock:
+                self._node.mission_state = 'IDLE'
+            self._start_infra()
+            return self.reset(seed=seed, options=options)
+
+        # 8. Seed d_xy_prev from the TRACKING position (drone has already cruised to marker).
         with self._state_lock:
             pos = self._node.pos_enu.copy()
         self.d_xy_prev = self._compute_d_xy(pos)
@@ -536,9 +616,29 @@ class DroneDropEnv(gym.Env):
                 'rew_ctrl': 0.0, 'rew_dist': 0.0, 'rew_orient': 0.0,
             }
 
+        # EKF drift guard: normal TRACKING entries are 3.2–3.8m; ≥5m means EKF
+        # diverged during CRUISE (physically elsewhere, camera will never see marker).
+        if self._step_count == 1 and d_xy > 5.0:
+            self._node.get_logger().warn(
+                f'[EKF Drift] d_xy={d_xy:.1f}m > 5.0m at step 1 — truncating drifted episode.')
+            reward = self._cfg_truncation_penalty
+            self._episode_reward += reward
+            return self._get_obs(), reward, False, True, {
+                'truncate_reason': 'ekf_drift',
+                'episode_reward': self._episode_reward,
+                'rew_ctrl': 0.0, 'rew_dist': 0.0, 'rew_orient': 0.0,
+            }
+
         terminated = False
         truncated = False
         info = {}
+
+        # Print once per episode when RL policy first sees the marker
+        if not self._rl_detection_printed and float(pix[2]) > 0.0:
+            self._rl_detection_printed = True
+            print(f'[YOLO] Marker visible in RL episode (step {self._step_count}) | '
+                  f'ENU: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}) | '
+                  f'd_xy: {d_xy:.1f} m | conf: {pix[2]:.2f}', flush=True)
 
         # ============================================================
         # Layers 1–3: Per-step reward
@@ -810,11 +910,25 @@ class DroneDropEnv(gym.Env):
             ['pgrep', '-f', 'bin/px4'], capture_output=True).returncode == 0
         if not (gz_up and px4_up):
             return False
-        # Check drone model exists in Gazebo (pre-spawned in world SDF)
-        result = subprocess.run(
-            ['gz', 'model', '--list'],
-            capture_output=True, text=True, timeout=5.0)
-        return self._model_name in result.stdout
+        # Check drone model exists in Gazebo (pre-spawned in world SDF).
+        # Catch TimeoutExpired: Gazebo can become sluggish after long runs and
+        # hang on this call.  Treat as unhealthy so the recovery path takes over
+        # instead of crashing the entire training process.
+        try:
+            result = subprocess.run(
+                ['gz', 'model', '--list'],
+                capture_output=True, text=True, timeout=5.0)
+            return self._model_name in result.stdout
+        except subprocess.TimeoutExpired:
+            if rclpy.ok():
+                self._node.get_logger().warning(
+                    '[RL Env] gz model --list timed out — treating infra as unhealthy')
+            return False
+        except Exception as exc:  # noqa: BLE001
+            if rclpy.ok():
+                self._node.get_logger().warning(
+                    f'[RL Env] _check_infra_healthy error: {exc!r} — treating as unhealthy')
+            return False
 
     def _spin_loop(self):
         """Resilient spin loop: catches exceptions and restarts rclpy.spin.
@@ -1035,6 +1149,21 @@ class DroneDropEnv(gym.Env):
             f'  gz_type_name: gz.msgs.Empty\n'
             f'  direction: ROS_TO_GZ\n'
         )
+        if self._cfg_use_vision:
+            bridge_cfg_content += (
+                f'\n'
+                f'- ros_topic_name: /camera/rgb/image_raw\n'
+                f'  gz_topic_name: /{self._drop_topic}/down_camera/image_raw\n'
+                f'  ros_type_name: sensor_msgs/msg/Image\n'
+                f'  gz_type_name: gz.msgs.Image\n'
+                f'  direction: GZ_TO_ROS\n'
+                f'\n'
+                f'- ros_topic_name: /camera/rgb/camera_info\n'
+                f'  gz_topic_name: /{self._drop_topic}/down_camera/camera_info\n'
+                f'  ros_type_name: sensor_msgs/msg/CameraInfo\n'
+                f'  gz_type_name: gz.msgs.CameraInfo\n'
+                f'  direction: GZ_TO_ROS\n'
+            )
         with open(bridge_cfg_path, 'w') as f:
             f.write(bridge_cfg_content)
         bridge = subprocess.Popen(
@@ -1045,6 +1174,21 @@ class DroneDropEnv(gym.Env):
             preexec_fn=os.setsid,
         )
         time.sleep(5)
+
+        # 2b. YOLO vision node — start alongside PX4 init so model loads during
+        #     the ~30s PX4 startup, ready by the time the drone takes off.
+        yolo_proc = None
+        if self._cfg_use_vision:
+            yolo_log = open(f'/tmp/yolo_{iid}.log', 'w')
+            yolo_proc = subprocess.Popen(
+                ['ros2', 'run', 'vision_detection', 'xmarker_detector',
+                 '--ros-args',
+                 '-p', 'inference_device:=cuda',
+                 '-p', 'inference_rate:=10.0'],
+                env=infra_env,
+                stdout=yolo_log, stderr=subprocess.STDOUT,
+                preexec_fn=os.setsid,
+            )
 
         # 3. PX4 SITL — connect to pre-spawned drone model via PX4_GZ_MODEL_NAME.
         #    Issue #014: drone is pre-spawned in world SDF (injected above)
@@ -1083,7 +1227,7 @@ class DroneDropEnv(gym.Env):
             preexec_fn=os.setsid,
         )
 
-        self._infra_procs = [p for p in [uxrce, gz, bridge, px4] if p is not None]
+        self._infra_procs = [p for p in [uxrce, gz, bridge, yolo_proc, px4] if p is not None]
         # Note: bridge is always non-None (per-instance); gz is None for iid > 0
 
         # Unpause Gazebo — must happen after PX4 process starts so PX4's
@@ -1331,3 +1475,45 @@ class DroneDropEnv(gym.Env):
         if rclpy.ok():
             self._node.get_logger().warning(
                 f'Timed out waiting for CRUISE state (got: {state})')
+
+    def _wait_for_tracking(self):
+        """Poll /mission/state until TRACKING or timeout.
+
+        Called after CRUISE is confirmed.  The mission_manager transitions
+        CRUISE→TRACKING automatically on the first YOLO detection, so this
+        simply waits for that to happen before handing control to the RL policy.
+
+        When TRACKING is first seen, immediately publish a zero-velocity hover
+        so the drone holds position while reset() finishes — otherwise the drone
+        drifts on its cruise momentum, loses the marker within ~1s, and reverts
+        to CRUISE before the RL episode can start.
+        """
+        deadline = time.time() + self._cfg_tracking_wait_timeout
+        state = 'CRUISE'
+        while time.time() < deadline:
+            if not self._spin_thread.is_alive():
+                if rclpy.ok():
+                    self._node.get_logger().error(
+                        '[RL Env] Spin thread died during _wait_for_tracking — aborting wait')
+                return
+            with self._state_lock:
+                state = self._node.mission_state
+            if state == 'TRACKING':
+                # Hold position so the drone doesn't drift off the marker before
+                # the RL policy takes over.
+                self._node.publish_velocity(0.0, 0.0, 0.0, 0.0)
+                with self._state_lock:
+                    pos = self._node.pos_enu.copy()
+                pix = self._node.pixel_coords.copy()
+                d_xy = self._compute_d_xy(pos)
+                print(f'[YOLO] CRUISE→TRACKING | '
+                      f'ENU:({pos[0]:.1f},{pos[1]:.1f},{pos[2]:.1f}) | '
+                      f'd_xy:{d_xy:.1f}m | '
+                      f'bbox_cx:{pix[0]:.0f} bbox_cy:{pix[1]:.0f} conf:{pix[2]:.2f} '
+                      f'(img center=320,240  cy>350=fwd cam  cy~240=down cam)',
+                      flush=True)
+                return
+            time.sleep(0.5)
+        if rclpy.ok():
+            self._node.get_logger().warning(
+                f'Timed out waiting for TRACKING state (got: {state})')

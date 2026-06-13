@@ -1,5 +1,5 @@
 training:
-  total_timesteps: 150000   # Round 1 — Issue #001+#002+#003+#006 동시 적용
+  total_timesteps: 300000   # v5: more steps — each episode resets after detection, not from scratch
   checkpoint_freq: 5000
   max_checkpoints_kept: 5
   checkpoint_dir: "/workspace/ros2_ws/rl_checkpoints"
@@ -20,7 +20,7 @@ sac:
   device: "cuda"
 
 environment:
-  target_enu_x: 11.0
+  target_enu_x: -11.0   # EKF East = -Gazebo_East. Marker at Gazebo East=11 → EKF_East=-11
   target_enu_y: 10.0
   pos_scale: 50.0
   vel_scale: 15.0
@@ -30,27 +30,28 @@ environment:
   action_vz_scale: 3.0
   action_yaw_scale: 1.0
   action_rate_limit: 0.2
-  max_steps: 800
+  max_steps: 400             # v5: drone starts near marker; 400 steps is enough
   min_altitude: 3.0
-  min_altitude_start_step: 1    # Issue #002: 10 → 1 (grace period 최소화)
-  ground_contact_altitude: 0.5  # Issue #002: 신규 — altitude < 0.5m → 무조건 crash
-  max_distance: 100.0           # Issue #002: 신규 — d_xy > 100m → out_of_range truncate
-  max_altitude: 25.0            # Round 2: 고도 상한 — 25m 초과 시 truncate
-  stagnation_window: 300        # vision-fix: 300 step 동안
-  stagnation_min_progress: 3.0  # vision-fix: d_xy 최소 3m 감소 필요
-  stagnation_start_step: 400    # vision-fix: step 400 이후부터 체크 (탐색 시간 확보)
+  min_altitude_start_step: 1
+  ground_contact_altitude: 0.5
+  max_distance: 100.0
+  max_altitude: 25.0
+  stagnation_window: 150     # v5: shorter window — drone already near target
+  stagnation_min_progress: 1.0  # v5: 3.0 → 1.0m (already close, small progress expected)
+  stagnation_start_step: 50     # v7: first check fires at step 200 (50+150 window); catches EKF-drifted episodes
   obs_wait_timeout: 0.02
-  cruise_poll_timeout: 60.0
+  cruise_poll_timeout: 120.0
+  tracking_wait_timeout: 60.0   # max wait for CRUISE→TRACKING; drone needs ~25s cruise before marker enters YOLO view
   use_vision: true
 
 reward:
   # --- Approach shaping ---
-  w_dist: 1.0
-  w_heading: 0.7
+  w_dist: 2.0      # v5: stronger GPS gradient (still useful for fine approach)
+  w_heading: 1.0   # v5: stronger heading alignment
   speed_gate_enabled: true
 
   # --- Vision centering ---
-  w_vision_center: 1.0          # reward for X marker at camera centre (0=edge, 1=centre)
+  w_vision_center: 1.5          # v5: boost vision centering (primary objective now)
 
   # --- Stability/efficiency ---
   w_time: 0.05
@@ -60,7 +61,7 @@ reward:
   # --- Layer 1 penalties ---
   penalty_crash: -50.0
   penalty_overspeed: -30.0
-  penalty_target_lost: -10.0
+  penalty_target_lost: -0.1     # v7: reduced further; camera FOV gap means lost is structural not behavioral
   penalty_out_of_range: -30.0
   penalty_max_altitude: -30.0
   penalty_stagnation: -15.0
@@ -74,7 +75,7 @@ reward:
 wandb:
   project: "drone-bombard-sac"
   entity: "nayoonho0922-seoul-national-university"
-  run_name: "rl_yolo_v2_proximity_fix"
-  tags: ["sac", "spot-vm", "l4-gpu", "round1"]
+  run_name: "rl_yolo_v7_drift_guard"
+  tags: ["sac", "spot-vm", "l4-gpu", "ekf-drift-guard", "proximity-2.5m", "penalty-0.1"]
   save_model_artifact: true
   log_freq: 1000
