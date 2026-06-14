@@ -45,9 +45,10 @@ POS_SCALE = 50.0
 VEL_SCALE = 15.0
 ANG_VEL_SCALE = math.pi
 
-TARGET_ENU_X = -11.0  # EKF East (= -Gazebo_East). Gazebo marker at East=11,
-                       # but PX4 SITL EKF East = -Gazebo_East, so target = -11.
-TARGET_ENU_Y = 10.0   # EKF North = Gazebo_North — unchanged
+TARGET_ENU_X = 11.0   # MEASURED 2026-06-14: PX4 EKF East = +Gazebo_East (NO reversal;
+                       # prior -Gazebo_East assumption was a misdiagnosis). pos_enu[0]
+                       # = PX4 East = Gazebo East, so marker East=11 → target +11.
+TARGET_ENU_Y = 10.0   # PX4 North = Gazebo North — unchanged
 
 
 def _load_config(config_path):

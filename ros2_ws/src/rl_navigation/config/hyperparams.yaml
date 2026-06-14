@@ -20,7 +20,7 @@ sac:
   device: "cuda"
 
 environment:
-  target_enu_x: -11.0   # EKF East = -Gazebo_East. Marker at Gazebo East=11 → EKF_East=-11
+  target_enu_x: 11.0    # MEASURED: PX4 East = +Gazebo East (no reversal). Marker Gazebo East=11 → target +11
   target_enu_y: 10.0
   pos_scale: 50.0
   vel_scale: 15.0
@@ -90,7 +90,7 @@ reward:
 wandb:
   project: "drone-bombard-sac"
   entity: "nayoonho0922-seoul-national-university"
-  run_name: "rl_yolo_v9c_fast"
-  tags: ["sac", "spot-vm", "l4-gpu", "ekf-drift-guard", "proximity-2.5m", "fast-reset", "prox-bonus", "no-orient", "no-target-lost", "yolo-hold-1s", "sim-2x", "cruise-to-20s", "resume-30k"]
+  run_name: "rl_yolo_v11_cam_fix"
+  tags: ["sac", "spot-vm", "l4-gpu", "east-sign-fix", "cam-pitch-down", "yolo-primary-trigger", "proximity-1.5m", "fresh-start", "prox-bonus", "no-orient", "no-target-lost", "yolo-hold-1s", "sim-2x"]
   save_model_artifact: true
   log_freq: 1000
