@@ -35,10 +35,15 @@ class XMarkerDetectorNode(Node):
                                    'drone_bombard_train2/weights/best.pt')
         if not self.has_parameter('inference_rate'):
             self.declare_parameter('inference_rate', 10.0)  # Hz
+        if not self.has_parameter('detection_hold_frames'):
+            # Hold last detection for this many frames after YOLO misses.
+            # At 10 Hz, 10 frames = 1 second of persistence.
+            self.declare_parameter('detection_hold_frames', 10)
 
         # Get parameters
         model_path = self.get_parameter('model_path').value
         inference_rate = self.get_parameter('inference_rate').value
+        self._hold_frames = int(self.get_parameter('detection_hold_frames').value)
 
         # Initialize CV Bridge
         self.bridge = CvBridge()
@@ -53,6 +58,12 @@ class XMarkerDetectorNode(Node):
         self.cy = None
         self.vehicle_position = None
         self.vehicle_heading = 0.0
+
+        # Temporal smoothing: hold last known detection for _hold_frames after a miss
+        self._last_bbox_cx = 0.0
+        self._last_bbox_cy = 0.0
+        self._last_conf = 0.0
+        self._hold_remaining = 0  # frames left to hold; 0 = no active hold
 
         # Load YOLO model
         self.get_logger().info(f'Loading YOLO model from: {model_path}')
@@ -389,11 +400,26 @@ class XMarkerDetectorNode(Node):
             # Publish pixel coordinates for mission_manager and rl_navigation.
             # z carries the detection confidence so receivers can distinguish
             # a real detection (z > 0) from "no target" (z == 0).
+            # Temporal smoothing: on a miss, hold the last known detection for
+            # _hold_frames frames so the RL policy gets a stable vision signal
+            # across brief non-detection gaps.
             pixel_coords_msg = Point()
             if detected:
-                pixel_coords_msg.x = float(bbox_center_x)  # u coordinate
-                pixel_coords_msg.y = float(bbox_center_y)  # v coordinate
-                pixel_coords_msg.z = float(confidence)     # > 0 means detected
+                # Fresh detection — update last-known and reset hold counter
+                self._last_bbox_cx = float(bbox_center_x)
+                self._last_bbox_cy = float(bbox_center_y)
+                self._last_conf = float(confidence)
+                self._hold_remaining = self._hold_frames
+                pixel_coords_msg.x = self._last_bbox_cx
+                pixel_coords_msg.y = self._last_bbox_cy
+                pixel_coords_msg.z = self._last_conf
+            elif self._hold_remaining > 0:
+                # No detection but still within hold window — republish last known
+                self._hold_remaining -= 1
+                pixel_coords_msg.x = self._last_bbox_cx
+                pixel_coords_msg.y = self._last_bbox_cy
+                pixel_coords_msg.z = self._last_conf
+            # else: hold expired → publish zeros (default Point = 0,0,0 = no target)
             self.pixel_coords_pub.publish(pixel_coords_msg)
 
             # Publish annotated image

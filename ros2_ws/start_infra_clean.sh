@@ -13,7 +13,7 @@ LOG=/tmp/infra_clean_start.log
 echo "[$(date)] Cleaning all infra processes..." > "$LOG"
 
 # 1. Kill everything by PID (not pattern to avoid self-kill)
-PIDS=$(ps aux | grep -v grep | grep -E 'gz sim|bin/px4|MicroXRCE|parameter_bridge|infra.launch|episode.launch|train_sac|drone_controller|mission_manager|drop_calculator|drone_drop_rl' | awk '{print $2}' | tr '\n' ' ')
+PIDS=$(ps aux | grep -v grep | grep -E 'gz sim|bin/px4|MicroXRCE|parameter_bridge|infra.launch|episode.launch|train_sac|drone_controller|mission_manager|drop_calculator|drone_drop_rl|xmarker_detector' | awk '{print $2}' | tr '\n' ' ')
 if [ -n "$PIDS" ]; then
     echo "Killing PIDs: $PIDS" | tee -a "$LOG"
     kill -9 $PIDS 2>/dev/null || true

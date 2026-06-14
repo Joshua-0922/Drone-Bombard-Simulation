@@ -337,6 +337,7 @@ class DroneDropEnv(gym.Env):
         self._cfg_sim_speed_factor = int(cfg_env.get('sim_speed_factor', 1))
         # use_vision=False: skip camera termination + synthesise conf=1.0 in obs
         self._cfg_use_vision = cfg_env.get('use_vision', True)
+        self._cfg_detection_hold_frames = cfg_env.get('detection_hold_frames', 10)
         # How long to wait (s) for the drone to detect the marker (CRUISE→TRACKING transition)
         # after takeoff before giving up and resetting the episode.
         self._cfg_tracking_wait_timeout = cfg_env.get('tracking_wait_timeout', 120.0)
@@ -345,6 +346,8 @@ class DroneDropEnv(gym.Env):
         r = cfg_reward
         self._cfg_w_dist = r.get('w_dist', 1.0)
         self._cfg_w_heading = r.get('w_heading', 0.7)
+        self._cfg_w_proximity = r.get('w_proximity', 0.0)
+        self._cfg_proximity_radius = r.get('proximity_radius', 5.0)
         self._cfg_w_time = r.get('w_time', 0.01)
         self._cfg_w_ang_vel = r.get('w_ang_vel', 0.05)
         self._cfg_w_action_smooth = r.get('w_action_smooth', 0.05)
@@ -360,6 +363,11 @@ class DroneDropEnv(gym.Env):
         self._cfg_penalty_out_of_range = r.get('penalty_out_of_range', -30.0)
         self._cfg_penalty_max_altitude = r.get('penalty_max_altitude', -30.0)
         self._cfg_penalty_stagnation = r.get('penalty_stagnation', -15.0)
+        self._cfg_success_radius = r.get('success_radius', 0.5)
+        self._cfg_reward_success = r.get('reward_success', 100.0)
+        self._cfg_overshoot_close_threshold = r.get('overshoot_close_threshold', 1.5)
+        self._cfg_overshoot_margin = r.get('overshoot_margin', 1.5)
+        self._cfg_penalty_overshoot = r.get('penalty_overshoot', -20.0)
         self._cfg_speed_gate = r.get('speed_gate_enabled', True)
 
         # obs[0-2]:  pos (ENU, normalised)
@@ -390,6 +398,7 @@ class DroneDropEnv(gym.Env):
 
         # --- Reset recursion guard ---
         self._reset_depth = 0
+        self._needs_infra_restart = False  # set by step() on EKF drift; triggers fast infra restart in reset()
 
         # --- Start ROS2 ---
         if not rclpy.ok():
@@ -424,10 +433,26 @@ class DroneDropEnv(gym.Env):
                 '[RL Env] reset() called recursively more than 5 times. '
                 'Spin thread may be dead or infra is unrecoverable. Aborting.')
 
+        # EKF drift fast path: skip the teleport+CRUISE retry cycle and go straight to
+        # a full infra restart.  EKF cannot reconverge from a large position delta via
+        # gz_reset_poses alone; killing Gazebo+PX4 is the only reliable fix.
+        if self._needs_infra_restart:
+            self._needs_infra_restart = False
+            self._node.get_logger().warn(
+                '[RL Env] EKF drift flag set — skipping CRUISE retries, doing full infra restart.')
+            self._kill_episode()
+            self._kill_infra()
+            self._obs_ready.clear()
+            with self._state_lock:
+                self._node.mission_state = 'IDLE'
+            self._start_infra()
+            return self.reset(seed=seed, options=options)
+
         # 1. Clear episode state
         self._step_count = 0
         self._episode_reward = 0.0
         self._d_xy_history = {}
+        self._d_xy_min = float('inf')
         self._obs_ready.clear()
         self.action_prev = np.zeros(4, dtype=np.float32)
 
@@ -484,6 +509,13 @@ class DroneDropEnv(gym.Env):
         #                  Used when infra itself is unhealthy or fast path failed.
         #    Retries up to 3 times before giving up; this episode is never
         #    returned to SB3 so the replay buffer stays clean.
+        # v9c-#1: fast-path (episode-only restart) REMOVED. It recovered only
+        # ~23% of CRUISE timeouts — the stale EKF after a teleport-only reset
+        # makes PX4 refuse to arm, so the drone never leaves TAKEOFF — and on the
+        # ~77% of failures it wasted a full cruise_poll_timeout before falling
+        # back to a full restart anyway. Going straight to a full infra restart
+        # on every CRUISE timeout is faster on stuck episodes; a fresh PX4
+        # reliably reconverges the EKF at (0,0,0) so arming succeeds first try.
         for _cruise_attempt in range(3):
             self._wait_for_cruise()
             with self._state_lock:
@@ -491,39 +523,16 @@ class DroneDropEnv(gym.Env):
             if _reached_cruise:
                 break
 
-            # Tiered recovery decision
-            _try_fast_path = (
-                _cruise_attempt == 0
-                and self._check_infra_healthy(self._instance_id)
-            )
-
-            if _try_fast_path:
-                self._node.get_logger().warn(
-                    f'[RL Env] CRUISE timeout (attempt {_cruise_attempt + 1}/3)'
-                    ' — episode-only restart (infra healthy, fast path)')
-                self._kill_episode()
-                with self._state_lock:
-                    self._node.mission_state = 'IDLE'
-                self._gz_reset_poses()   # teleport drone+payload to spawn
-                # Wait for EKF cs_in_air to clear (same logic as main reset path)
-                _t0 = time.time()
-                while time.time() - _t0 < 30.0:
-                    with self._state_lock:
-                        if not self._node.ekf_in_air:
-                            break
-                    time.sleep(0.5)
-                self._start_episode()
-            else:
-                self._node.get_logger().warn(
-                    f'[RL Env] CRUISE timeout (attempt {_cruise_attempt + 1}/3)'
-                    ' — full infra restart')
-                self._kill_episode()
-                self._kill_infra()
-                self._obs_ready.clear()  # ensure _start_infra() waits for fresh PX4 data
-                with self._state_lock:
-                    self._node.mission_state = 'IDLE'
-                self._start_infra()
-                self._start_episode()
+            self._node.get_logger().warn(
+                f'[RL Env] CRUISE timeout (attempt {_cruise_attempt + 1}/3)'
+                ' — full infra restart (fast path removed)')
+            self._kill_episode()
+            self._kill_infra()
+            self._obs_ready.clear()  # ensure _start_infra() waits for fresh PX4 data
+            with self._state_lock:
+                self._node.mission_state = 'IDLE'
+            self._start_infra()
+            self._start_episode()
         else:
             # All 3 attempts failed — attempt one full reset from scratch.
             # _reset_depth guard above prevents infinite recursion.
@@ -623,6 +632,7 @@ class DroneDropEnv(gym.Env):
                 f'[EKF Drift] d_xy={d_xy:.1f}m > 5.0m at step 1 — truncating drifted episode.')
             reward = self._cfg_truncation_penalty
             self._episode_reward += reward
+            self._needs_infra_restart = True  # EKF won't recover without a full infra restart
             return self._get_obs(), reward, False, True, {
                 'truncate_reason': 'ekf_drift',
                 'episode_reward': self._episode_reward,
@@ -645,6 +655,18 @@ class DroneDropEnv(gym.Env):
         # ============================================================
         reward, terminated, info = self._compute_reward(
             pos, vel, ang, pix, d_xy, action)
+
+        # --- Update closest approach tracker ---
+        self._d_xy_min = min(self._d_xy_min, d_xy)
+
+        # --- Option A: Success — drone directly overhead ---
+        if not terminated and d_xy <= self._cfg_success_radius:
+            reward += self._cfg_reward_success
+            terminated = True
+            info['success'] = True
+            info['truncate_reason'] = 'success'
+            self._node.get_logger().info(
+                f'[RL] SUCCESS: d_xy={d_xy:.2f}m <= {self._cfg_success_radius}m at step {self._step_count}')
 
         # --- Safety truncation decisions ---
         truncate_reason = None
@@ -676,7 +698,7 @@ class DroneDropEnv(gym.Env):
             truncated = True
             truncate_reason = 'max_altitude'
 
-        if not truncated:
+        if not truncated and not terminated:
             self._d_xy_history[self._step_count] = d_xy
             if self._step_count >= self._cfg_stagnation_start_step:
                 past_step = self._step_count - self._cfg_stagnation_window
@@ -686,6 +708,16 @@ class DroneDropEnv(gym.Env):
                         reward += self._cfg_penalty_stagnation
                         truncated = True
                         truncate_reason = 'stagnation'
+
+        # --- Option B: Overshoot — drone was close but flew past ---
+        # Fires when the drone got within overshoot_close_threshold metres at some
+        # point, then retreated more than overshoot_margin beyond that closest point.
+        if not truncated and not terminated:
+            if (self._d_xy_min < self._cfg_overshoot_close_threshold
+                    and d_xy > self._d_xy_min + self._cfg_overshoot_margin):
+                reward += self._cfg_penalty_overshoot
+                truncated = True
+                truncate_reason = 'overshoot'
 
         if truncate_reason:
             info['truncate_reason'] = truncate_reason
@@ -798,7 +830,8 @@ class DroneDropEnv(gym.Env):
         # ----------------------------------------------------------------
         # Layer 3 — Navigation + Vision Centering
         # R3 = w_dist * (d_prev - d_now)              ← GPS distance gradient
-        #      + w_heading * cos_heading * speed_gate  ← heading alignment
+        #      + w_heading * cos_heading * speed_gate  ← heading alignment (0 when w_heading=0)
+        #      + w_proximity * max(0, 1 - d_xy/r)     ← dense proximity bonus
         #      + w_vision_center * centering * conf    ← YOLO centering reward
         # ----------------------------------------------------------------
 
@@ -835,7 +868,9 @@ class DroneDropEnv(gym.Env):
         else:
             r3_vision = 0.0
 
-        r3 = r3_dist + r3_orient + r3_vision
+        r3_proximity = self._cfg_w_proximity * max(0.0, 1.0 - d_xy / self._cfg_proximity_radius)
+
+        r3 = r3_dist + r3_orient + r3_proximity + r3_vision
 
         # Advance d_xy_prev for next step
         self.d_xy_prev = d_xy
@@ -848,6 +883,7 @@ class DroneDropEnv(gym.Env):
         info['rew_ctrl'] = r2
         info['rew_dist'] = r3_dist
         info['rew_orient'] = r3_orient
+        info['rew_proximity'] = r3_proximity
         info['rew_vision'] = r3_vision
 
         return reward, False, info
@@ -1184,7 +1220,8 @@ class DroneDropEnv(gym.Env):
                 ['ros2', 'run', 'vision_detection', 'xmarker_detector',
                  '--ros-args',
                  '-p', 'inference_device:=cuda',
-                 '-p', 'inference_rate:=10.0'],
+                 '-p', 'inference_rate:=10.0',
+                 '-p', f'detection_hold_frames:={self._cfg_detection_hold_frames}'],
                 env=infra_env,
                 stdout=yolo_log, stderr=subprocess.STDOUT,
                 preexec_fn=os.setsid,

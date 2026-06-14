@@ -30,7 +30,7 @@ environment:
   action_vz_scale: 3.0
   action_yaw_scale: 1.0
   action_rate_limit: 0.2
-  max_steps: 400             # v5: drone starts near marker; 400 steps is enough
+  max_steps: 300             # v9: reduced from 400; cut timeout waste while keeping room to navigate
   min_altitude: 3.0
   min_altitude_start_step: 1
   ground_contact_altitude: 0.5
@@ -40,15 +40,21 @@ environment:
   stagnation_min_progress: 1.0  # v5: 3.0 → 1.0m (already close, small progress expected)
   stagnation_start_step: 50     # v7: first check fires at step 200 (50+150 window); catches EKF-drifted episodes
   obs_wait_timeout: 0.02
-  cruise_poll_timeout: 120.0
-  tracking_wait_timeout: 60.0   # max wait for CRUISE→TRACKING; drone needs ~25s cruise before marker enters YOLO view
+  cruise_poll_timeout: 20.0      # v9c: 40→20s. Healthy CRUISE reached in 10-15s (5-8s at 2x); 40s only wasted on stuck-takeoff (arm-reject) cases. Saves ~20s per CRUISE timeout (267 events in v9b)
+  tracking_wait_timeout: 20.0   # max observed CRUISE→TRACKING is 14.4s; 20s gives 5.6s margin
+  sim_speed_factor: 2            # v9c: 2x real-time. Speeds Gazebo+PX4 lockstep → compresses productive flight AND wait-loop milestones. DRY-TESTED for arming stability before full resume.
   use_vision: true
+  detection_hold_frames: 10     # hold last YOLO detection for N frames on miss (10 = 1s at 10Hz)
 
 reward:
   # --- Approach shaping ---
   w_dist: 2.0      # v5: stronger GPS gradient (still useful for fine approach)
-  w_heading: 1.0   # v5: stronger heading alignment
+  w_heading: 0.0   # v9: removed — geometric noise at d_xy<3m; obs[12-13] gives direction
   speed_gate_enabled: true
+
+  # --- Proximity bonus (dense positive signal for being near target) ---
+  w_proximity: 0.3              # v9: +0.30/step at d_xy=0m, +0.18/step at d_xy=2m, 0 at d_xy≥5m
+  proximity_radius: 5.0         # v9: gate radius in metres
 
   # --- Vision centering ---
   w_vision_center: 1.5          # v5: boost vision centering (primary objective now)
@@ -61,7 +67,7 @@ reward:
   # --- Layer 1 penalties ---
   penalty_crash: -50.0
   penalty_overspeed: -30.0
-  penalty_target_lost: -0.1     # v7: reduced further; camera FOV gap means lost is structural not behavioral
+  penalty_target_lost: 0.0      # v9: zeroed — YOLO conf=0.0 always; penalising every step is structural noise
   penalty_out_of_range: -30.0
   penalty_max_altitude: -30.0
   penalty_stagnation: -15.0
@@ -69,13 +75,22 @@ reward:
   limit_ang_vel: 2.0
   limit_tilt: 0.26
 
+  # --- Success termination ---
+  success_radius: 0.5           # metres - d_xy threshold for "directly overhead" success
+  reward_success: 100.0         # large terminal bonus for reaching the marker
+
+  # --- Overshoot termination ---
+  overshoot_close_threshold: 1.5  # must reach within this distance to arm the check
+  overshoot_margin: 1.5           # retreat beyond d_xy_min + this → truncate
+  penalty_overshoot: -20.0        # penalty for flying past and not recovering
+
   # --- Episode termination penalties ---
   truncation_penalty: -15.0
 
 wandb:
   project: "drone-bombard-sac"
   entity: "nayoonho0922-seoul-national-university"
-  run_name: "rl_yolo_v7_drift_guard"
-  tags: ["sac", "spot-vm", "l4-gpu", "ekf-drift-guard", "proximity-2.5m", "penalty-0.1"]
+  run_name: "rl_yolo_v9c_fast"
+  tags: ["sac", "spot-vm", "l4-gpu", "ekf-drift-guard", "proximity-2.5m", "fast-reset", "prox-bonus", "no-orient", "no-target-lost", "yolo-hold-1s", "sim-2x", "cruise-to-20s", "resume-30k"]
   save_model_artifact: true
   log_freq: 1000
