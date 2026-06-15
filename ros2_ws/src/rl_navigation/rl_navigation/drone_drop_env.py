@@ -32,6 +32,7 @@ try:
         VehicleAngularVelocity,
         VehicleAttitude,
         VehicleCommand,
+        VehicleStatus,
         EstimatorStatusFlags,
     )
     _PX4_AVAILABLE = True
@@ -76,6 +77,7 @@ class _RLBridgeNode(Node):
         self.pixel_coords = np.zeros(3, dtype=np.float32)   # u, v, conf
         self.mission_state = 'IDLE'
         self.ekf_in_air = True   # assume airborne until EKF says otherwise
+        self.armed = False       # PX4 arming_state == ARMED (for #4 early bail)
 
         # PX4 -i N publishes to /px4_N/fmu/out/* topics on the same
         # ROS_DOMAIN_ID.  Instance 0 (no -i flag) uses /fmu/out/*.
@@ -112,6 +114,12 @@ class _RLBridgeNode(Node):
                 EstimatorStatusFlags,
                 f'{pfx}/fmu/out/estimator_status_flags',
                 self._on_estimator_flags,
+                px4_qos,
+            )
+            self.create_subscription(
+                VehicleStatus,
+                f'{pfx}/fmu/out/vehicle_status',
+                self._on_vehicle_status,
                 px4_qos,
             )
         else:
@@ -213,6 +221,10 @@ class _RLBridgeNode(Node):
     def _on_estimator_flags(self, msg):
         with self._lock:
             self.ekf_in_air = msg.cs_in_air
+
+    def _on_vehicle_status(self, msg):
+        with self._lock:
+            self.armed = (msg.arming_state == 2)   # ARMING_STATE_ARMED
 
     # ------------------------------------------------------------------
     # Action helpers
@@ -335,6 +347,10 @@ class DroneDropEnv(gym.Env):
         self._cfg_stagnation_start_step = int(cfg_env.get('stagnation_start_step', 200))
         self._cfg_obs_wait = cfg_env.get('obs_wait_timeout', 0.15)
         self._cfg_cruise_timeout = cfg_env.get('cruise_poll_timeout', 60.0)
+        # #4: if PX4 has not armed within this window the takeoff is stuck on an
+        # arm rejection (stale EKF after teleport). Bail to a full infra restart
+        # immediately instead of waiting out the full cruise_poll_timeout.
+        self._cfg_arm_bail_timeout = cfg_env.get('arm_bail_timeout', 10.0)
         self._cfg_sim_speed_factor = int(cfg_env.get('sim_speed_factor', 1))
         # use_vision=False: skip camera termination + synthesise conf=1.0 in obs
         self._cfg_use_vision = cfg_env.get('use_vision', True)
@@ -1497,8 +1513,23 @@ class DroneDropEnv(gym.Env):
         time.sleep(5.0)
 
     def _wait_for_cruise(self):
-        """Poll /mission/state until CRUISE or timeout."""
+        """Poll /mission/state until CRUISE or timeout.
+
+        #4: also bail early if PX4 never arms within arm_bail_timeout. ~28% of
+        takeoffs get stuck because PX4 rejects the arm (stale EKF after the
+        teleport reset) and the drone never leaves the ground; waiting out the
+        full cruise_poll_timeout on those is pure wasted wall-clock. A fresh
+        infra restart (which the caller does on bail) reliably re-arms.
+        """
         deadline = time.time() + self._cfg_cruise_timeout
+        arm_deadline = time.time() + self._cfg_arm_bail_timeout
+        # Reset baseline: only a fresh ARMED status from this episode's PX4
+        # should count (avoids a stale armed=True carrying over from the prior
+        # episode and suppressing the bail).
+        with self._state_lock:
+            self._node.armed = False
+        armed_seen = False
+        state = 'IDLE'
         while time.time() < deadline:
             if not self._spin_thread.is_alive():
                 if rclpy.ok():
@@ -1507,8 +1538,17 @@ class DroneDropEnv(gym.Env):
                 return  # caller will detect mission_state != 'CRUISE' and retry
             with self._state_lock:
                 state = self._node.mission_state
+                armed = self._node.armed
             if state == 'CRUISE':
                 return
+            if armed:
+                armed_seen = True
+            if not armed_seen and time.time() > arm_deadline:
+                if rclpy.ok():
+                    self._node.get_logger().warning(
+                        f'[RL Env] PX4 not armed after {self._cfg_arm_bail_timeout:.0f}s '
+                        '— arm-reject suspected; bailing early for infra restart.')
+                return  # caller detects mission_state != 'CRUISE' and restarts
             time.sleep(0.5)
         if rclpy.ok():
             self._node.get_logger().warning(

@@ -5,7 +5,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 # ROS 2 메시지
 from geometry_msgs.msg import Twist, Vector3
 # PX4 메시지
-from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleStatus
+from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleStatus, VehicleCommandAck
 
 class DroneControllerNode(Node):
     def __init__(self):
@@ -49,6 +49,13 @@ class DroneControllerNode(Node):
             VehicleStatus, '/fmu/out/vehicle_status',
             self.vehicle_status_callback, sub_qos)
 
+        # #3: ack stream — lets us log *why* PX4 rejected an arm command
+        # (the stuck-TAKEOFF / CRUISE-timeout cases) instead of silently
+        # re-spamming the arm request with no diagnostic.
+        self.command_ack_sub = self.create_subscription(
+            VehicleCommandAck, '/fmu/out/vehicle_command_ack',
+            self.command_ack_callback, sub_qos)
+
         # --- [4] 내부 변수 ---
         self.control_mode = "POSITION"
 
@@ -59,6 +66,7 @@ class DroneControllerNode(Node):
         self.vehicle_status = VehicleStatus()
         self.offboard_set_counter = 0
         self.px4_connected = False  # True after first vehicle_status received
+        self._preflight_warned = False  # throttle "waiting on pre-flight" log to once
 
         # --- [5] Main Loop (20Hz) ---
         self.timer = self.create_timer(0.05, self.cmdloop_callback)
@@ -81,6 +89,25 @@ class DroneControllerNode(Node):
             self.get_logger().info("PX4 connected — vehicle_status received.")
         self.px4_connected = True
         self.vehicle_status = msg
+
+    def command_ack_callback(self, msg):
+        # #3: surface PX4's reason for rejecting an arm command. Without this
+        # the controller just re-spams "Arming Drone" with no clue why the
+        # drone never leaves TAKEOFF.
+        if msg.command != VehicleCommand.VEHICLE_CMD_COMPONENT_ARM_DISARM:
+            return
+        if msg.result == VehicleCommandAck.VEHICLE_CMD_RESULT_ACCEPTED:
+            return
+        reason = {
+            VehicleCommandAck.VEHICLE_CMD_RESULT_TEMPORARILY_REJECTED: 'TEMPORARILY_REJECTED',
+            VehicleCommandAck.VEHICLE_CMD_RESULT_DENIED: 'DENIED',
+            VehicleCommandAck.VEHICLE_CMD_RESULT_UNSUPPORTED: 'UNSUPPORTED',
+            VehicleCommandAck.VEHICLE_CMD_RESULT_FAILED: 'FAILED',
+        }.get(msg.result, f'result={msg.result}')
+        self.get_logger().warn(
+            f'ARM REJECTED by PX4: {reason} '
+            f'(pre_flight_checks_pass={self.vehicle_status.pre_flight_checks_pass}, '
+            f'nav_state={self.vehicle_status.nav_state}, failsafe={self.vehicle_status.failsafe})')
 
     def cmdloop_callback(self):
         self.publish_offboard_control_mode()
@@ -108,10 +135,22 @@ class DroneControllerNode(Node):
         # before EKF converges causes NaN velocity → 'Failsafe: blind land' →
         # NaN motor commands → Gazebo ODE AABB integer overflow → Gazebo crash.
         # At 20 Hz, 100 ticks = 5 s.  Arm retry every 2 s (40 ticks) thereafter.
+        #
+        # #2: the fixed 5 s warmup is necessary but NOT sufficient — after the
+        # teleport reset the EKF often needs longer to reconverge, and arming
+        # before pre_flight_checks_pass is set is rejected by PX4 (the dominant
+        # cause of stuck-TAKEOFF / CRUISE timeouts). Gate the arm on PX4's own
+        # arm-readiness flag instead of blindly spamming the request.
         warmup_ticks = 100
         if self.offboard_set_counter >= warmup_ticks and self.offboard_set_counter % 40 == 0:
             if not already_armed:
-                self.arm()
+                if self.vehicle_status.pre_flight_checks_pass:
+                    self.arm()
+                elif not self._preflight_warned:
+                    self._preflight_warned = True
+                    self.get_logger().warn(
+                        'Delaying arm — PX4 pre_flight_checks_pass=False '
+                        '(EKF not yet reconverged after reset).')
         if self.offboard_set_counter % 10 == 0:
             if not in_offboard:
                 self.engage_offboard_mode()

@@ -127,6 +127,34 @@ if 'd_xy' in info:
 
 ---
 
+## Rule 8 — Arming 게이팅 & Stuck-Takeoff Early-Bail (Throughput)
+
+> **상세 분석:** [[research/cruise_timeout_arming]] / [[errors/err_20260615_cruise-timeout-arming]]
+
+CRUISE 타임아웃은 "느린 비행"이 아니라 **arming-rejection** 문제. teleport
+(`gz_reset_poses`) 직후 stale EKF → `pre_flight_checks_pass=False` → PX4 arm 거부.
+
+**필수 규칙:**
+- **arm은 `vehicle_status.pre_flight_checks_pass=True`일 때만.** 고정 warmup 후 무조건 스팸 금지.
+- arm 거부 사유는 `/fmu/out/vehicle_command_ack`로 로깅 (`ARM REJECTED by PX4: <reason>`).
+- TAKEOFF 고착 시 cruise 타임아웃을 끝까지 기다리지 말 것. `arm_bail_timeout=10.0s`
+  내 arm 안 되면 즉시 full infra restart (fresh restart는 다음 시도에서 항상 EKF 재수렴).
+- **타임아웃 *값* 낮추기는 no-op** — 진짜 레버는 타임아웃 *횟수* 감소.
+- ⚠️ `cruise_poll_timeout` 기본값(`cfg_env.get(..., 60.0)`)을 실제 설정값으로 오독 주의.
+
+---
+
+## Rule 9 — Episode 종료가 빠를 때 `ep_rew_mean` 해석
+
+드론이 마커에 빨리 도달하면 `ep_len`이 붕괴(예: 151→36.5)하여 SB3
+`rollout/ep_rew_mean`이 *하락*하는 **착시**가 생긴다 (v11: 70→48).
+
+- **per-episode `env/ep_reward`를 진짜 신호로 사용** (v11: 20→54 상승).
+- `ep_len`과 함께 해석. `ep_len` 급감 + per-episode 보상 상승 = **개선 중**.
+- 보조 지표: `ep_best_d_xy`, `reached_close`(≤3m) 비율, success(d_xy≤0.5m) 수.
+
+---
+
 > **Phase 1 전체 계획:** [[research/phase1_plan]] — CCIP 기반 자율 접근, 8주, 14개 실험
 
 ---
@@ -137,8 +165,9 @@ if 'd_xy' in info:
 |------|------|------|
 | `mean_rew_dist = 0` | 지수 포텐셜 포화 (k1 너무 큼) | 선형 보상 사용; $e^{-k_1 d_{max}} > 10^{-6}$ 확인 |
 | `mean_d_xy` → 1e11 | Gazebo ODE 물리 폭발 | 3중 방어 레이어 → [[errors/err_20260320_physics_explosion]] |
-| CRUISE 타임아웃 | PX4 arm race / 드론 뒤집힘 | `reset()` 1회 재시도; 10에피소드당 >1회면 조사 |
-| `ep_rew_mean` 나선형 하락 | CRUISE 타임아웃 → 크래시 페널티 에피소드 버퍼 오염 | CRUISE 타임아웃 근본 원인 수정; fps 하락 확인 |
+| CRUISE 타임아웃 (28% NEVER ARMED) | teleport 후 stale EKF → `pre_flight_checks_pass=False` → PX4 arm 거부 | pre_flight_checks_pass 게이팅 + `arm_bail_timeout=10s` early-bail → [[research/cruise_timeout_arming]] (Rule 8) |
+| `ep_rew_mean` 나선형 하락 | (1) CRUISE 타임아웃 버퍼 오염 **또는** (2) ep_len 붕괴 착시 (도달 빨라짐) | 근본 원인 수정; per-episode `env/ep_reward`로 진짜 신호 판정 (Rule 9) |
+| **YOLO `target_lost_rate` ~29% bimodal (악화 중)** ⚠️ OPEN | per-step YOLO 트리거가 에피소드별 전부-탐지(rate=0, 70.7%) 또는 전무-탐지(rate=1, 29.3%)로 분리; partial 0%. 추세 0.24→0.35 | **미해결.** ~29% step에서 obs[9-11] zeroed + `-10` 페널티. 별도 처리 필요 → [[experiments/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]] |
 | fps 급감 | CRUISE 타임아웃 (65 s 대기) 또는 ODE 크래시 | 로그에서 "Timed out waiting for CRUISE" 확인 |
 | **드론이 마커 거울상으로 비행** (East 부호 반전) | East 타겟이 -11(거울)로 설정됨. PX4 East = +Gazebo_East (반전 없음)인데 반전 가정함 | `target_ned_y=+11`, `cruise_speed_y=-1`, `target_enu_x=+11`. ⚠️ d_xy 로그는 거울상 자기일치로 속임 → `gz model -p` ground-truth 검증 필수. 상세: [[coordinate-frames]] / [[research/ekf_east_reversal]] (06-12 진단 RETRACTED) |
 | YOLO 탐지 무효 (silent) | ultralytics Boxes boolean 인덱싱 silent fail | `detections[:0]` 정수 슬라이스로 대체 |

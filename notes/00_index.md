@@ -12,15 +12,16 @@ type: index
 
 ---
 
-## 현재 상태 (2026-06-12)
+## 현재 상태 (2026-06-15)
 
 - **알고리즘:** SAC, `net_arch=[256,256]`, L4 GPU
-- **현재 학습:** `rl_yolo_debug` (WandB: `esmtny0a`) — 2026-06-12 04:28 시작, 128+ 에피소드
+- **현재 학습:** `rl_yolo_v12_arm_fix` — 2026-06-15 기동, 500K 목표 (`/workspace/train_v12.log`)
 - **방식:** Vision 기반 — YOLO X마커 탐지 → TRACKING, RL이 시각 서보잉 학습
-- **주요 버그 수정 (2026-06-12):**
-  - `_target_ned = [10, -11]` (EKF East 반전 보정, 기존 [10,11] 오류)
-  - YOLO 이중 노드 제거, conf 필터 + 공간 필터 추가
-  - Proximity 작동 확인: `d_xy=3.9m ≤ 4m` ✅
+- **이번 세션 (2026-06-15) — Arming throughput fix:**
+  - 선행 `rl_yolo_v11_cam_fix`(k1uqgs8i): 학습 개선 중(env/ep_reward 20→54, 404 successes)이나 443 CRUISE 타임아웃으로 ~5.5h 낭비
+  - 근본 원인: teleport 후 stale EKF → PX4 arm 거부 (28.2% NEVER ARMED) → [[research/cruise_timeout_arming]]
+  - 수정 3종: arm_ack 로깅(#3), `pre_flight_checks_pass` 게이팅(#2), `arm_bail_timeout=10s` early-bail(#4)
+  - ⚠️ **OPEN:** YOLO `target_lost_rate` ~29% bimodal, 악화 중 — 미해결
 - **Phase 1 계획:** CCIP 기반 자율 접근 비행 제어기 → [[research/phase1_plan]]
 
 ---
@@ -32,12 +33,14 @@ type: index
 | 001 | 8otphxy8 | 114K | ✅ 완료 | 선형 보상 + CRUISE retry |
 | 002 | — | 0 | ✅ 완료 | 보상 패치 적용 (학습 없음) |
 | 003 (dry-run) | mtx7ud6o/x8jq9fsy/u8w3xn0w | 5500×3 | ✅ 완료 | RTF 1/2/4 비교 → RTF=2 최적 |
-| 004 | esmtny0a | 33K+ | 🔄 진행 중 | Vision YOLO 접근 + EKF East 버그 수정 → [[experiments/exp_004_rl_yolo_debug_vision]] |
+| 004 | esmtny0a | 33K+ | ✅ 폐기 | Vision YOLO 접근 + EKF East 버그 수정 → [[experiments/exp_004_rl_yolo_debug_vision]] |
+| 005 | rl_yolo_v12_arm_fix | 0→500K | 🔄 진행 중 | Arming-rejection throughput fix (선행 v11 k1uqgs8i 분석) → [[experiments/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]] |
 
 ## 에러 현황
 
 | 파일 | 상태 | 요약 |
 |------|------|------|
+| [[errors/err_20260615_cruise-timeout-arming]] | ✅ 해결 | CRUISE 타임아웃 = teleport 후 PX4 arm 거부 (stale EKF) |
 | [[errors/err_20260320_physics_explosion]] | ✅ 해결 | ODE 물리 폭발 3중 방어 |
 | [[errors/err_20260319_ode_aabb_crash]] | ✅ 해결 | 드론 스폰 고도 ODE AABB 크래시 |
 
@@ -79,14 +82,18 @@ type: index
 - [[research/rl_rules]] — RL 실험 규칙, WandB 메트릭, Known Failure Modes
 - [[research/ekf_east_reversal]] — ⚠️ RETRACTED: "EKF East 반전"은 오진이었음 (실제 PX4 East=+Gazebo East). 정정: [[coordinate-frames]] / [[daily/daily_2026-06-14]]
 - [[research/rtf_fps_analysis]] — RTF vs FPS 분석. RTF=2 최적, Python 루프 병목 규명
+- [[research/cruise_timeout_arming]] — CRUISE 타임아웃 근본 원인 = teleport 후 stale EKF arm 거부. arm 게이팅 + early-bail 수정.
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
 - [[experiments/exp_001_8otphxy8_linear_reward]] — 선형 거리 보상 + CRUISE retry
 - [[experiments/exp_002_reward_shaping_patches]] — 보상 패치 Fresh Training (대기 중)
 - [[experiments/exp_003_rtf_dryrun]] — RTF 1/2/4 dry-run 비교. RTF=2 최적 확정.
+- [[experiments/exp_004_rl_yolo_debug_vision]] — Vision YOLO TRACKING + EKF East 좌표 버그 수정.
+- [[experiments/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]] — Arming-rejection throughput fix. v11 분석 + 수정 3종 + dry-run 검증.
 
 ### 에러 (errors/)
+- [[errors/err_20260615_cruise-timeout-arming]] — CRUISE 타임아웃 = teleport 후 PX4 arm 거부 (stale EKF). arm 게이팅 + early-bail.
 - [[errors/err_20260320_physics_explosion]] — Gazebo ODE 물리 폭발 3중 방어
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 

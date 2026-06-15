@@ -41,6 +41,7 @@ environment:
   stagnation_start_step: 50     # v7: first check fires at step 200 (50+150 window); catches EKF-drifted episodes
   obs_wait_timeout: 0.02
   cruise_poll_timeout: 20.0      # v9c: 40→20s. Healthy CRUISE reached in 10-15s (5-8s at 2x); 40s only wasted on stuck-takeoff (arm-reject) cases. Saves ~20s per CRUISE timeout (267 events in v9b)
+  arm_bail_timeout: 10.0         # v11-cam: #4 early-bail. PX4 arms in ~3-5s (from _wait_for_cruise start) when healthy; if not armed by 10s the takeoff is stuck on arm-reject (stale EKF) → bail to infra restart instead of waiting out cruise_poll_timeout
   tracking_wait_timeout: 20.0   # max observed CRUISE→TRACKING is 14.4s; 20s gives 5.6s margin
   sim_speed_factor: 2            # v9c: 2x real-time. Speeds Gazebo+PX4 lockstep → compresses productive flight AND wait-loop milestones. DRY-TESTED for arming stability before full resume.
   use_vision: true
@@ -90,7 +91,7 @@ reward:
 wandb:
   project: "drone-bombard-sac"
   entity: "nayoonho0922-seoul-national-university"
-  run_name: "rl_yolo_v11_cam_fix"
+  run_name: "rl_yolo_v12_arm_fix"
   tags: ["sac", "spot-vm", "l4-gpu", "east-sign-fix", "cam-pitch-down", "yolo-primary-trigger", "proximity-1.5m", "fresh-start", "prox-bonus", "no-orient", "no-target-lost", "yolo-hold-1s", "sim-2x"]
   save_model_artifact: true
   log_freq: 1000

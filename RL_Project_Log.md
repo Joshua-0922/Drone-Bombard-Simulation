@@ -6,7 +6,25 @@
 
 # 1. Current State
 
-**업데이트:** 2026-06-13
+**업데이트:** 2026-06-15
+
+### 활성 학습
+
+| 항목 | 값 |
+|------|-----|
+| Run name | `rl_yolo_v12_arm_fix` |
+| 로그 | `/workspace/train_v12.log` |
+| Timesteps | 500,000 |
+| 신규 config | `arm_bail_timeout: 10.0` |
+| 초점 | Arming-rejection throughput fix (CRUISE 타임아웃 제거) |
+| ⚠️ OPEN 이슈 | YOLO `target_lost_rate` ~29% bimodal, 악화 중 — 미해결 |
+
+선행 분석: `rl_yolo_v11_cam_fix`(k1uqgs8i) ~42K/500K(17.6h). 학습은 개선 중
+(env/ep_reward 20→54, reached_close 93%, 404 successes)이었으나 443 CRUISE
+타임아웃(28.2% NEVER ARMED)으로 ~5.5h wall-clock 낭비 → 중단 후 수정.
+근본 원인/수정: [[research/cruise_timeout_arming]] / [[experiments/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]].
+
+
 
 ### 활성 보상 공식 (2026-03-22 패치, 미적용)
 
@@ -38,6 +56,7 @@
 
 # 2. Recent Progress
 
+- **2026-06-15:** **Arming-rejection throughput fix.** `rl_yolo_v11_cam_fix`(k1uqgs8i) 분석 → 443 CRUISE 타임아웃의 근본 원인이 teleport 후 stale EKF arm 거부(28.2% NEVER ARMED, 전부 attempt 1/3)임을 규명. 수정 3종 적용: (#3) `/fmu/out/vehicle_command_ack` arm 거부 사유 로깅, (#2) `pre_flight_checks_pass` 게이팅, (#4) `arm_bail_timeout=10s` early-bail → 즉시 full infra restart. colcon build clean + dry-run(400 step, 0 타임아웃) 검증 후 fresh run `rl_yolo_v12_arm_fix`(500K) 기동. ⚠️ 정정: `cruise_poll_timeout`은 이미 20.0s(이전 "60s"는 fallback 기본값 오독). ⚠️ OPEN: YOLO target_lost_rate ~29% bimodal 미해결. → [[experiments/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]]
 - **2026-06-13:** v7 패치 적용 후 fresh run `rl_yolo_v7_drift_guard` (WandB: `7lhjy40o`) 시작. EKF drift guard (step1 d_xy>5m→truncate), proximity 4m→2.5m, penalty_target_lost -0.5→-0.1, stagnation_start_step 400→50.
 - **2026-06-12:** Vision 기반 RL 학습 인프라 완성. EKF East 반전 버그 2종 수정. fresh run `rl_yolo` (WandB: `45l8vkw5`) 121K steps. **분석: target_lost_rate=1.0 원인 = EKF drift (dominant) + 카메라 FOV gap 3차진 이후 2.89m vs 시작 d_xy 3.5m).** run 폐기.
 - **2026-04-16:** RTF dry-run 3종 완료 (RTF 1/2/4). **RTF=2 최적** (avg 59.5 fps, 61s/4Kstep). RTF=4는 Python 병목으로 역전. Exp 002 RTF=2로 결정.
@@ -56,7 +75,9 @@
 - [x] **EKF East 반전 버그 수정** — proximity target + RL env reward target 좌표 수정
 - [x] **WandB `45l8vkw5` 100+ 에피소드 분석** → target_lost=1.0, EKF drift 확인 → 폐기
 - [x] **EKF drift 방어 로직** — step 1에서 d_xy>5m이면 즉시 truncate (ekf_drift)
-- [ ] **fps=2 개선** — CRUISE timeout으로 인한 full infra restart 줄이기
+- [x] **fps 개선 — CRUISE 타임아웃 근본 원인 수정** — arm 게이팅(#2) + early-bail(#4). v12에서 효과 검증 중 → [[research/cruise_timeout_arming]]
+- [ ] **v12 검증** — #3 arm 거부 사유 로그 확인, NEVER ARMED 28.2% 감소 여부, wall-clock fps 확인
+- [ ] **⚠️ YOLO target_lost_rate ~29% bimodal 해결** — per-step 트리거가 전부/전무로 분리(악화 0.24→0.35). obs[9-11] zeroed + `-10` 페널티. 미해결 (이번 세션 범위 밖)
 - [ ] **PX4 로그 /dev/null 리다이렉트** — `/tmp/px4_{i}.log` 100+ MB 증가 방지
 
 ---
@@ -76,3 +97,5 @@
 | 2026-06-12 | esmtny0a | 33K | Vision SAC. proximity 버그로 128ep stagnation. 폐기. |
 | 2026-06-12 | 45l8vkw5 | 121K | rl_yolo. target_lost=1.0 전구간. 원인: EKF drift + FOV gap. 폐기. |
 | 2026-06-13 | 7lhjy40o | 진행 중 | rl_yolo_v7_drift_guard. EKF drift guard + proximity 2.5m + penalty_lost=-0.1. |
+| 2026-06-14 | k1uqgs8i | ~42K | rl_yolo_v11_cam_fix. 학습 개선(env/ep_reward 20→54, 404 successes)이나 443 CRUISE 타임아웃으로 중단. |
+| 2026-06-15 | rl_yolo_v12_arm_fix | 진행 중 | Arming-rejection throughput fix (arm 게이팅 + early-bail). dry-run 0 타임아웃 검증 후 fresh 기동. |
