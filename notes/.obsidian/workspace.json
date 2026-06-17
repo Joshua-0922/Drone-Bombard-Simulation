@@ -181,18 +181,20 @@
   },
   "active": "cf950e8e9ffcc7ba",
   "lastOpenFiles": [
+    "daily/daily_2026-06-17.md.tmp.871113.40104fe5a399",
+    "00_index.md.tmp.871113.fc005b5c82e5",
+    "00_index.md.tmp.871113.44f5db63c799",
+    "00_index.md.tmp.871113.5730d03cdf47",
+    "00_index.md.tmp.871113.8172a9630502",
+    "00_index.md.tmp.871113.789948494f54",
+    "experiments/training_history.md.tmp.871113.90c05b434747",
+    "experiments/exp_006_xgzum51v_armdiag_dryrun.md.tmp.871113.94c36cb6a1db",
+    "errors/err_20260617_dryrun_clobbered_v13_checkpoints.md",
+    "errors/err_20260617_dryrun_clobbered_v13_checkpoints.md.tmp.871113.a4f55f46328c",
     "daily/daily_2026-06-17.md",
     "daily/daily_2026-06-17.md.tmp.871113.9ee62ff33411",
     "00_index.md.tmp.871113.93747ca8c2b3",
-    "00_index.md.tmp.871113.7249886ab611",
-    "00_index.md.tmp.871113.f781543cabfd",
-    "00_index.md.tmp.871113.28d2089bc90e",
-    "experiments/training_history.md.tmp.871113.fa579e9afd8c",
-    "research/rl_rules.md.tmp.871113.c486601665ac",
-    "research/rl_rules.md.tmp.871113.be5f1e07aee7",
-    "research/cruise_timeout_arming.md.tmp.871113.f00974764bae",
     "experiments/exp_006_xgzum51v_armdiag_dryrun.md",
-    "experiments/exp_006_xgzum51v_armdiag_dryrun.md.tmp.871113.f31f82eb524a",
     "daily/daily_2026-06-16.md",
     "research/terminal_overshoot_trap.md",
     "errors/err_20260615_cruise-timeout-arming.md",
@@ -215,8 +217,6 @@
     "sessions/session_2026-04-16.md",
     "experiments/exp_003_rtf_dryrun.md",
     "experiments/exp_002_reward_shaping_patches.md",
-    "sessions/commands.md",
-    "00_index.md",
-    "research/system_overview.md"
+    "sessions/commands.md"
   ]
 }

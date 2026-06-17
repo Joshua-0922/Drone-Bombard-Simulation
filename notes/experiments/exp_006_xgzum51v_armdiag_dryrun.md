@@ -64,8 +64,24 @@ v12(722737a)는 `arm-reject`를 진단하고 ① `pre_flight_checks_pass` 게이
 - `hyperparams_v13.yaml`: **`arm_bail_timeout: 10.0 → 20.0`** (관측 최댓값 15.7s + 마진; 진짜 죽은 인프라는 여전히 20s에 fast-fail).
 - → [[research/cruise_timeout_arming]] 업데이트, [[research/rl_rules]] Rule 11 추가.
 
+## 프로덕션 검증 (fresh 재시작 iyhfy5ps, arm_bail=20)
+
+fix 적용 후 v13 fresh 재기동(`iyhfy5ps`). 초기 윈도우(7 infra starts, ~374 steps) 계측:
+
+- **bails: 0** / SUCCESS: 3 / TRACKING t/o: 0
+- PREFLIGHT-PASS 분포: **0.0s ×7**, **14.1s / 14.8s / 15.5s ×각1** — late cohort 3건 *전부 회복*.
+- 즉 구 10s 컷이었다면 30%(3/10) resets가 bail→full restart였을 것. 20s에서 **0 bail**. max 15.5s(dry-run 15.7s와 일치, 20s 마진 충분).
+
+→ **fix가 프로덕션에서 작동 확인.**
+
+## ⚠️ 인시던트 — 이 dry-run이 v13 30K 체크포인트를 파괴
+
+격리 설정(`checkpoint_dir: armdiag_dryrun`)이 **YAML 중복 키**로 무효화되어 dry-run이 메인 dir에서 실행 → startup에서 v13 주기 체크포인트 5개(10K–30K) 삭제 + SIGTERM이 preempt를 599-step으로 덮음. **v13 30K 디스크 복구 불가.** 상세·재발방지: [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]].
+
+- 결과: 30K 재개 **불가** → fix(arm_bail=20) 적용 후 **fresh 재시작**(iyhfy5ps, 0→500K).
+
 ## 미해결 / 다음
 
-- v13 본학습은 30K 체크포인트(`sac_drop_30000_steps.zip`) + 리플레이(`sac_drop_preempt_replay.pkl`, 06-17 11:52)로 **재개 가능** (arm_bail은 보상식이 아니므로 Fresh Start 불필요 — Rule 4 해당 없음).
+- v13 fresh 재학습(iyhfy5ps) 진행 중. 첫 롤아웃 후 success_rate + ep_len/env/ep_reward 추세 점검.
 - OPEN: late cohort의 13–16s 재수렴 자체를 줄이려면 teleport reset이 EKF를 덜 흔들게 해야 함(원인 미해결, 별도 과제).
 - OPEN: YOLO target_lost ~29% (무관, 지속).

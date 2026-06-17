@@ -23,10 +23,12 @@
 training:
   total_timesteps: 300000   # CLI --timesteps overrides; v12 ran 500K
   # armdiag dry-run: isolated checkpoint dir so it cannot touch v13's checkpoints/replay.
+  # ⚠️ INCIDENT 06-17: 원래 이 파일에 checkpoint_dir가 중복(여기 + 아래 main)으로 있었고
+  # YAML last-key-wins로 main이 이김 → dry-run이 v13 30K 체크포인트 삭제. 단일 키로 수정함.
+  # → [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]]
   checkpoint_dir: "/workspace/ros2_ws/rl_checkpoints/armdiag_dryrun"
   checkpoint_freq: 5000
   max_checkpoints_kept: 5
-  checkpoint_dir: "/workspace/ros2_ws/rl_checkpoints"
   num_envs: 1
   env_stagger_secs: 10
   eval_freq: 10000

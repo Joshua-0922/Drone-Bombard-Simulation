@@ -15,7 +15,7 @@ type: index
 ## 현재 상태 (2026-06-17)
 
 - **알고리즘:** SAC, `net_arch=[256,256]`, L4 GPU
-- **현재 학습:** `rl_yolo_v13_terminal_reward` **중단됨 @30K** (처리량 진단 위해) — 재개 대기
+- **현재 학습:** `rl_yolo_v13_terminal_reward` (**iyhfy5ps, fresh 재시작 0→500K, arm_bail=20**)
 - **이번 세션 (2026-06-17) — v13 처리량 병목 진단 & 수정:**
   - v13(46y4xtiw) ~10h에 29.9K(6%)뿐, fps≈0.83, ETA ~6.5일. 지배적 싱크 = `PX4 not armed after 10s` bail.
   - **진단(armdiag dry-run, xgzum51v):** 컨트롤러에 `PREFLIGHT-PASS` dt 계측 추가 + `arm_bail_timeout=25s`.
@@ -23,6 +23,8 @@ type: index
   - **결론:** v12의 `arm_bail_timeout=10s`가 복구(13–16s) 직전에 멀쩡한 PX4를 단두대질 → full restart 강제.
     stuck-EKF는 *full-restart-only가 아니라 recoverable-with-time*.
   - **Fix:** `hyperparams_v13.yaml` `arm_bail_timeout: 10.0 → 20.0`.
+  - **⚠️ 인시던트:** armdiag dry-run이 **YAML 중복 `checkpoint_dir` 키**로 메인 dir에서 실행 → v13 30K 체크포인트 파괴(복구 불가). → fresh 재시작(iyhfy5ps). [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]]
+  - **프로덕션 검증(iyhfy5ps):** bail 0, late-EKF 14.1/14.8/15.5s ×3 전부 회복(구 10s면 bail).
   - 상세: [[experiments/exp_006_xgzum51v_armdiag_dryrun]] / [[research/cruise_timeout_arming]] / Rule 11
   - ⚠️ **여전히 OPEN:** YOLO `target_lost_rate` ~29%; teleport 후 EKF 13–16s 재수렴 자체 (별도 과제)
 
@@ -51,13 +53,14 @@ type: index
 | 003 (dry-run) | mtx7ud6o/x8jq9fsy/u8w3xn0w | 5500×3 | ✅ 완료 | RTF 1/2/4 비교 → RTF=2 최적 |
 | 004 | esmtny0a | 33K+ | ✅ 폐기 | Vision YOLO 접근 + EKF East 버그 수정 → [[experiments/exp_004_rl_yolo_debug_vision]] |
 | 005 | rl_yolo_v12_arm_fix | 0→500K | ⛔ 중단 | Arming fix는 작동하나 종단 overshoot 트랩으로 success 0 → v13으로 대체 → [[research/terminal_overshoot_trap]] |
-| 006 | rl_yolo_v13_terminal_reward (46y4xtiw) | 0→500K | ⏸ 중단 @30K | 종단 보상 재설계. dry-run PASS(success d_xy 0.79m) → fresh full 기동. **처리량 병목(arm_bail) 진단 위해 30K에서 graceful stop, 재개 대기** → [[research/terminal_overshoot_trap]] |
+| 006 | rl_yolo_v13_terminal_reward (46y4xtiw→iyhfy5ps) | 0→500K | 🔄 fresh 재시작 | 종단 보상 재설계. 46y4xtiw 30K에서 처리량 진단 위해 stop → ⚠️ armdiag dry-run이 30K 체크포인트 파괴 → **fresh 재시작 iyhfy5ps (arm_bail=20)** → [[research/terminal_overshoot_trap]] / [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] |
 | 006b (dry-run) | v13_armdiag_dryrun (xgzum51v) | 1000 | ✅ 완료 | arm_bail 진단: EKF 재수렴 bimodal(0s/13–16s), 25s에서 bail 0. **Fix: arm_bail_timeout 10→20** → [[experiments/exp_006_xgzum51v_armdiag_dryrun]] / Rule 11 |
 
 ## 에러 현황
 
 | 파일 | 상태 | 요약 |
 |------|------|------|
+| [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] | ✅ 해결 | armdiag dry-run이 YAML 중복 키로 v13 30K 체크포인트 파괴. 재발방지: startup `Checkpoints:` 로그로 격리 검증 |
 | [[errors/err_20260615_cruise-timeout-arming]] | ✅ 해결 | CRUISE 타임아웃 = teleport 후 PX4 arm 거부 (stale EKF) |
 | [[errors/err_20260320_physics_explosion]] | ✅ 해결 | ODE 물리 폭발 3중 방어 |
 | [[errors/err_20260319_ode_aabb_crash]] | ✅ 해결 | 드론 스폰 고도 ODE AABB 크래시 |
@@ -113,6 +116,7 @@ type: index
 - [[experiments/exp_006_xgzum51v_armdiag_dryrun]] — arm_bail 진단. EKF 재수렴 bimodal 계측 → 10s 컷이 진짜 병목. Fix: arm_bail 10→20s.
 
 ### 에러 (errors/)
+- [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] — armdiag dry-run이 YAML 중복 `checkpoint_dir` 키로 v13 30K 체크포인트 파괴. fresh-start 삭제 footgun + 격리 검증 규칙.
 - [[errors/err_20260615_cruise-timeout-arming]] — CRUISE 타임아웃 = teleport 후 PX4 arm 거부 (stale EKF). arm 게이팅 + early-bail.
 - [[errors/err_20260320_physics_explosion]] — Gazebo ODE 물리 폭발 3중 방어
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
