@@ -6,23 +6,24 @@
 
 # 1. Current State
 
-**업데이트:** 2026-06-15
+**업데이트:** 2026-06-17
 
 ### 활성 학습
 
 | 항목 | 값 |
 |------|-----|
-| Run name | `rl_yolo_v12_arm_fix` |
-| 로그 | `/workspace/train_v12.log` |
-| Timesteps | 500,000 |
-| 신규 config | `arm_bail_timeout: 10.0` |
-| 초점 | Arming-rejection throughput fix (CRUISE 타임아웃 제거) |
-| ⚠️ OPEN 이슈 | YOLO `target_lost_rate` ~29% bimodal, 악화 중 — 미해결 |
+| Run name | `rl_yolo_v13_terminal_reward` (46y4xtiw) — **30K에서 중단, 재개 대기** |
+| 로그 | `/workspace/train_v13.log` |
+| Timesteps | 500,000 (현재 ~30K) |
+| 수정 config | `arm_bail_timeout: 10.0 → **20.0**` (06-17 armdiag) |
+| 재개 자산 | `sac_drop_30000_steps.zip` + `sac_drop_preempt_replay.pkl` (06-17 11:52, SIGTERM emergency save) — arm_bail은 보상식 아니므로 Fresh Start 불필요 |
+| ⚠️ OPEN 이슈 | YOLO `target_lost_rate` ~29% bimodal; teleport 후 EKF 13–16s 재수렴 자체 |
 
-선행 분석: `rl_yolo_v11_cam_fix`(k1uqgs8i) ~42K/500K(17.6h). 학습은 개선 중
-(env/ep_reward 20→54, reached_close 93%, 404 successes)이었으나 443 CRUISE
-타임아웃(28.2% NEVER ARMED)으로 ~5.5h wall-clock 낭비 → 중단 후 수정.
-근본 원인/수정: [[research/cruise_timeout_arming]] / [[experiments/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]].
+**처리량 진단(06-17):** v13(46y4xtiw)이 ~10h에 29.9K(6%)뿐 — fps≈0.83, ETA ~6.5일.
+지배적 싱크 = `PX4 not armed after 10s` early-bail. armdiag dry-run(xgzum51v)으로
+`pre_flight_checks_pass` 재수렴을 계측: **bimodal 0.0s(7/12) / 13–16s(5/12 ≈ 42%)**.
+25s 창에서 bail 0 / SUCCESS 4 → v12의 10s 컷이 복구 직전 단두대질이었음 규명.
+**Fix: `arm_bail_timeout` 10→20.** → [[experiments/exp_006_xgzum51v_armdiag_dryrun]] / [[research/cruise_timeout_arming]] / Rule 11.
 
 
 
@@ -56,6 +57,7 @@
 
 # 2. Recent Progress
 
+- **2026-06-17:** **arm_bail 처리량 병목 진단 & 수정.** v13(46y4xtiw)이 ~10h에 6%(29.9K)뿐, ETA ~6.5일 — 지배적 싱크가 `PX4 not armed after 10s` bail임을 확인. 컨트롤러에 `PREFLIGHT-PASS` dt 계측 추가 후 격리 dry-run(`hyperparams_v13_armdiag.yaml`, `arm_bail_timeout=25s`, offline). **결과: EKF 재수렴 bimodal — 0.0s(7/12) / 13–16s(5/12 ≈ 42%), 25s에서 bail 0 / SUCCESS 4.** v12의 10s 컷이 recoverable-with-time을 full-restart-only로 오판하고 복구 직전(3–6s 전) 단두대질했음. **Fix: `hyperparams_v13.yaml` arm_bail_timeout 10→20.** v13은 SIGTERM emergency save로 30K+리플레이 보존, 재개 가능. → [[experiments/exp_006_xgzum51v_armdiag_dryrun]] / Rule 11
 - **2026-06-15:** **Arming-rejection throughput fix.** `rl_yolo_v11_cam_fix`(k1uqgs8i) 분석 → 443 CRUISE 타임아웃의 근본 원인이 teleport 후 stale EKF arm 거부(28.2% NEVER ARMED, 전부 attempt 1/3)임을 규명. 수정 3종 적용: (#3) `/fmu/out/vehicle_command_ack` arm 거부 사유 로깅, (#2) `pre_flight_checks_pass` 게이팅, (#4) `arm_bail_timeout=10s` early-bail → 즉시 full infra restart. colcon build clean + dry-run(400 step, 0 타임아웃) 검증 후 fresh run `rl_yolo_v12_arm_fix`(500K) 기동. ⚠️ 정정: `cruise_poll_timeout`은 이미 20.0s(이전 "60s"는 fallback 기본값 오독). ⚠️ OPEN: YOLO target_lost_rate ~29% bimodal 미해결. → [[experiments/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]]
 - **2026-06-13:** v7 패치 적용 후 fresh run `rl_yolo_v7_drift_guard` (WandB: `7lhjy40o`) 시작. EKF drift guard (step1 d_xy>5m→truncate), proximity 4m→2.5m, penalty_target_lost -0.5→-0.1, stagnation_start_step 400→50.
 - **2026-06-12:** Vision 기반 RL 학습 인프라 완성. EKF East 반전 버그 2종 수정. fresh run `rl_yolo` (WandB: `45l8vkw5`) 121K steps. **분석: target_lost_rate=1.0 원인 = EKF drift (dominant) + 카메라 FOV gap 3차진 이후 2.89m vs 시작 d_xy 3.5m).** run 폐기.
@@ -76,7 +78,9 @@
 - [x] **WandB `45l8vkw5` 100+ 에피소드 분석** → target_lost=1.0, EKF drift 확인 → 폐기
 - [x] **EKF drift 방어 로직** — step 1에서 d_xy>5m이면 즉시 truncate (ekf_drift)
 - [x] **fps 개선 — CRUISE 타임아웃 근본 원인 수정** — arm 게이팅(#2) + early-bail(#4). v12에서 효과 검증 중 → [[research/cruise_timeout_arming]]
-- [ ] **v12 검증** — #3 arm 거부 사유 로그 확인, NEVER ARMED 28.2% 감소 여부, wall-clock fps 확인
+- [x] **v12/v13 arm 처리량 재진단** — `ARM REJECTED` 0회(게이팅 작동), 실제 병목은 EKF 재수렴이 10s bail 초과(13–16s). **arm_bail 10→20s 적용** → [[experiments/exp_006_xgzum51v_armdiag_dryrun]] / Rule 11
+- [ ] **v13 재개** — `arm_bail_timeout=20` 적용 후 30K 체크포인트(`sac_drop_30000_steps.zip`) + 리플레이로 `--resume` 재개, bail율/fps 개선 확인
+- [ ] **(장기) teleport EKF 재수렴 단축** — 13–16s 재수렴 자체 줄이기(명시적 EKF reset 등). 타임아웃은 증상 완화일 뿐
 - [ ] **⚠️ YOLO target_lost_rate ~29% bimodal 해결** — per-step 트리거가 전부/전무로 분리(악화 0.24→0.35). obs[9-11] zeroed + `-10` 페널티. 미해결 (이번 세션 범위 밖)
 - [ ] **PX4 로그 /dev/null 리다이렉트** — `/tmp/px4_{i}.log` 100+ MB 증가 방지
 
@@ -99,3 +103,5 @@
 | 2026-06-13 | 7lhjy40o | 진행 중 | rl_yolo_v7_drift_guard. EKF drift guard + proximity 2.5m + penalty_lost=-0.1. |
 | 2026-06-14 | k1uqgs8i | ~42K | rl_yolo_v11_cam_fix. 학습 개선(env/ep_reward 20→54, 404 successes)이나 443 CRUISE 타임아웃으로 중단. |
 | 2026-06-15 | rl_yolo_v12_arm_fix | 진행 중 | Arming-rejection throughput fix (arm 게이팅 + early-bail). dry-run 0 타임아웃 검증 후 fresh 기동. |
+| 2026-06-17 | 46y4xtiw | ~30K (중단) | rl_yolo_v13_terminal_reward. ~10h에 6%뿐(fps≈0.83) — arm_bail 병목 진단 위해 graceful stop. 재개 대기. |
+| 2026-06-17 | xgzum51v (offline) | 1000 (dry-run) | v13_armdiag. EKF 재수렴 bimodal(0s/13–16s) 계측 → arm_bail 10→20s 수정. Rule 11. |

@@ -67,6 +67,11 @@ class DroneControllerNode(Node):
         self.offboard_set_counter = 0
         self.px4_connected = False  # True after first vehicle_status received
         self._preflight_warned = False  # throttle "waiting on pre-flight" log to once
+        # Instrumentation: measure EKF reconvergence latency after teleport reset.
+        # _connect_time = first vehicle_status; _preflight_pass_logged throttles the
+        # one-shot "pre_flight_checks_pass flipped True after Xs" report.
+        self._connect_time = None
+        self._preflight_pass_logged = False
 
         # --- [5] Main Loop (20Hz) ---
         self.timer = self.create_timer(0.05, self.cmdloop_callback)
@@ -87,8 +92,21 @@ class DroneControllerNode(Node):
     def vehicle_status_callback(self, msg):
         if not self.px4_connected:
             self.get_logger().info("PX4 connected — vehicle_status received.")
+            self._connect_time = self.get_clock().now()
         self.px4_connected = True
         self.vehicle_status = msg
+
+        # Instrumentation: report how long after PX4-connect the EKF reconverges
+        # enough for PX4 to allow arming. This is the number that must beat the
+        # bridge's arm_bail_timeout, and it tells us whether a late-flip ever
+        # happens or whether these resets are permanently stuck (full-restart only).
+        if (msg.pre_flight_checks_pass and not self._preflight_pass_logged
+                and self._connect_time is not None):
+            self._preflight_pass_logged = True
+            dt = (self.get_clock().now() - self._connect_time).nanoseconds / 1e9
+            self.get_logger().warn(
+                f'PREFLIGHT-PASS: pre_flight_checks_pass flipped True '
+                f'{dt:.1f}s after PX4-connect (arm-ready).')
 
     def command_ack_callback(self, msg):
         # #3: surface PX4's reason for rejecting an arm command. Without this

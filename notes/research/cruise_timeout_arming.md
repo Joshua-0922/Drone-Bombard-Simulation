@@ -85,9 +85,29 @@ teleport 직후 **stale EKF** 상태에서 PX4가 arm을 거부하기 때문이�
 
 ---
 
+## 06-17 정정 — v12 "수정"은 증상만 잡았고, 10s 컷이 진짜 병목이었다
+
+> **발견 run:** [[experiments/exp_006_xgzum51v_armdiag_dryrun]] (armdiag dry-run, 25s 타임아웃 계측)
+
+v13 학습 로그(46y4xtiw)에서 `ARM REJECTED`는 **0회**였다. v12 게이팅(#2)이 실제 arm 거부는 제거했고, 남은 현상은 컨트롤러가 `pre_flight_checks_pass=False`로 **대기**하다 bridge가 10s에 bail하는 것. 즉 "arm-reject suspected"는 오해의 소지 — 실제는 **EKF가 10s 안에 재수렴 실패**.
+
+`pre_flight_checks_pass` 첫 True까지 시간을 계측하니 **bimodal**:
+
+- **0.0s** (7/12, warm infra) vs **13.0–15.7s** (5/12 ≈ 42%, stuck-EKF cohort, 좁게 군집)
+- 25s 타임아웃에서 **bail 0 / SUCCESS 4** — late cohort가 **전부 회복**.
+
+→ **결론 정정:** stuck-EKF resets는 *full-restart-only가 아니라 recoverable-with-time*. v12의 `arm_bail_timeout=10.0`이 복구(13–16s) 직전에 단두대질 → 멀쩡한 PX4 버리고 full restart 강제. **이것이 진짜 throughput 싱크.**
+
+**적용:** `hyperparams_v13.yaml` `arm_bail_timeout: 10.0 → 20.0` (max 관측 15.7s + 마진). → [[research/rl_rules]] Rule 11.
+
+(#4 early-bail 자체는 유지 — 진짜 죽은 인프라는 20s에 fast-fail. 장기적으로 teleport 후 EKF 재수렴(13–16s)을 줄이는 것이 다음 과제.)
+
+---
+
 ## 관련 노트
 
 - [[experiments/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]]
+- [[experiments/exp_006_xgzum51v_armdiag_dryrun]] — 10s→20s 근거 (bimodal 재수렴 계측)
 - [[errors/err_20260615_cruise-timeout-arming]]
-- [[research/rl_rules]] — Rule 8, Known Failure Modes
+- [[research/rl_rules]] — Rule 8, Rule 11, Known Failure Modes
 - [[research/rtf_fps_analysis]] — RTF/FPS 분석 (별개의 throughput 레버)
