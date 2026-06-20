@@ -12,10 +12,20 @@ type: index
 
 ---
 
-## 현재 상태 (2026-06-17)
+## 현재 상태 (2026-06-20)
 
 - **알고리즘:** SAC, `net_arch=[256,256]`, L4 GPU
-- **현재 학습:** `rl_yolo_v13_terminal_reward` (**iyhfy5ps, fresh 재시작 0→500K, arm_bail=20**)
+- **현재 학습:** `rl_yolo_v13_terminal_reward` (iyhfy5ps) — **157.7K/500K에서 SIGTERM stop**(preempt+replay 보존, 재개 가능)
+- **이번 세션 (2026-06-20) — v13 정책 평가:**
+  - 학습 점검: 157.7K(~32%), **ep_rew_mean ~100 plateau(80K부터 평탄), success ~82%, target_lost 0**, fps≈0(restart 병목).
+  - plateau 확인 → eval 위해 학습 SIGTERM stop → deterministic eval(`sac_drop_preempt.zip`, 20-ep 요청/13 실행).
+  - **정책 양호:** 깨끗하게 시작한 ep 1–3 전부 0.8m 성공(reward 126/114/132, step 41–72; 평균 124 > 학습 ~100).
+  - **eval EKF divergence 흡수 루프:** ep 4–13 전부 step1 `d_xy≈11.9m`(=home→target) → −15 truncation. 카메라는 마커 봄(TRACKING OK)이나 EKF position만 발산. 연속 full-restart가 EKF 수렴 못 시킴 → 자체 회복 불가. **정책 아님, 시작 상태 결함** (06-17 EKF 재수렴과 동일 뿌리).
+  - **harness 결함 2종:** `evaluate.py` miss-distance/CEP=NaN(env 미emit 키); v13 env는 0.8m 종료(탄도 투하 없음) → CEP 비실재.
+  - **다음:** 에피소드 시작 EKF↔카메라 health gate(drift면 retry) + `evaluate.py` 지표(success-rate/step) 교체 후 재평가.
+  - 상세: [[experiments/exp_007_iyhfy5ps_v13_eval]] / [[research/eval_terminal_env_metrics]] / Rule 12
+
+### 이전 세션 (2026-06-17) — v13 처리량 병목 진단 & 수정
 - **이번 세션 (2026-06-17) — v13 처리량 병목 진단 & 수정:**
   - v13(46y4xtiw) ~10h에 29.9K(6%)뿐, fps≈0.83, ETA ~6.5일. 지배적 싱크 = `PX4 not armed after 10s` bail.
   - **진단(armdiag dry-run, xgzum51v):** 컨트롤러에 `PREFLIGHT-PASS` dt 계측 추가 + `arm_bail_timeout=25s`.
@@ -55,6 +65,7 @@ type: index
 | 005 | rl_yolo_v12_arm_fix | 0→500K | ⛔ 중단 | Arming fix는 작동하나 종단 overshoot 트랩으로 success 0 → v13으로 대체 → [[research/terminal_overshoot_trap]] |
 | 006 | rl_yolo_v13_terminal_reward (46y4xtiw→iyhfy5ps) | 0→500K | 🔄 fresh 재시작 | 종단 보상 재설계. 46y4xtiw 30K에서 처리량 진단 위해 stop → ⚠️ armdiag dry-run이 30K 체크포인트 파괴 → **fresh 재시작 iyhfy5ps (arm_bail=20)** → [[research/terminal_overshoot_trap]] / [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] |
 | 006b (dry-run) | v13_armdiag_dryrun (xgzum51v) | 1000 | ✅ 완료 | arm_bail 진단: EKF 재수렴 bimodal(0s/13–16s), 25s에서 bail 0. **Fix: arm_bail_timeout 10→20** → [[experiments/exp_006_xgzum51v_armdiag_dryrun]] / Rule 11 |
+| 007 (eval) | iyhfy5ps (157.7K 평가) | 13 ep | ✅ 완료 | deterministic eval. 유효 3-ep 100% 성공(reward 124>학습 ~100); ep 4–13 EKF divergence 흡수 루프(시작 상태 결함). harness: evaluate.py NaN, v13 탄도 투하 없음 → [[experiments/exp_007_iyhfy5ps_v13_eval]] / [[research/eval_terminal_env_metrics]] / Rule 12 |
 
 ## 에러 현황
 
@@ -105,6 +116,7 @@ type: index
 - [[research/rtf_fps_analysis]] — RTF vs FPS 분석. RTF=2 최적, Python 루프 병목 규명
 - [[research/cruise_timeout_arming]] — CRUISE 타임아웃 = teleport 후 EKF 재수렴 bimodal(0s/13–16s). **06-17 정정: v12의 10s 컷이 복구 직전 단두대질 → arm_bail 10→20s** (Rule 11).
 - [[research/terminal_overshoot_trap]] — v12 종단 정체 = overshoot 해자 트랩 (정하방 카메라 핸드오프 ~1m). v13 보상 재설계.
+- [[research/eval_terminal_env_metrics]] — v13 eval EKF divergence 흡수 루프 + evaluate.py 지표 비정합 (탄도 투하 없음 → CEP 비실재). 시작 health gate 필요 (Rule 12).
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
@@ -114,6 +126,7 @@ type: index
 - [[experiments/exp_004_rl_yolo_debug_vision]] — Vision YOLO TRACKING + EKF East 좌표 버그 수정.
 - [[experiments/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]] — Arming-rejection throughput fix. v11 분석 + 수정 3종 + dry-run 검증.
 - [[experiments/exp_006_xgzum51v_armdiag_dryrun]] — arm_bail 진단. EKF 재수렴 bimodal 계측 → 10s 컷이 진짜 병목. Fix: arm_bail 10→20s.
+- [[experiments/exp_007_iyhfy5ps_v13_eval]] — v13 deterministic eval. 유효 3-ep 100% 성공(reward 124); ep 4–13 EKF divergence 흡수 루프. harness 지표 비정합 발견.
 
 ### 에러 (errors/)
 - [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] — armdiag dry-run이 YAML 중복 `checkpoint_dir` 키로 v13 30K 체크포인트 파괴. fresh-start 삭제 footgun + 격리 검증 규칙.
@@ -122,6 +135,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-06-20]] — v13 정책 평가: 유효 ep 100% 성공(정책 양호) + eval EKF divergence 흡수 루프 + harness 지표 비정합
 - [[daily/daily_2026-06-16]] — v12 정체 진단(종단 overshoot 트랩) + v13 종단 보상 재설계 prep
 - [[daily/daily_2026-06-14]] — 06-12 이후 종합: 보상 함수 재설계(v9) + YOLO hold(v9b) + throughput 최적화(v9c·v9d)
 - [[daily/daily_2026-06-12]] — EKF East 반전 수정 + proximity trigger 정상화 + rl_yolo fresh start
