@@ -14,7 +14,8 @@
 |------|-----|
 | Run name | `rl_yolo_v13_terminal_reward` (iyhfy5ps) — **2026-06-20 157.7K/500K에서 SIGTERM stop (eval 위해)** |
 | 상태 | ⏸️ stop (plateau, ep_rew_mean ~100, success ~82%, target_lost 0). `sac_drop_preempt.zip`+70MB replay 보존 → 재개 가능 |
-| 평가 결과 | deterministic eval: 유효 ep 1–3 100% 성공(reward 124>학습 ~100). ep 4–13 **EKF divergence 흡수 루프**(시작 상태 결함, 정책 아님). → [[experiments/exp_007_iyhfy5ps_v13_eval]] |
+| 평가 결과 (확정 06-21) | **clean 20-ep eval: success 16/20 (80%), gate 0, EKF-drift 0, mean reward 134, mean closest 0.81m.** 4개 실패 전부 종단 stagnation(0.81–1.09m). 80%≈학습 ~82%. → [[experiments/exp_007_iyhfy5ps_v13_eval]] |
+| 평가 fixes | health gate + YOLO 누수 fix + evaluate.py 재작성 (06-21, push fb69bb9). 발산 근본원인=YOLO 누수, fundamental EKF 버그 아님 |
 | 로그 | `/workspace/train_v13.log` (학습) · `/workspace/eval_v13.log` (평가) |
 | Timesteps | 500,000 목표 (157.7K에서 중단) |
 | 수정 config | `arm_bail_timeout: 10.0 → **20.0**` (06-17 armdiag) |

@@ -93,6 +93,24 @@ wandb_run: iyhfy5ps (training source; eval 자체는 WandB 미연동)
 
 → **발산은 누적 degradation이 원인. clean 상태에선 teleport-EKF 정상.** 원래 ep 1–3 성공도 이로써 설명.
 
-- **다음:** 전체 20-ep clean eval 실행 → 통계 확정. (장기: teleport 후 EKF 13–16s 재수렴 단축은 별도 과제.)
+## ✅ 전체 20-ep clean eval 결과 (06-21, 확정)
+
+| 지표 | 값 |
+|------|-----|
+| **Success rate** | **0.800 (16/20)** |
+| Health-gate fires | **0** (EKF-drift 0, timeout 0) |
+| Mean steps-to-success | 54.9 (median 41.5) |
+| Mean closest d_xy | 0.812 m |
+| Best closest d_xy | 0.709 m |
+| Mean episode reward | 134.0 (std 39.3) |
+| Outcome breakdown | 16 success · **4 stagnation** · 0 ekf_drift |
+
+- **fixes 검증 완료:** 20-ep 전부 gate 0 / EKF-drift 0 — 이전 run(10/13 drift 쓰레기)과 대조. eval이 이제 **정책**을 측정.
+- **80% ≈ 학습 시 success ~82%** → 신뢰 가능한 수치(우연 윈도우 아님).
+- **4개 실패 전부 동일 모드 = 종단 stagnation**(ep 7/8/9/13, closest 0.81–1.09m). 정책이 ~0.8m까지 안정적으로
+  접근하나 0.8m success gate를 꿰는 마지막 0.2m를 못 닫고 호버→stagnation 절단. ep8은 min 0.80m인데도 경계 밖.
+  → v13의 축소된 action authority(vx4/vy3)와의 trade-off (overshoot 방지 ↔ 종단 정밀도 한계).
+- **>80% 레버:** success_radius 0.8→1.0 또는 커리큘럼 / 종단 authority 소폭↑ / stagnation 컷 완화.
+- 산출물: `/workspace/ros2_ws/rl_eval_results/` (report.md, summary.json, *.png)
 
 → 규칙화: [[research/rl_rules]] Rule 12 / [[research/eval_terminal_env_metrics]]
