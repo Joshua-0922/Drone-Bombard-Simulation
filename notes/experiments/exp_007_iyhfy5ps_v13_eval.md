@@ -66,11 +66,33 @@ wandb_run: iyhfy5ps (training source; eval 자체는 WandB 미연동)
 ## 결론 & 다음
 
 - **정책:** 추가 학습 불필요 신호 (plateau + 깨끗한 시작 100% 성공).
-- **블로커:** restart 후 EKF 재수렴이 신뢰 가능한 20-ep eval을 막음.
-- **다음:**
-  1. **에피소드 시작 health gate** — step 1 직전 EKF 위치 ↔ 카메라-마커 일치(또는 fresh infra 후 settle-wait) 확인,
-     불일치면 −15 대신 retry. (학습 throughput에도 동일 이득.)
-  2. `evaluate.py` 패치 — success-rate/step-to-reach 보고, miss-distance 사망 컬럼 제거.
-  3. 위 수정 후 20-ep eval 재실행.
+- **블로커(해결됨):** EKF 발산 흡수 루프 = **누적 leaked YOLO + stale 프로세스** (fundamental EKF 버그 아님).
+
+---
+
+## ✅ 06-21 수정 구현 & 검증
+
+**3가지 코드 변경 (`drone_drop_env.py` / `evaluate.py` / `hyperparams_v13.yaml`):**
+1. **health gate** (reset() step 8b): TRACKING 후 `d_xy_prev > start_drift_max(5.0)`면 corrupted start →
+   full restart + progressive settle 후 retry, max_retries(6) 초과 시 abort. config `start_drift_*`.
+2. **YOLO 누수 fix** (진짜 근본 원인): `_start_infra` fresh-start kill 리스트에 `xmarker_detector` 추가
+   — 기존엔 restart마다 YOLO 노드를 안 죽이고 새로 spawn → 누적(3개) → 충돌 탐지 → spurious TRACKING.
+3. **`evaluate.py` 재작성:** success_rate + step-to-reach + final/closest d_xy(obs[12,13]에서 복원) +
+   outcome breakdown. 죽은 `info['drop_error_actual_m']`(NaN) 의존 제거.
+
+**진단 결정타:** gate 첫 retry `d_xy=11.4m while TRACKING (conf=0.82)` — 카메라는 마커 봄(드론 물리적으로 위)인데 EKF는 home → EKF 위치 freeze.
+
+**Dry-run 검증 (clean slate: 전 sim teardown + YOLO fix):**
+| | 결과 |
+|---|---|
+| Health gate fires | **0** |
+| Success rate | **3/3 (1.000)** |
+| Handoff d_xy | 0.9m, conf 0.96 (정상) |
+| Mean reward | 162.4 |
+| evaluate.py report | NaN 없음, 신규 지표 정상 |
+
+→ **발산은 누적 degradation이 원인. clean 상태에선 teleport-EKF 정상.** 원래 ep 1–3 성공도 이로써 설명.
+
+- **다음:** 전체 20-ep clean eval 실행 → 통계 확정. (장기: teleport 후 EKF 13–16s 재수렴 단축은 별도 과제.)
 
 → 규칙화: [[research/rl_rules]] Rule 12 / [[research/eval_terminal_env_metrics]]

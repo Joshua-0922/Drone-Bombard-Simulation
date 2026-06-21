@@ -207,9 +207,17 @@ v13 deterministic eval(20-ep 요청)에서 ep 1–3은 0.8m 성공(reward ~124)�
 EKF 위치 발산(`d_xy≈11.9m`=home→target) → −15 truncation**. 연속 full-infra restart가 EKF를 ~21s 안에
 수렴시키지 못해 drift→restart→drift **흡수 루프**(자체 회복 불가)에 빠짐. 정책이 아니라 **시작 상태 결함**.
 
+**✅ 06-21 근본 원인 규명:** 발산은 fundamental EKF 버그가 아니라 **누적 sim degradation**이었다.
+`_start_infra`가 fresh-start마다 YOLO `xmarker_detector`를 **죽이지 않고 새로 spawn** → 누적(3개) →
+다중 detector 충돌 pixel_coords → spurious TRACKING(conf=0.00) + EKF↔camera 불일치. **clean teardown +
+YOLO 누수 fix(fresh-kill에 `xmarker_detector` 추가) 후 dry-run 3/3 SUCCESS, gate 0회.** 원래 ep 1–3 성공도
+누적이 ep 4에 임계 초과한 것으로 설명됨.
+
 **필수 규칙:**
 - **에피소드 시작 직전 상태를 게이트하라.** step 1 전에 EKF 위치 ↔ 카메라-마커 위치 **일치 검사**(또는
   fresh infra 후 settle-wait). 불일치면 통계에 −15로 세지 말고 **retry**. (학습 throughput에도 동일 이득.)
+- **인프라를 재시작하면 그 인프라가 spawn한 모든 노드를 죽여라.** YOLO 누수처럼 "kill 안 하고 respawn"은
+  조용히 누적되어 N번째 restart에서 임계를 넘긴다. 장기 run/연속 restart 후 평가 전 **clean teardown** 필수.
 - **eval은 학습보다 reset 결함에 더 취약하다.** 학습의 산발적 truncation이 eval의 연속 restart에선 누적되어
   absorbing loop가 된다 — 짧은 eval에서 "정책 실패"로 오판하기 쉽다.
 - **harness 지표를 env가 실제로 emit하는 것과 정합시켜라.** `evaluate.py`는 env가 안 만드는
@@ -227,7 +235,7 @@ EKF 위치 발산(`d_xy≈11.9m`=home→target) → −15 truncation**. 연속 f
 
 | 증상 | 원인 | 해결 |
 |------|------|------|
-| **eval ep 연속 step1 `d_xy≈11.9m` −15 truncation** (정책 정상인데 못 빠져나옴) | 연속 full-infra restart가 EKF 위치 수렴(~21s) 못 시킴 → home→target 거리만큼 발산. 카메라는 마커 봄(TRACKING OK)이나 EKF position만 쓰레기 → drift→restart→drift 흡수 루프 | 에피소드 시작 EKF↔카메라 health gate(불일치 retry); 06-17 EKF 재수렴 문제와 동일 뿌리 → [[research/eval_terminal_env_metrics]] (Rule 12) |
+| **eval ep 연속 step1 `d_xy≈11.9m` −15 truncation** (정책 정상인데 못 빠져나옴) | **(06-21 규명) 누적 leaked YOLO `xmarker_detector`(restart마다 spawn, kill 안 함 → 3개) 충돌 탐지 → spurious TRACKING + EKF↔camera 불일치.** clean slate에선 정상(handoff 0.9m). | ① fresh-start kill에 `xmarker_detector` 추가, ② 에피소드 시작 health gate(불일치 retry), ③ 장기 run 후 clean teardown 후 평가 → [[research/eval_terminal_env_metrics]] (Rule 12) |
 | **eval miss-distance/CEP 전부 NaN** | `evaluate.py`가 env 미emit 키 `info['drop_error_actual_m']` 의존; v13 env는 0.8m 종료(탄도 투하 없음) | success_rate/step-to-reach로 지표 교체 → [[research/eval_terminal_env_metrics]] (Rule 12) |
 | `mean_rew_dist = 0` | 지수 포텐셜 포화 (k1 너무 큼) | 선형 보상 사용; $e^{-k_1 d_{max}} > 10^{-6}$ 확인 |
 | `mean_d_xy` → 1e11 | Gazebo ODE 물리 폭발 | 3중 방어 레이어 → [[errors/err_20260320_physics_explosion]] |

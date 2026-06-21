@@ -27,10 +27,30 @@ ep 4–13은 **전부 step 1에서 `d_xy ≈ 11.5–12.1m > 5.0m` 가드로 trun
 manifestation이 다름: 학습 때는 산발적 truncation으로 끝나지만, eval의 연속 restart에선
 누적되어 흡수 루프가 됨. → eval은 학습보다 이 결함에 더 취약.
 
-### 처방 (미적용, 다음 작업)
-- **에피소드 시작 health gate:** step 1 진입 전 EKF 위치 ↔ 카메라-마커 위치 **일치 검사**(또는
-  fresh infra 후 고정 settle-wait). 불일치면 −15 카운트 대신 **retry**.
-- (근본) teleport reset이 EKF를 덜 흔들게 하거나, restart 후 GPS/EKF 수렴까지 대기.
+### ✅ 처방 (06-21 구현·검증 완료)
+- **에피소드 시작 health gate** (`drone_drop_env.py` reset() step 8b, Rule 12): TRACKING 확정 후
+  `d_xy_prev > start_drift_max`(=5.0)면 corrupted start → −15 카운트 대신 full infra restart +
+  progressive settle(`start_drift_settle × retry#`) 후 retry. `start_drift_max_retries`(=6) 초과 시
+  loop 대신 RuntimeError abort. config: `hyperparams_v13.yaml` `start_drift_*`.
+- **(진짜 근본 원인) YOLO `xmarker_detector` 누수:** `_start_infra`가 fresh start마다 YOLO 노드를
+  **죽이지 않고 새로 spawn** → 누적(검증 시 3개 동시 실행). 다중 detector가 충돌하는 pixel_coords
+  발행 → **spurious CRUISE→TRACKING(conf=0.00) + stale 탐지** → EKF↔camera 불일치 흡수 루프.
+  **Fix:** fresh-start kill 리스트(iid==0)에 `xmarker_detector` 추가.
+
+### 🔬 진단 결정타 (health gate 로그)
+gate가 잡은 첫 retry: `d_xy=11.4m > 5.0m while TRACKING (marker conf=0.82)` —
+**카메라는 마커를 봄(conf 0.82 = 드론이 물리적으로 마커 위)인데 EKF는 home(11.4m)을 보고**.
+→ EKF 수평 위치 추정이 실제를 추종 못 하고 freeze/diverge. 이후 retry는 conf=0.00 (stale/다중 YOLO).
+
+### ✅ 근본 원인 = 누적 sim degradation (fundamental EKF 버그 아님)
+**clean slate(전 sim 프로세스 teardown + YOLO 누수 fix) 후 dry-run 3/3 SUCCESS, gate 0회**,
+handoff `d_xy:0.9m conf:0.96`(정상). → 발산은 **누적된 leaked YOLO + stale 프로세스**가 원인이었고,
+teleport-EKF 자체는 clean 상태에서 정상 수렴. 원래 eval의 ep 1–3이 성공한 것도 이로써 설명됨
+(누적이 ep 4부터 임계 초과). **교훈: 장기 run/연속 restart 후엔 sim을 clean teardown 후 평가.**
+
+### evaluate.py 검증 (06-21)
+새 `evaluate.py`(success_rate/step-to-reach/closest d_xy from obs[12,13]/outcome breakdown) dry-run:
+3/3 SUCCESS, report NaN 없음, per-ep `reward/steps/SUCCESS/final_d_xy/min_d_xy/[outcome]` 정상 출력.
 
 ---
 

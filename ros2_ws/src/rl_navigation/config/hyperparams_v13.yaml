@@ -65,6 +65,16 @@ environment:
   cruise_poll_timeout: 20.0
   arm_bail_timeout: 20.0    # v13-fix(06-17 armdiag): EKF reconvergence after teleport is BIMODAL — 0s (warm) or 13–16s (stuck-EKF cohort, ~45% of resets). v12's 10.0 guillotined the recoverable late cohort → full infra restart. 20s recovers it with margin (max observed 15.7s) while still fast-failing genuinely-dead infra. See [[research/cruise_timeout_arming]] / exp_006.
   tracking_wait_timeout: 20.0
+  # --- Episode-start EKF↔camera health gate (06-20, Rule 12) ---
+  # eval(iyhfy5ps) found ep 4–13 stuck in a drift→restart→drift absorbing loop: after
+  # repeated rapid full-infra restarts PX4's EKF reported d_xy≈11.9m (=home→target) at
+  # TRACKING while the camera saw the marker → step-1 guard truncated every episode (-15).
+  # Gate the start: if handoff d_xy > start_drift_max, retry with a full restart + a
+  # progressive settle (settle × retry#) so the EKF horizontally reconverges before the
+  # policy ever sees the episode. Abort (not loop forever) after max_retries.
+  start_drift_max: 5.0          # normal handoff is 3.2–3.8m; >5m ⇒ EKF diverged
+  start_drift_settle: 8.0       # base post-restart EKF settle (s); ×retry# (progressive)
+  start_drift_max_retries: 6
   sim_speed_factor: 2
   use_vision: true
   detection_hold_frames: 10

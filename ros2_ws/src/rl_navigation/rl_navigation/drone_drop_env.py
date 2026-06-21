@@ -358,6 +358,15 @@ class DroneDropEnv(gym.Env):
         # How long to wait (s) for the drone to detect the marker (CRUISE→TRACKING transition)
         # after takeoff before giving up and resetting the episode.
         self._cfg_tracking_wait_timeout = cfg_env.get('tracking_wait_timeout', 120.0)
+        # --- Episode-start EKF↔camera health gate (Rule 12) ---
+        # After TRACKING is confirmed the drone is physically near the marker, so a
+        # large EKF-reported d_xy means the EKF position estimate diverged from truth.
+        # Gate the start state: if d_xy at handoff exceeds start_drift_max, retry the
+        # reset (full infra restart + settle) instead of returning a corrupted start
+        # that would trip the step-1 drift guard (-15) and pollute training/eval.
+        self._cfg_start_drift_max = cfg_env.get('start_drift_max', 5.0)
+        self._cfg_start_drift_settle = cfg_env.get('start_drift_settle', 8.0)
+        self._cfg_start_drift_max_retries = int(cfg_env.get('start_drift_max_retries', 6))
 
         # --- Reward constants (3-Layer Hierarchical) ---
         r = cfg_reward
@@ -416,6 +425,7 @@ class DroneDropEnv(gym.Env):
         # --- Reset recursion guard ---
         self._reset_depth = 0
         self._needs_infra_restart = False  # set by step() on EKF drift; triggers fast infra restart in reset()
+        self._start_drift_retries = 0      # health-gate retries for a divergent EKF start (Rule 12)
 
         # --- Start ROS2 ---
         if not rclpy.ok():
@@ -584,7 +594,44 @@ class DroneDropEnv(gym.Env):
         # 8. Seed d_xy_prev from the TRACKING position (drone has already cruised to marker).
         with self._state_lock:
             pos = self._node.pos_enu.copy()
+            pix = self._node.pixel_coords.copy()
         self.d_xy_prev = self._compute_d_xy(pos)
+
+        # 8b. Episode-start EKF↔camera health gate (Rule 12).
+        #     TRACKING was just confirmed, so the drone is physically near the marker
+        #     (normal handoff d_xy is ~3.2–3.8 m). A much larger EKF-reported d_xy means
+        #     the EKF position estimate has diverged from truth — returning this start
+        #     would immediately trip the step-1 drift guard (-15) and, on repeated rapid
+        #     restarts, lock the run into a drift→restart→drift absorbing loop that
+        #     never reaches the policy. Retry transparently (full infra restart + an
+        #     EKF settle long enough for horizontal convergence) so the corrupted start
+        #     is never returned to SB3 / the evaluator and never counted as a -15.
+        if self.d_xy_prev > self._cfg_start_drift_max:
+            self._start_drift_retries += 1
+            if self._start_drift_retries > self._cfg_start_drift_max_retries:
+                self._start_drift_retries = 0
+                raise RuntimeError(
+                    f'[Health Gate] EKF start divergence persisted across '
+                    f'{self._cfg_start_drift_max_retries} infra restarts '
+                    f'(d_xy={self.d_xy_prev:.1f}m at TRACKING). Simulator EKF is '
+                    f'unrecoverable — aborting rather than looping.')
+            # Progressive settle: give a stuck EKF more convergence time each retry.
+            settle = self._cfg_start_drift_settle * self._start_drift_retries
+            self._node.get_logger().warn(
+                f'[Health Gate] EKF↔camera disagree at start: d_xy={self.d_xy_prev:.1f}m '
+                f'> {self._cfg_start_drift_max}m while TRACKING (marker conf={pix[2]:.2f}). '
+                f'EKF diverged — full infra restart + {settle:.0f}s settle, '
+                f'retry {self._start_drift_retries}/{self._cfg_start_drift_max_retries}.')
+            self._kill_episode()
+            self._kill_infra()
+            self._obs_ready.clear()
+            with self._state_lock:
+                self._node.mission_state = 'IDLE'
+            self._start_infra()
+            time.sleep(settle)
+            return self.reset(seed=seed, options=options)
+
+        self._start_drift_retries = 0  # clean start — clear health-gate counter
 
         obs = self._get_obs()
         return obs, {}
@@ -1095,7 +1142,11 @@ class DroneDropEnv(gym.Env):
         self._node.get_logger().info(
             f'[Instance {iid}] No healthy infra found — starting fresh.')
         if iid == 0:
-            for pattern in ['gz sim', 'parameter_bridge']:
+            # NOTE: include xmarker_detector — it is (re)spawned unconditionally
+            # below (no dedup guard), so without this kill every fresh start LEAKS
+            # another YOLO node. Multiple detectors publish conflicting pixel_coords
+            # → spurious CRUISE→TRACKING transitions (conf=0.00) and stale detections.
+            for pattern in ['gz sim', 'parameter_bridge', 'xmarker_detector']:
                 subprocess.run(['pkill', '-f', pattern],
                                capture_output=True, check=False)
         subprocess.run(
