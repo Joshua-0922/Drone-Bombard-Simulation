@@ -6,7 +6,9 @@
 
 # 1. Current State
 
-**업데이트:** 2026-06-20
+**업데이트:** 2026-06-22
+
+> **⚠️ 미커밋 변경 (2026-06-22, dry-run PASS):** 핸드오프 윈도우 확장 — `target_altitude` 5→10 m + `vision_callback` 탐지 게이트(`min_detection_conf=0.5`, `detection_pixel_radius` 200→300) + `start_drift_max` 5→10. 핸드오프 d_xy 2.7→5.0 m(~2배), spurious 0. 사용자 커밋 대기. → [[experiments/exp_008_dryrun_alt10_handoff_window]] / Rule 13
 
 ### 활성 학습
 
@@ -61,6 +63,7 @@
 
 # 2. Recent Progress
 
+- **2026-06-22:** **핸드오프 윈도우 확장 — 고도는 레버 아님, 탐지 게이트가 진짜 레버.** 사용자 요청("X마커가 늦게=거의 머리 위 탐지돼 RL 핸드오프 후 학습 윈도우가 짧다"). **시도 1(고도만 10 m):** `target_altitude` 5→10 + `start_drift_max` 5→10 정합. **실패** — clean 핸드오프 여전히 d_xy 2.7 m(베이스라인 동급), 3 ep 중 2가 순항-시작 spurious(conf=0.00, d_xy≈11 m, 넓어진 FoV의 X-like 지면 FP) → health gate 발동/abort. 원인: 마커 apparent size ∝ 1/고도(YOLO 늦게 lock) + `vision_callback` 200 px 필터가 핸드오프를 머리 위로 클립. **시도 2(10 m + 탐지 게이트):** `vision_callback`에 confidence 게이트(`min_detection_conf=0.5`; real 마커 conf 0.73–0.95 vs 지면 FP ≤0.45) + 공간 필터 200→300 px(`detection_pixel_radius`; real off-center 264–293 px 조기 accept). **dry-run PASS: 핸드오프 d_xy 2.7→5.0–5.2 m(윈도우 ~2배), spurious 0, EKF-drift 0, conf 0.93.** dry-run 격리(`--checkpoint-dir rl_dryrun_alt10` + offline)로 메인 체크포인트 보호. **코드 변경 미커밋**(사용자 직접 커밋 예정). 기하+탐지 변경이라 fresh 필수 아니나 핸드오프 3.5→5 m 변화로 정책 초반 재적응 예상. → [[experiments/exp_008_dryrun_alt10_handoff_window]] / [[research/detection_gate_vs_altitude]] / Rule 13
 - **2026-06-21:** **eval 발산 흡수 루프 근본 원인 규명 & 수정 3종 (health gate + YOLO 누수 + evaluate.py).** 06-20 발견한 EKF↔camera 발산 루프의 진짜 원인 = **YOLO `xmarker_detector` 누수**: `_start_infra`가 fresh-start마다 YOLO 노드를 죽이지 않고 새로 spawn → 누적(검증 시 3개) → 충돌하는 pixel_coords 발행 → spurious CRUISE→TRACKING(conf=0.00) + EKF↔camera 불일치. **fundamental EKF 버그 아님** (clean slate에선 handoff 0.9m 정상). **수정:** ① `drone_drop_env.py` reset() step 8b **health gate**(`d_xy_prev>start_drift_max(5.0)`면 full restart+progressive settle 후 retry, max_retries(6) 초과 시 loop 대신 abort), ② fresh-start kill 리스트에 `xmarker_detector` 추가(누수 차단), ③ `evaluate.py` 재작성(success_rate/step-to-reach/closest d_xy from obs[12,13]/outcome breakdown; 죽은 `info['drop_error_actual_m']` NaN 의존 제거). config `hyperparams_v13.yaml`에 `start_drift_*` 추가. **Dry-run PASS(clean slate, 3/3 SUCCESS, gate 0회, mean reward 162, report NaN 없음).** `--symlink-install`이라 src 편집 live, rebuild 불필요. → [[experiments/exp_007_iyhfy5ps_v13_eval]] / [[research/eval_terminal_env_metrics]] / Rule 12
 - **2026-06-20:** **v13 정책 평가 + 학습 stop.** iyhfy5ps가 157.7K(~32%)에서 **plateau**(ep_rew_mean ~100 80K부터 평탄, success ~82%, target_lost 0, fps≈0). eval을 위해 학습 **SIGTERM graceful stop**(preempt+70MB replay 보존, 재개 가능). deterministic eval(`sac_drop_preempt.zip`, 20-ep 요청/13 실행): **ep 1–3 전부 0.8m 성공(reward 126/114/132, step 41–72; 평균 124 > 학습 ~100) — 정책 양호.** **ep 4–13 전부 step1 EKF divergence(`d_xy≈11.9m`=home→target) → −15 truncation 흡수 루프** (연속 full-restart가 EKF 수렴 못 시킴; 카메라는 마커 봄=TRACKING OK이나 EKF position만 발산; 06-17 EKF 재수렴과 동일 뿌리, eval에서 누적 악화). **harness 결함 2종:** `evaluate.py`가 env 미emit 키 `info['drop_error_actual_m']` 의존 → miss-distance/CEP/drop-speed 전부 NaN; v13 env는 0.8m 성공원 종료(탄도 투하 미모델링) → CEP 비실재 → success-rate/step-to-reach로 평가해야. **다음:** 에피소드 시작 EKF↔카메라 health gate(drift면 retry) + evaluate.py 지표 교체 후 재평가. → [[experiments/exp_007_iyhfy5ps_v13_eval]] / [[research/eval_terminal_env_metrics]] / Rule 12
 - **2026-06-17 (오후):** **v13 fresh 재시작(iyhfy5ps) + 인시던트.** 30K 재개를 시도했으나 armdiag dry-run이 **YAML 중복 `checkpoint_dir` 키**(격리 경로가 main에 덮임)로 메인 dir에서 실행되어 v13 30K 체크포인트 5개 삭제 + preempt를 599-step으로 덮음 → **30K 디스크 복구 불가**. 사용자 결정으로 **fresh 재시작**(arm_bail=20, 0→500K). 프로덕션 검증: 초기 윈도우 **bail 0, late-EKF 14.1/14.8/15.5s ×3 전부 회복**(구 10s면 30% bail). 재발방지: 파괴적 fresh-start 전 startup `Checkpoints:` 로그로 격리 검증. → [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]]
@@ -87,6 +90,8 @@
 - [x] **fps 개선 — CRUISE 타임아웃 근본 원인 수정** — arm 게이팅(#2) + early-bail(#4). v12에서 효과 검증 중 → [[research/cruise_timeout_arming]]
 - [x] **v12/v13 arm 처리량 재진단** — `ARM REJECTED` 0회(게이팅 작동), 실제 병목은 EKF 재수렴이 10s bail 초과(13–16s). **arm_bail 10→20s 적용** → [[experiments/exp_006_xgzum51v_armdiag_dryrun]] / Rule 11
 - [x] **v13 재시작** — 30K 체크포인트 인시던트로 소실 → **fresh 재시작**(iyhfy5ps, arm_bail=20). 검증: bail 0, late-EKF 회복 확인.
+- [x] **핸드오프 윈도우 확장** — 고도↑(레버 아님) 기각, **탐지 게이트 수정**(conf 0.5 + 공간필터 200→300 px)으로 핸드오프 2.7→5.0 m(~2배), spurious 0. dry-run PASS, **미커밋** → [[experiments/exp_008_dryrun_alt10_handoff_window]] / Rule 13
+- [ ] **윈도우 확장분 커밋 후 학습** — 사용자 커밋/푸시 → fresh full training(또는 iyhfy5ps 재개) → 첫 롤아웃 핸드오프 d_xy ~5 m 정상 + success_rate 점검(정책 ~3.5→5 m 재적응 모니터)
 - [ ] **v13(iyhfy5ps) 추세 점검** — 첫 롤아웃 후 success_rate 발생 + ep_len/env/ep_reward 추세 + 전체 bail율(구 ~21/h 대비)
 - [ ] **(장기) teleport EKF 재수렴 단축** — 13–16s 재수렴 자체 줄이기(명시적 EKF reset 등). 타임아웃은 증상 완화일 뿐
 - [ ] **⚠️ YOLO target_lost_rate ~29% bimodal 해결** — per-step 트리거가 전부/전무로 분리(악화 0.24→0.35). obs[9-11] zeroed + `-10` 페널티. 미해결 (이번 세션 범위 밖)
@@ -114,3 +119,4 @@
 | 2026-06-17 | 46y4xtiw | ~30K (중단) | rl_yolo_v13_terminal_reward. ~10h에 6%뿐(fps≈0.83) — arm_bail 병목 진단 위해 graceful stop. 재개 대기. |
 | 2026-06-17 | xgzum51v (offline) | 1000 (dry-run) | v13_armdiag. EKF 재수렴 bimodal(0s/13–16s) 계측 → arm_bail 10→20s 수정. Rule 11. ⚠️ 이 dry-run이 YAML 중복 키로 v13 30K 체크포인트 파괴. |
 | 2026-06-17 | iyhfy5ps | 진행 중 (fresh 0→500K) | rl_yolo_v13_terminal_reward **fresh 재시작** (arm_bail=20). 30K 인시던트 후. 검증: bail 0, late-EKF 14–15.5s ×3 회복. → [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] |
+| 2026-06-22 | dryrun_alt10 (uqy7lmny/_gated, offline) | 1500×2 (dry-run) | **핸드오프 윈도우↑.** 고도만 10 m=실패(레버 아님; 마커 작아짐 + 200 px 필터 캡). 10 m+탐지 게이트(conf 0.5 + 200→300 px)=성공: 핸드오프 2.7→5.0 m(~2배), spurious 0. **미커밋.** → [[experiments/exp_008_dryrun_alt10_handoff_window]] / [[research/detection_gate_vs_altitude]] / Rule 13 |

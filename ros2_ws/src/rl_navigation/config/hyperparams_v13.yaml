@@ -72,7 +72,7 @@ environment:
   # Gate the start: if handoff d_xy > start_drift_max, retry with a full restart + a
   # progressive settle (settle × retry#) so the EKF horizontally reconverges before the
   # policy ever sees the episode. Abort (not loop forever) after max_retries.
-  start_drift_max: 5.0          # normal handoff is 3.2–3.8m; >5m ⇒ EKF diverged
+  start_drift_max: 10.0         # @10m cruise alt normal handoff is ~7m (0.7×alt); >10m ⇒ EKF diverged
   start_drift_settle: 8.0       # base post-restart EKF settle (s); ×retry# (progressive)
   start_drift_max_retries: 6
   sim_speed_factor: 2

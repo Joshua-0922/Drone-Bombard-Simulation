@@ -12,11 +12,17 @@ type: index
 
 ---
 
-## 현재 상태 (2026-06-20)
+## 현재 상태 (2026-06-22)
 
 - **알고리즘:** SAC, `net_arch=[256,256]`, L4 GPU
 - **현재 학습:** `rl_yolo_v13_terminal_reward` (iyhfy5ps) — **157.7K/500K에서 SIGTERM stop**(preempt+replay 보존, 재개 가능)
-- **이번 세션 (2026-06-20) — v13 정책 평가:**
+- **이번 세션 (2026-06-22) — 핸드오프 윈도우 확장:**
+  - 사용자 요청: "X마커가 늦게(거의 머리 위) 탐지돼 RL 핸드오프 후 학습 윈도우가 짧다." 가설 = 순항 고도↑.
+  - **고도만 10 m(v1 dry-run): 실패.** clean 핸드오프 여전히 d_xy 2.7 m(베이스라인 동급) + 순항-시작 spurious(conf=0.00, d_xy≈11 m) → health gate abort. 원인: 마커 apparent size 절반(YOLO 늦게 lock) + 200 px 필터가 핸드오프를 머리 위로 클립. **고도는 레버 아님.**
+  - **10 m + 탐지 게이트 수정(v2): 성공.** `vision_callback` conf 게이트(`min_detection_conf=0.5`) + 공간 필터 200→300 px(`detection_pixel_radius`). **핸드오프 2.7→5.0 m(윈도우 ~2배), spurious 0, EKF-drift 0.** VISION 로그: FP conf 0.29–0.45 reject / real 0.73–0.95 accept.
+  - **코드 변경 미커밋**(사용자 직접 커밋 예정). 보상 공식 아님(기하+탐지) → fresh 필수 아니나 초반 재적응 예상.
+  - 상세: [[experiments/exp_008_dryrun_alt10_handoff_window]] / [[research/detection_gate_vs_altitude]] / Rule 13
+- **이전 세션 (2026-06-20) — v13 정책 평가:**
   - 학습 점검: 157.7K(~32%), **ep_rew_mean ~100 plateau(80K부터 평탄), success ~82%, target_lost 0**, fps≈0(restart 병목).
   - plateau 확인 → eval 위해 학습 SIGTERM stop → deterministic eval(`sac_drop_preempt.zip`, 20-ep 요청/13 실행).
   - **정책 양호:** 깨끗하게 시작한 ep 1–3 전부 0.8m 성공(reward 126/114/132, step 41–72; 평균 124 > 학습 ~100).
@@ -66,6 +72,7 @@ type: index
 | 006 | rl_yolo_v13_terminal_reward (46y4xtiw→iyhfy5ps) | 0→500K | 🔄 fresh 재시작 | 종단 보상 재설계. 46y4xtiw 30K에서 처리량 진단 위해 stop → ⚠️ armdiag dry-run이 30K 체크포인트 파괴 → **fresh 재시작 iyhfy5ps (arm_bail=20)** → [[research/terminal_overshoot_trap]] / [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] |
 | 006b (dry-run) | v13_armdiag_dryrun (xgzum51v) | 1000 | ✅ 완료 | arm_bail 진단: EKF 재수렴 bimodal(0s/13–16s), 25s에서 bail 0. **Fix: arm_bail_timeout 10→20** → [[experiments/exp_006_xgzum51v_armdiag_dryrun]] / Rule 11 |
 | 007 (eval) | iyhfy5ps (157.7K 평가) | 13 ep | ✅ 완료 | deterministic eval. 유효 3-ep 100% 성공(reward 124>학습 ~100); ep 4–13 EKF divergence 흡수 루프(시작 상태 결함). harness: evaluate.py NaN, v13 탄도 투하 없음 → [[experiments/exp_007_iyhfy5ps_v13_eval]] / [[research/eval_terminal_env_metrics]] / Rule 12 |
+| 008 (dry-run) | dryrun_alt10 (uqy7lmny / _gated, offline) | 1500×2 | ✅ 완료 | 핸드오프 윈도우↑. 고도만 10 m=실패(레버 아님), 10 m+탐지 게이트(conf 0.5 + 200→300 px)=성공(핸드오프 2.7→5.0 m, spurious 0). 미커밋 → [[experiments/exp_008_dryrun_alt10_handoff_window]] / [[research/detection_gate_vs_altitude]] / Rule 13 |
 
 ## 에러 현황
 
@@ -117,6 +124,7 @@ type: index
 - [[research/cruise_timeout_arming]] — CRUISE 타임아웃 = teleport 후 EKF 재수렴 bimodal(0s/13–16s). **06-17 정정: v12의 10s 컷이 복구 직전 단두대질 → arm_bail 10→20s** (Rule 11).
 - [[research/terminal_overshoot_trap]] — v12 종단 정체 = overshoot 해자 트랩 (정하방 카메라 핸드오프 ~1m). v13 보상 재설계.
 - [[research/eval_terminal_env_metrics]] — v13 eval EKF divergence 흡수 루프 + evaluate.py 지표 비정합 (탄도 투하 없음 → CEP 비실재). 시작 health gate 필요 (Rule 12).
+- [[research/detection_gate_vs_altitude]] — 핸드오프 윈도우의 진짜 레버 = 탐지 게이트(conf + 공간 필터), 고도 아님. 고도↑는 마커 가시성 깎아 역효과 (Rule 13).
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
@@ -127,6 +135,7 @@ type: index
 - [[experiments/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]] — Arming-rejection throughput fix. v11 분석 + 수정 3종 + dry-run 검증.
 - [[experiments/exp_006_xgzum51v_armdiag_dryrun]] — arm_bail 진단. EKF 재수렴 bimodal 계측 → 10s 컷이 진짜 병목. Fix: arm_bail 10→20s.
 - [[experiments/exp_007_iyhfy5ps_v13_eval]] — v13 deterministic eval. 유효 3-ep 100% 성공(reward 124); ep 4–13 EKF divergence 흡수 루프. harness 지표 비정합 발견.
+- [[experiments/exp_008_dryrun_alt10_handoff_window]] — 핸드오프 윈도우↑ dry-run. 고도↑ 실패→탐지 게이트 수정(conf+300 px)으로 핸드오프 2.7→5.0 m. 미커밋.
 
 ### 에러 (errors/)
 - [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] — armdiag dry-run이 YAML 중복 `checkpoint_dir` 키로 v13 30K 체크포인트 파괴. fresh-start 삭제 footgun + 격리 검증 규칙.
@@ -135,6 +144,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-06-22]] — 핸드오프 윈도우 확장: 고도↑(10 m) 실패 → 탐지 게이트(conf 0.5 + 200→300 px)로 핸드오프 2.7→5.0 m
 - [[daily/daily_2026-06-20]] — v13 정책 평가: 유효 ep 100% 성공(정책 양호) + eval EKF divergence 흡수 루프 + harness 지표 비정합
 - [[daily/daily_2026-06-16]] — v12 정체 진단(종단 overshoot 트랩) + v13 종단 보상 재설계 prep
 - [[daily/daily_2026-06-14]] — 06-12 이후 종합: 보상 함수 재설계(v9) + YOLO hold(v9b) + throughput 최적화(v9c·v9d)

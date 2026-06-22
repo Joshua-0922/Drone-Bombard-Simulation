@@ -364,7 +364,7 @@ class DroneDropEnv(gym.Env):
         # Gate the start state: if d_xy at handoff exceeds start_drift_max, retry the
         # reset (full infra restart + settle) instead of returning a corrupted start
         # that would trip the step-1 drift guard (-15) and pollute training/eval.
-        self._cfg_start_drift_max = cfg_env.get('start_drift_max', 5.0)
+        self._cfg_start_drift_max = cfg_env.get('start_drift_max', 10.0)  # ≈0.7×cruise_alt (10m); raise if cruise alt raised
         self._cfg_start_drift_settle = cfg_env.get('start_drift_settle', 8.0)
         self._cfg_start_drift_max_retries = int(cfg_env.get('start_drift_max_retries', 6))
 
@@ -599,7 +599,8 @@ class DroneDropEnv(gym.Env):
 
         # 8b. Episode-start EKF↔camera health gate (Rule 12).
         #     TRACKING was just confirmed, so the drone is physically near the marker
-        #     (normal handoff d_xy is ~3.2–3.8 m). A much larger EKF-reported d_xy means
+        #     (normal handoff d_xy ≈ 0.7×cruise_altitude, ~7 m at 10 m). A much larger
+        #     EKF-reported d_xy than start_drift_max means
         #     the EKF position estimate has diverged from truth — returning this start
         #     would immediately trip the step-1 drift guard (-15) and, on repeated rapid
         #     restarts, lock the run into a drift→restart→drift absorbing loop that
@@ -689,9 +690,11 @@ class DroneDropEnv(gym.Env):
                 'rew_ctrl': 0.0, 'rew_dist': 0.0, 'rew_orient': 0.0,
             }
 
-        # EKF drift guard: normal TRACKING entries are 3.2–3.8m; ≥5m means EKF
+        # EKF drift guard: a handoff d_xy beyond start_drift_max means the EKF
         # diverged during CRUISE (physically elsewhere, camera will never see marker).
-        if self._step_count == 1 and d_xy > 5.0:
+        # Scales with cruise altitude via the same config as the reset health gate
+        # (normal handoff ≈ 0.7×cruise_altitude, e.g. ~7m at 10m).
+        if self._step_count == 1 and d_xy > self._cfg_start_drift_max:
             self._node.get_logger().warn(
                 f'[EKF Drift] d_xy={d_xy:.1f}m > 5.0m at step 1 — truncating drifted episode.')
             reward = self._cfg_truncation_penalty

@@ -227,6 +227,29 @@ YOLO 누수 fix(fresh-kill에 `xmarker_detector` 추가) 후 dry-run 3/3 SUCCESS
 
 ---
 
+## Rule 13 — "늦은 탐지/짧은 윈도우"는 탐지 게이트로 풀어라 (고도 아님)
+
+> **상세:** [[research/detection_gate_vs_altitude]] · [[experiments/exp_008_dryrun_alt10_handoff_window]]
+
+핸드오프(CRUISE→TRACKING)가 "거의 머리 위"(d_xy ~3.5 m)에서 일어나 RL 윈도우가 짧은 문제를
+**순항 고도↑(5→10 m)로 풀려 했으나 실패.** 고도는 레버가 아니다:
+- 마커 apparent size ∝ 1/고도 → 10 m에선 절반 크기 → YOLO가 *더 가까워야* lock → 핸드오프 여전히 2.7 m.
+- `vision_callback`의 **200 px 공간 필터**가 고도 무관하게 핸드오프를 중심 근처로 클립.
+- 넓어진 FoV가 순항 시작에서 X-like 지면 FP를 잡아 **spurious CRUISE→TRACKING(conf=0.00, d_xy≈11 m)** 유발.
+
+**진짜 수정 = 탐지 게이트:**
+- **confidence 게이트**(`min_detection_conf=0.5`): real 마커 conf 0.73–0.95 vs 지면 FP ≤0.45 → 간격에 임계 안착.
+- **공간 필터 완화**(200→300 px): real off-center 탐지(264–293 px) 조기 accept → 핸드오프 2.7→**5.0 m**(윈도우 ~2배).
+
+**필수 규칙:**
+- **탐지 타이밍 문제는 탐지 파이프라인에서 풀어라.** 필터 반경·conf 임계·마커 가시성이 레버. 비행 고도/기하는 아니다.
+- **공간 필터 완화는 반드시 confidence 게이트와 함께.** 반경만 키우면 off-center FP 표면이 커진다.
+- **게이트 임계는 데이터로 정하라.** accept/reject를 로깅해 real vs FP conf 분포 사이 간격에 임계를 놓아라.
+- **고도↑는 마커 가시성을 깎는다** — apparent size ∝ 1/고도. 윈도우 확장엔 역효과.
+- **기하/탐지 변경은 보상 공식 변경이 아니다** → fresh start 필수는 아니나, 핸드오프 거리가 바뀌면 정책 초반 재적응 예상.
+
+---
+
 > **Phase 1 전체 계획:** [[research/phase1_plan]] — CCIP 기반 자율 접근, 8주, 14개 실험
 
 ---

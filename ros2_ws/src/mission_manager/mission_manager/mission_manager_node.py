@@ -22,7 +22,12 @@ class MissionManagerNode(Node):
         super().__init__('mission_manager_node')
 
         # --- [1] 파라미터 ---
-        self.target_altitude = 5.0    # 순항 고도 5m (RL: reduced for faster reset)
+        self.target_altitude = 10.0   # 순항 고도 10m (raised from 5m: wider camera
+        #                               footprint → marker detected earlier → longer RL
+        #                               tracking window. Handoff d_xy scales ~0.7×alt
+        #                               (~7m at 10m). Keep start_drift_max ≥ this in
+        #                               hyperparams_v13.yaml or good episodes get flagged
+        #                               as EKF drift.
 
         # Cruise heading toward the marker (NE). drone_controller negates the y of
         # /drone/cmd/position (PX4_East = -cmd.y), so a NEGATIVE cruise_speed_y
@@ -36,6 +41,17 @@ class MissionManagerNode(Node):
         # Proximity trigger is the primary TRACKING mechanism; this is secondary.
         self._stable_detect_ticks = 5
         self._stable_detect_count = 0
+        # Detection acceptance gates (vision_callback). Raised cruise altitude (10m)
+        # widens the camera footprint → more X-like ground false positives near the
+        # START of cruise (dry-run 2026-06-22: spurious CRUISE→TRACKING at conf=0.00,
+        # d_xy≈11m on 2/3 episodes). Two gates separate the real marker from noise:
+        #   • min_detection_conf: real marker locks at conf≈0.94; ground false
+        #     positives are weaker. Reject anything below this. (Was: any z>0 accepted.)
+        #   • detection_pixel_radius: max off-center distance (px). Relaxed 200→300 so
+        #     a real off-center detection hands off EARLIER (longer RL window) — safe
+        #     only because the conf gate now guards the larger acceptance area.
+        self._min_detection_conf = self.declare_parameter('min_detection_conf', 0.5).value
+        self._detection_pixel_radius = self.declare_parameter('detection_pixel_radius', 300.0).value
         # Proximity fallback: transition to TRACKING when within this distance
         # of target (NED metres), regardless of YOLO.  Guards against camera
         # misconfiguration causing YOLO to never (or always) fire.
@@ -133,19 +149,32 @@ class MissionManagerNode(Node):
         if self.state not in (STATE_CRUISE, STATE_TRACK):
             return
         if msg.z > 0.0:
+            # Confidence gate: reject weak detections (ground false positives). The
+            # real marker locks at conf≈0.94; start-of-cruise noise is weaker.
+            if msg.z < self._min_detection_conf:
+                self.get_logger().info(
+                    f'[VISION REJECT conf] z={msg.z:.2f} < {self._min_detection_conf:.2f} '
+                    f'@({msg.x:.0f},{msg.y:.0f})', throttle_duration_sec=1.0)
+                return
             # Spatial filter: reject detections far from image center (640×480).
-            # Real marker (directly below at cruise altitude) appears within ~200px
-            # of center; edge-of-frame detections are false positives from distant
-            # ground patterns that happen to look X-like.
+            # Real marker appears near center; edge-of-frame detections are false
+            # positives from distant ground patterns that look X-like. Radius is
+            # tunable (detection_pixel_radius) — wider radius hands off earlier.
             dx = msg.x - 320.0
             dy = msg.y - 240.0
             pixel_dist = math.sqrt(dx * dx + dy * dy)
-            if pixel_dist > 200.0:
+            if pixel_dist > self._detection_pixel_radius:
+                self.get_logger().info(
+                    f'[VISION REJECT dist] {pixel_dist:.0f}px > {self._detection_pixel_radius:.0f}px '
+                    f'conf={msg.z:.2f}', throttle_duration_sec=1.0)
                 return
             self.target_visible = True
             self.target_u = msg.x
             self.target_v = msg.y
             self.last_detection_time = time.time()
+            self.get_logger().info(
+                f'[VISION ACCEPT] conf={msg.z:.2f} @({msg.x:.0f},{msg.y:.0f}) '
+                f'dist={pixel_dist:.0f}px', throttle_duration_sec=1.0)
 
     def drop_callback(self, msg):
         if not msg.data:
