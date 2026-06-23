@@ -21,7 +21,7 @@ import gymnasium as gym
 import numpy as np
 import rclpy
 import yaml
-from geometry_msgs.msg import Point, Twist
+from geometry_msgs.msg import Point, Twist, Vector3
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy, QoSHistoryPolicy
 from std_msgs.msg import String
@@ -133,6 +133,9 @@ class _RLBridgeNode(Node):
 
         # --- Publishers ---
         self.vel_pub = self.create_publisher(Twist, '/drone/cmd/velocity', 10)
+        # Position command (soft reset fly-back) — drone_controller subscribes Vector3
+        # on /drone/cmd/position and switches to POSITION offboard mode.
+        self.pos_pub = self.create_publisher(Vector3, '/drone/cmd/position', 10)
 
         # VehicleCommand publisher — used to disarm PX4 between episodes.
         # Must share the same QoS as drone_controller's publisher so PX4
@@ -238,6 +241,18 @@ class _RLBridgeNode(Node):
         msg.linear.z = float(vz)
         msg.angular.z = float(yaw_rate)
         self.vel_pub.publish(msg)
+
+    def publish_position(self, x_north, y, z_up):
+        """Publish a position Vector3 to /drone/cmd/position (cmd frame: x=North, z=Up).
+
+        drone_controller converts to NED (x, -y, -z) and switches to POSITION mode.
+        Used by the soft-reset fly-back to steer the still-armed drone back to start
+        without disarming/teleporting (so the EKF is never disrupted)."""
+        msg = Vector3()
+        msg.x = float(x_north)
+        msg.y = float(y)
+        msg.z = float(z_up)
+        self.pos_pub.publish(msg)
 
     def send_disarm(self):
         """Force-disarm PX4 between episodes.
@@ -414,6 +429,14 @@ class DroneDropEnv(gym.Env):
         self._step_count = 0
         self._episode_reward = 0.0
         self._episode_procs = []      # Popen handles for episode nodes
+        self._mm_procs = []           # mission_manager (+drop_calc) subset of _episode_procs
+        self._ctrl_proc = None        # drone_controller proc (kept alive across soft resets)
+        # --- Soft-reset prototype (no teleport/disarm: fly back to start) ---
+        self._cfg_soft_reset = bool(cfg_env.get('soft_reset_enabled', False))
+        self._cfg_soft_reset_alt = cfg_env.get('soft_reset_altitude', 10.0)  # match mission_manager target_altitude
+        self._soft_attempts = 0       # episodes where soft reset was tried
+        self._soft_success = 0        # episodes where soft reset reached TRACKING
+        self._soft_skipped = 0        # episodes not flyable -> normal reset
         self.d_xy_prev = 0.0          # 2D horizontal distance to target at previous step
         self.action_prev = np.zeros(4, dtype=np.float32)
         self._d_xy_history = {}       # step→d_xy for stagnation detection
@@ -494,6 +517,21 @@ class DroneDropEnv(gym.Env):
                 target=self._spin_loop, daemon=True, name='Thread-2 (spin)')
             self._spin_thread.start()
             time.sleep(1.0)
+
+        # --- Soft-reset prototype (no teleport/disarm): fly the still-armed,
+        #     airborne drone back to start and re-run CRUISE->TRACKING, so the
+        #     PX4 EKF is never disrupted (no preflight reconvergence wait). Falls
+        #     through to the full teleport+restart path below on any failure or a
+        #     non-flyable end state. ---
+        if self._cfg_soft_reset:
+            try:
+                if self._try_soft_reset():
+                    self._reset_depth = 0
+                    self._start_drift_retries = 0
+                    return self._get_obs(), {}
+            except Exception as _e:
+                self._node.get_logger().warn(
+                    f'[SOFT RESET] exception: {_e} — falling back to full reset')
 
         # 2. Kill previous episode processes.
         self._kill_episode()
@@ -1491,6 +1529,140 @@ class DroneDropEnv(gym.Env):
             preexec_fn=os.setsid,
         )
         self._episode_procs.append(proc)
+
+        # Track mission_manager (+drop_calc) and controller separately so a soft
+        # reset can restart the FSM while keeping the controller (offboard
+        # heartbeat) alive. Order matches the appends above: [mm, ctrl, drop].
+        if len(self._episode_procs) >= 3:
+            self._mm_procs = [self._episode_procs[0], self._episode_procs[2]]
+            self._ctrl_proc = self._episode_procs[1]
+
+    def _kill_mission_manager(self):
+        """Kill only the mission_manager (+drop_calc) procs, leaving the
+        drone_controller alive so its 20 Hz offboard heartbeat keeps PX4 in
+        OFFBOARD across the soft reset (no failsafe drop, no re-arm)."""
+        for proc in self._mm_procs:
+            if proc is not None and proc.poll() is None:
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    proc.wait(timeout=5)
+                except (ProcessLookupError, subprocess.TimeoutExpired):
+                    try:
+                        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+        self._episode_procs = [p for p in self._episode_procs if p not in self._mm_procs]
+        self._mm_procs = []
+
+    def _start_mission_manager(self):
+        """Relaunch only the mission_manager FSM (controller stays alive). The
+        fresh FSM restarts at TAKEOFF; the drone is already armed and at cruise
+        altitude, so it transitions to CRUISE within a tick (no arm, no climb)."""
+        ep_env = os.environ.copy()
+        ep_env['ROS_DOMAIN_ID'] = str(self._instance_id)
+        ep_log = open(f'/tmp/episode_{self._instance_id}.log', 'w')
+        proc = subprocess.Popen(
+            ['ros2', 'run', 'mission_manager', 'mission_manager_node',
+             '--ros-args', '-p', 'rl_mode:=true'],
+            env=ep_env, stdout=ep_log, stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid,
+        )
+        self._mm_procs = [proc]
+        self._episode_procs.append(proc)
+
+    def _try_soft_reset(self):
+        """Prototype: start the next episode WITHOUT teleport/disarm/PX4-restart.
+
+        Keeps the drone armed and airborne, flies it back to start via a position
+        setpoint (controller stays alive → offboard never drops), then restarts
+        only the mission_manager FSM and re-runs the CRUISE→TRACKING handoff. The
+        PX4 EKF is never disrupted, so there is no preflight reconvergence wait.
+
+        Returns True if TRACKING was reached via this fast path, else False
+        (caller falls back to the proven teleport+restart reset)."""
+        t0 = time.time()
+        # 1. Flyability gate — only soft-reset from a clean, controllable end state.
+        with self._state_lock:
+            roll = self._node.roll
+            pitch = self._node.pitch
+            pos = self._node.pos_enu.copy()
+            armed = self._node.armed
+        alt = float(pos[2])
+        d_xy = self._compute_d_xy(pos)
+        inverted = (abs(roll) > 1.0) or (abs(pitch) > 1.0)   # ~57°
+        flyable = (armed and alt > 2.0 and not inverted
+                   and math.isfinite(d_xy) and d_xy < 30.0)
+        self._node.get_logger().warn(
+            f'[SOFT RESET] gate flyable={flyable} | armed={armed} alt={alt:.1f} '
+            f'roll={roll:.2f} pitch={pitch:.2f} d_xy={d_xy:.1f}')
+        if not flyable:
+            self._soft_skipped += 1
+            return False
+        self._soft_attempts += 1
+
+        # 2. Stop the old FSM; controller stays alive (offboard heartbeat continues).
+        self._kill_mission_manager()
+
+        # 3. Fly back to start origin at cruise altitude. pos_enu = [East, North, Up].
+        fly_deadline = time.time() + 25.0
+        p = pos
+        reached = False
+        while time.time() < fly_deadline:
+            self._node.publish_position(0.0, 0.0, self._cfg_soft_reset_alt)
+            with self._state_lock:
+                p = self._node.pos_enu.copy()
+            if not (math.isfinite(p[0]) and math.isfinite(p[1])):
+                self._node.get_logger().warn('[SOFT RESET] non-finite pos during flyback — fallback')
+                return False
+            if math.hypot(float(p[0]), float(p[1])) < 2.0:
+                reached = True
+                break
+            time.sleep(0.2)
+        if not reached:
+            self._node.get_logger().warn(
+                f'[SOFT RESET] flyback timeout (East={p[0]:.1f} North={p[1]:.1f}) — fallback')
+            return False
+
+        # 4. EKF health check — estimate must be sane & at altitude after a
+        #    continuous (non-teleported) flyback.
+        with self._state_lock:
+            p = self._node.pos_enu.copy()
+        if math.hypot(float(p[0]), float(p[1])) > 5.0 or float(p[2]) < 2.0:
+            self._node.get_logger().warn(
+                f'[SOFT RESET] EKF implausible after flyback (E={p[0]:.1f} N={p[1]:.1f} U={p[2]:.1f}) — fallback')
+            return False
+
+        # 5. Restart FSM only; re-run CRUISE→TRACKING (drone already armed+airborne).
+        self._start_mission_manager()
+        with self._state_lock:
+            self._node.mission_state = 'IDLE'
+        self._wait_for_cruise()
+        with self._state_lock:
+            ok_cruise = self._node.mission_state in ('CRUISE', 'TRACKING')
+        if not ok_cruise:
+            self._node.get_logger().warn('[SOFT RESET] no CRUISE after flyback — fallback')
+            return False
+        self._wait_for_tracking()
+        with self._state_lock:
+            pos2 = self._node.pos_enu.copy()
+            ok_track = (self._node.mission_state == 'TRACKING')
+        if not ok_track:
+            self._node.get_logger().warn('[SOFT RESET] no TRACKING after flyback — fallback')
+            return False
+
+        # 6. Seed d_xy_prev from the handoff; reject a divergent start (same gate as full path).
+        self.d_xy_prev = self._compute_d_xy(pos2)
+        if self.d_xy_prev > self._cfg_start_drift_max:
+            self._node.get_logger().warn(
+                f'[SOFT RESET] handoff d_xy={self.d_xy_prev:.1f} > {self._cfg_start_drift_max} — fallback')
+            return False
+
+        self._soft_success += 1
+        self._node.get_logger().warn(
+            f'[SOFT RESET] SUCCESS in {time.time()-t0:.1f}s | d_xy={self.d_xy_prev:.1f} | '
+            f'attempts={self._soft_attempts} success={self._soft_success} skipped={self._soft_skipped} '
+            f'(no teleport / no PX4 restart)')
+        return True
 
     def _gz_reset_poses(self):
         """Teleport drone and payload to upright spawn positions between episodes.

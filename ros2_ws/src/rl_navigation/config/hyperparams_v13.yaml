@@ -78,6 +78,8 @@ environment:
   sim_speed_factor: 2
   use_vision: true
   detection_hold_frames: 10
+  soft_reset_enabled: true       # PROTOTYPE (2026-06-22): skip teleport/disarm when drone ends flyable — fly back to start, EKF never disrupted. Falls back to full reset otherwise.
+  soft_reset_altitude: 10.0
 
 reward:
   # --- Approach shaping ---

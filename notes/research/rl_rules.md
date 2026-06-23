@@ -250,6 +250,34 @@ YOLO 누수 fix(fresh-kill에 `xmarker_detector` 추가) 후 dry-run 3/3 SUCCESS
 
 ---
 
+## Rule 14 — 리셋 처리량은 "EKF를 교란 안 하는 리셋"으로 풀어라 (param 아님)
+
+> **상세:** [[research/reset_throughput_bottleneck]] · [[experiments/exp_009_softreset_throughput]]
+
+에피소드 리셋의 지배적 비용(v14 fps≈2, ETA ~2.5일)은 `gz_reset_poses`(teleport)+disarm 후 PX4
+**EKF 추정기 재수렴** 대기다. `ctrl_0.log`: `Delaying arm — pre_flight_checks_pass=False (EKF not yet
+reconverged)`. fresh PX4 restart도 동일하게 timeout(cold-start EKF 수렴 bimodal 0s/13–16s, Rule 11과 동일 뿌리).
+
+**param/timeout은 못 고친다(음성 확정):** `EKF2_GPS_CHECK 0` A/B = 차이 없음 — airframe가 이미
+`COM_ARM_WO_GPS 1`이라 GPS는 게이트가 아니었음. 실제 게이트 = EKF validity/innovation 수렴이고 **이를 끄는
+param은 설계상 없다**(안전). arm_bail·mag-check·fast-path-제거도 전부 증상 완화였다.
+
+**통하는 것 = soft reset(teleport 회피):** 종료 시 flyable이면 disarm/teleport 없이 armed+airborne 유지 →
+position setpoint로 출발점 복귀(controller 살려둬 20Hz offboard heartbeat 유지) → mission_manager FSM만
+재시작 → 재핸드오프. EKF가 연속 비행 내내 교란 안 됨 → 재수렴 대기 0. **결과: reset 65s→11s, fps 2→9,
+throughput ~3.9×, 32연속 soft reset에서 EKF d_xy 안정(4.5–5.8m, 발산 없음).**
+
+**필수 규칙:**
+- **teleport/disarm는 EKF 재수렴을 강제하고, 그 대기는 param으로 못 줄인다.** 연속 비행 복귀로 비용을 0으로.
+- **항상 fallback.** 전복/저고도/EKF발산/비유한 종료는 soft reset 불가 → 기존 teleport+restart. 최악도 baseline(그 이하 아님).
+
+**✅ Production 검증완료 (2026-06-23, byxyaf4d 0→196.5K):** 3096 soft resets에서 soft 성공 ~91%(fallback ~9%만 teleport), 학습 내내 EKF health gate(10m) 안쪽 유지(발산 루프 0). 학습된 정책에서도 fallback율·EKF drift 모두 bounded. → [[experiments/exp_010_byxyaf4d_v14_195k_eval]]
+- **drift guard = self-correct.** soft reset로 EKF가 느리게 누적돼도 handoff d_xy > start_drift_max면 그 에피소드만
+  teleport fallback → 누적 리셋. soft reset + drift guard = 빠르되 안전.
+- **음성 결과도 규칙이다.** "param 만지면 빨라질 것"은 COM_ARM_WO_GPS 맥락에선 틀림 — 재시도 금지.
+
+---
+
 > **Phase 1 전체 계획:** [[research/phase1_plan]] — CCIP 기반 자율 접근, 8주, 14개 실험
 
 ---

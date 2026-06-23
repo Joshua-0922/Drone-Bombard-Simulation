@@ -12,11 +12,19 @@ type: index
 
 ---
 
-## 현재 상태 (2026-06-22)
+## 현재 상태 (2026-06-23)
 
 - **알고리즘:** SAC, `net_arch=[256,256]`, L4 GPU
-- **현재 학습:** `rl_yolo_v13_terminal_reward` (iyhfy5ps) — **157.7K/500K에서 SIGTERM stop**(preempt+replay 보존, 재개 가능)
-- **이번 세션 (2026-06-22) — 핸드오프 윈도우 확장:**
+- **현재 학습:** ⏸️ `rl_yolo_v14_softreset` (byxyaf4d) — **196.5K/500K(~39%)에서 SIGINT stop** (`sac_drop_195000_steps.zip` 보존). v13(iyhfy5ps 157.7K)는 `rl_checkpoints/archive/v13_iyhfy5ps_157k_20260622`에 백업.
+- **이번 세션 (2026-06-23) — v14 195K eval = 65%(13/20):** plateau(70K부터 reward 평탄) 확인 후 stop → clean 20-ep deterministic eval **65%** (v13 80% 대비 회귀). 실패 7 전부 final-approach stagnation(0.5–0.8m, 0.50m gate 직전), EKF 귀책 0. **Soft reset 장기검증 ✅**(3096 resets, soft ~91%, EKF bounded, no teleport) → Rule 14 검증완료. 회귀=정책 미성숙(39% budget). 비디오 3/3 success 캡처(`rl_eval_results/v14_195k_flight_annotated.mp4`+`_raw.mp4`). v14 commit 결정 대기. → [[experiments/exp_010_byxyaf4d_v14_195k_eval]]
+- **이번 세션 (2026-06-22) — 리셋 처리량 ~3.9× (soft reset):**
+  - 문제: v14 fps≈2, ETA ~2.5일. 에피소드마다 CRUISE timeout(~42s) + full restart(~22s).
+  - **근본원인 규명:** teleport+disarm 후 PX4 **EKF 추정기 재수렴** 대기(`pre_flight_checks_pass=False`). fresh restart도 동일.
+  - **EKF2_GPS_CHECK 0 A/B = 음성**(COM_ARM_WO_GPS라 GPS는 게이트 아님; 실제 게이트=EKF 수렴, 바이패스 param 없음). param/timeout 레버 고갈.
+  - **Soft reset(teleport 회피) = 성공:** flyable이면 날아서 출발점 복귀 후 FSM만 재시작. **throughput 0.93→3.61/min(~3.9×), fps 2→9, reset 65s→11s, soft 100%(32/32), EKF d_xy 안정 4.5–5.8m(발산 없음).** ETA ~2.5일→~15h.
+  - **코드 미커밋**, full run으로 장기 검증 중(EKF drift bounded? fallback율?).
+  - 상세: [[experiments/exp_009_softreset_throughput]] / [[research/reset_throughput_bottleneck]] / Rule 14
+- **이전 (2026-06-22) — 핸드오프 윈도우 확장:**
   - 사용자 요청: "X마커가 늦게(거의 머리 위) 탐지돼 RL 핸드오프 후 학습 윈도우가 짧다." 가설 = 순항 고도↑.
   - **고도만 10 m(v1 dry-run): 실패.** clean 핸드오프 여전히 d_xy 2.7 m(베이스라인 동급) + 순항-시작 spurious(conf=0.00, d_xy≈11 m) → health gate abort. 원인: 마커 apparent size 절반(YOLO 늦게 lock) + 200 px 필터가 핸드오프를 머리 위로 클립. **고도는 레버 아님.**
   - **10 m + 탐지 게이트 수정(v2): 성공.** `vision_callback` conf 게이트(`min_detection_conf=0.5`) + 공간 필터 200→300 px(`detection_pixel_radius`). **핸드오프 2.7→5.0 m(윈도우 ~2배), spurious 0, EKF-drift 0.** VISION 로그: FP conf 0.29–0.45 reject / real 0.73–0.95 accept.
@@ -73,6 +81,8 @@ type: index
 | 006b (dry-run) | v13_armdiag_dryrun (xgzum51v) | 1000 | ✅ 완료 | arm_bail 진단: EKF 재수렴 bimodal(0s/13–16s), 25s에서 bail 0. **Fix: arm_bail_timeout 10→20** → [[experiments/exp_006_xgzum51v_armdiag_dryrun]] / Rule 11 |
 | 007 (eval) | iyhfy5ps (157.7K 평가) | 13 ep | ✅ 완료 | deterministic eval. 유효 3-ep 100% 성공(reward 124>학습 ~100); ep 4–13 EKF divergence 흡수 루프(시작 상태 결함). harness: evaluate.py NaN, v13 탄도 투하 없음 → [[experiments/exp_007_iyhfy5ps_v13_eval]] / [[research/eval_terminal_env_metrics]] / Rule 12 |
 | 008 (dry-run) | dryrun_alt10 (uqy7lmny / _gated, offline) | 1500×2 | ✅ 완료 | 핸드오프 윈도우↑. 고도만 10 m=실패(레버 아님), 10 m+탐지 게이트(conf 0.5 + 200→300 px)=성공(핸드오프 2.7→5.0 m, spurious 0). 미커밋 → [[experiments/exp_008_dryrun_alt10_handoff_window]] / [[research/detection_gate_vs_altitude]] / Rule 13 |
+| 009 | EKF A/B + softreset (byxyaf4d) | proto+full | ✅ 완료 | 리셋 처리량 ~3.9×. EKF param A/B=음성, **soft reset(teleport 회피)=성공**(0.93→3.61 handoffs/min, fps 2→9, reset 65s→11s, soft 100%, EKF 안정). → [[experiments/exp_009_softreset_throughput]] / [[research/reset_throughput_bottleneck]] / Rule 14 |
+| 010 (eval) | rl_yolo_v14_softreset (byxyaf4d, 195K) | 20 ep | ✅ 완료 | **195K eval = 65%(13/20)**, v13 80% 대비 회귀(실패 전부 final-approach stagnation). EKF 귀책 0. **Soft reset 장기검증 ✅**(3096 resets, soft ~91%, EKF bounded) → Rule 14 검증완료. 비디오 3/3 success 캡처. commit 결정 대기. → [[experiments/exp_010_byxyaf4d_v14_195k_eval]] |
 
 ## 에러 현황
 
@@ -125,6 +135,7 @@ type: index
 - [[research/terminal_overshoot_trap]] — v12 종단 정체 = overshoot 해자 트랩 (정하방 카메라 핸드오프 ~1m). v13 보상 재설계.
 - [[research/eval_terminal_env_metrics]] — v13 eval EKF divergence 흡수 루프 + evaluate.py 지표 비정합 (탄도 투하 없음 → CEP 비실재). 시작 health gate 필요 (Rule 12).
 - [[research/detection_gate_vs_altitude]] — 핸드오프 윈도우의 진짜 레버 = 탐지 게이트(conf + 공간 필터), 고도 아님. 고도↑는 마커 가시성 깎아 역효과 (Rule 13).
+- [[research/reset_throughput_bottleneck]] — 리셋 병목 = teleport 후 EKF 재수렴(param으론 못 고침). soft reset(teleport 회피)으로 ~3.9× (Rule 14).
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
@@ -136,6 +147,8 @@ type: index
 - [[experiments/exp_006_xgzum51v_armdiag_dryrun]] — arm_bail 진단. EKF 재수렴 bimodal 계측 → 10s 컷이 진짜 병목. Fix: arm_bail 10→20s.
 - [[experiments/exp_007_iyhfy5ps_v13_eval]] — v13 deterministic eval. 유효 3-ep 100% 성공(reward 124); ep 4–13 EKF divergence 흡수 루프. harness 지표 비정합 발견.
 - [[experiments/exp_008_dryrun_alt10_handoff_window]] — 핸드오프 윈도우↑ dry-run. 고도↑ 실패→탐지 게이트 수정(conf+300 px)으로 핸드오프 2.7→5.0 m. 미커밋.
+- [[experiments/exp_009_softreset_throughput]] — 리셋 처리량. EKF param A/B(음성) + soft reset 프로토(~3.9×, EKF 안정). full run 검증 중.
+- [[experiments/exp_010_byxyaf4d_v14_195k_eval]] — v14 195K eval 65%(13/20, v13 회귀, final-approach stagnation) + soft reset 장기검증(3096 resets, Rule 14 완료) + 비디오 산출물.
 
 ### 에러 (errors/)
 - [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] — armdiag dry-run이 YAML 중복 `checkpoint_dir` 키로 v13 30K 체크포인트 파괴. fresh-start 삭제 footgun + 격리 검증 규칙.
@@ -144,6 +157,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-06-23]] — v14 plateau stop @196.5K → 195K eval 65%(v13 회귀, final-approach stagnation) + soft reset 장기검증(Rule 14 완료) + 비디오 캡처
 - [[daily/daily_2026-06-22]] — 핸드오프 윈도우 확장: 고도↑(10 m) 실패 → 탐지 게이트(conf 0.5 + 200→300 px)로 핸드오프 2.7→5.0 m
 - [[daily/daily_2026-06-20]] — v13 정책 평가: 유효 ep 100% 성공(정책 양호) + eval EKF divergence 흡수 루프 + harness 지표 비정합
 - [[daily/daily_2026-06-16]] — v12 정체 진단(종단 overshoot 트랩) + v13 종단 보상 재설계 prep
