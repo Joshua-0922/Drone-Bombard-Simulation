@@ -10,5 +10,6 @@ export GZ_SIM_RESOURCE_PATH=/workspace/gazebo_models:/opt/PX4-Autopilot/Tools/si
 cd /workspace/ros2_ws
 bash start_infra_clean.sh
 ros2 run rl_navigation train_sac \
+  --config src/rl_navigation/config/hyperparams_v13.yaml \
   --run-name v15_bc_stable 2>&1 | tee /tmp/train_bc.log
 echo "TRAIN_BC_EXIT=$?"

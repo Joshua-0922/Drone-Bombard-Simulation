@@ -80,6 +80,7 @@ environment:
   detection_hold_frames: 10
   soft_reset_enabled: true       # PROTOTYPE (2026-06-22): skip teleport/disarm when drone ends flyable — fly back to start, EKF never disrupted. Falls back to full reset otherwise.
   soft_reset_altitude: 10.0
+  velocity_lpf_alpha: 0.4        # 2026-07-01 wobble fix: EMA on RL velocity setpoints in drone_controller (0.4≈75ms tau @20Hz). A/B confirmed −45% cmd jerk. Enabled at train time so policy learns against the filtered plant (train==deploy).
 
 reward:
   # --- Approach shaping ---
@@ -96,8 +97,16 @@ reward:
 
   # --- Stability/efficiency ---
   w_time: 0.05
-  w_ang_vel: 0.05
-  w_action_smooth: 0.05
+  w_ang_vel: 0.15         # 2026-07-01 (C) wobble: 0.05→0.15 — penalise body-rate wobble (not forward motion)
+  w_action_smooth: 0.20   # 2026-07-01 (C) wobble: 0.05→0.20 — penalise per-step action jerk
+
+  # --- (B) Velocity damping near target (2026-07-01 wobble): free far away, decelerate near marker ---
+  # ⚠️ TENSION: v14's failure was final-approach STAGNATION (couldn't close last ~0.3m to the
+  # 0.5m gate). A near-target speed penalty can reinforce that. Kept gentle (0.08) and the
+  # radius pushed out to 3m so it damps oscillation without killing the pull-in; smoothness
+  # weights (C) are the primary wobble lever. Tune down further / to 0 if stagnation worsens.
+  w_vel: 0.08
+  vel_damp_radius: 3.0
 
   # --- Layer 1 penalties ---
   penalty_crash: -50.0

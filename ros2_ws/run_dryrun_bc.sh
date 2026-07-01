@@ -10,6 +10,7 @@ export WANDB_MODE=offline
 cd /workspace/ros2_ws
 bash start_infra_clean.sh
 ros2 run rl_navigation train_sac \
+  --config src/rl_navigation/config/hyperparams_v13.yaml \
   --timesteps 1200 \
   --checkpoint-dir /tmp/rl_dryrun_bc \
   --run-name dryrun_bc 2>&1 | tee /tmp/dryrun_bc.log

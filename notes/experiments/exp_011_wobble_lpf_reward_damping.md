@@ -48,6 +48,20 @@ wandb_run: v15_bc_stable
 - rew_vel이 근접서만 활성인지(먼 구간 0) 학습 로그로 확인.
 - 부족 시 fallback: 액션 스케일 vx/vy ↓, w_vel/smoothness 추가 튜닝.
 
+## 5. ⚠️ Postmortem — 잘못된 base config로 첫 v15 크래시 (2026-07-01)
+
+**첫 v15 run(`41qq0tpd`)은 10.8K/300K(3.6%)에서 크래시.** `RuntimeError: reset() called recursively >5 → infra unrecoverable`. 원인 = **CRUISE-timeout→IDLE-stuck 캐스케이드**(드론이 IDLE서 arm/climb 못 함, 3회 full-restart 실패 → reset-recursion guard abort). RL 핸드오프 전 죽어서 **보상 변경과 무관**.
+
+**근본 원인 = 잘못된 base config(실행 오류):** `run_train_bc.sh`가 `--config` 없이 실행 → 기본 `hyperparams.yaml` 사용. 그러나 v14/10m 인프라·종말 수정은 전부 **`hyperparams_v13.yaml`**에 있음. 증거:
+- **soft reset 0회 발동**(v14는 ~91%) ← `soft_reset_enabled` 없음 → 느린 full-restart-only → 48 CRUISE timeouts / 60 restarts.
+- action_vx/vy **8/5**(v13은 4/3), success_radius **0.5**(v13 0.8), overshoot **1.5**(v13 0.6) → v13 종말-overshoot 수정도 되돌아감.
+
+**수정:** B+C+LPF를 **`hyperparams_v13.yaml`에 이식** + 런처 `--config hyperparams_v13.yaml`. **`w_vel` 0.15→0.08로 완화**(⚠️ v14 실패=final-approach stagnation인데 근접 속도 페널티가 이를 악화 가능 → smoothness 가중(C)을 주 레버로, B는 gentle). v13 base는 이미 action 4/3라 wobble이 원래 더 약함.
+
+**재검증(corrected dry-run):** Config=hyperparams_v13.yaml 확인, **soft reset 7/7 성공(~11–14s, no teleport)**, reset-recursion 0, `Training complete`. → **full retrain 재기동** `v15_bc_stable`(run `53v6ehpx`, hyperparams_v13.yaml, 300K).
+
+**교훈:** train_sac는 `--config` 없으면 기본 `hyperparams.yaml`로 폴백. v14 이후 작업은 반드시 `--config hyperparams_v13.yaml`. 새 보상 변경은 그 파일에 이식할 것. (A/B eval도 hyperparams.yaml(scale 8)로 돌아 raw jerk 절대값이 ~2× 부풀려졌을 수 있음 — LPF −45% 비율은 유효.)
+
 ## 코드/도구
 - `drone_controller_node.py`(EMA `_filter_velocity` + `velocity_lpf_alpha` param), `drone_drop_env.py`(param 주입 + `r3_vel`), `hyperparams.yaml`(w_vel/vel_damp_radius/w_ang_vel/w_action_smooth/velocity_lpf_alpha), `episode.launch.py`(launch arg).
 - 신규 도구(미커밋): `vel_logger.py`, `run_abtest.sh`, `run_dryrun_bc.sh`, `run_train_bc.sh`.
