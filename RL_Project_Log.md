@@ -6,7 +6,9 @@
 
 # 1. Current State
 
-**업데이트:** 2026-06-23
+**업데이트:** 2026-07-01
+
+> **▶️ 활성 학습 (2026-07-01): `rl_yolo_v15_bc_stable`** — Fresh 0→300K 진행 중 (tmux `rl_train`, wandb online). **RL wobble 교정** 적용: eval `deterministic=True`라 wobble=학습된 bang-bang 정책(탐험 노이즈 아님). LPF A/B로 **PX4 수신 속도명령 jerk RMS 2.92→1.61(−45%), 평균 속력 불변** → smoothness-control 문제 확정. 교정 = (B) 근접-게이팅 속도 댐핑 `w_vel=0.15/vel_damp_radius=4` + (C) `w_ang_vel 0.05→0.15`·`w_action_smooth 0.05→0.20` + 로직 LPF `velocity_lpf_alpha=0.4`(학습==배포). dry-run PASS(크래시 0). **Fresh Start가 v14 5체크포인트 삭제 → `rl_checkpoints/v14_backup/`에 백업.** → [[experiments/exp_011_wobble_lpf_reward_damping]] / [[research/control_smoothness_wobble]] / Rule 15
 
 > **⚠️ 미커밋 변경 (2026-06-22~23, 검증 완료 — commit 결정 대기):**
 > ① **핸드오프 윈도우 확장** — `target_altitude` 5→10 m + `vision_callback` 탐지 게이트(`min_detection_conf=0.5`, `detection_pixel_radius` 200→300) + `start_drift_max` 5→10. 핸드오프 2.7→5.0 m(~2배). → [[experiments/exp_008_dryrun_alt10_handoff_window]] / Rule 13

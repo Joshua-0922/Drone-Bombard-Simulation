@@ -25,6 +25,7 @@ from launch.actions import (
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -36,6 +37,14 @@ def generate_launch_description():
         description="Skip rl_navigation_node; RL env drives velocity directly")
 
     rl_mode = LaunchConfiguration("rl_mode")
+
+    velocity_lpf_alpha_arg = DeclareLaunchArgument(
+        "velocity_lpf_alpha", default_value="1.0",
+        description=("EMA smoothing on RL velocity setpoints in drone_controller. "
+                     "1.0 = pass-through (raw baseline); 0<alpha<1 filters "
+                     "(0.4 ~= 75ms tau at 20Hz). Used for the wobble A/B check."))
+
+    velocity_lpf_alpha = LaunchConfiguration("velocity_lpf_alpha")
 
     # ---------------------------------------------------------------------------
     # [1] Mission nodes -- start immediately, block on PX4 topic availability
@@ -52,6 +61,8 @@ def generate_launch_description():
         executable="controller",
         name="drone_controller",
         output="screen",
+        parameters=[{"velocity_lpf_alpha": ParameterValue(
+            velocity_lpf_alpha, value_type=float)}],
     )
     rl_navigation = Node(
         package="rl_navigation",
@@ -71,6 +82,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         rl_mode_arg,
+        velocity_lpf_alpha_arg,
         mission_manager,
         drone_controller,
         rl_navigation,

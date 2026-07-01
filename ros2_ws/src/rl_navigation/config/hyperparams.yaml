@@ -46,6 +46,7 @@ environment:
   sim_speed_factor: 2            # v9c: 2x real-time. Speeds Gazebo+PX4 lockstep → compresses productive flight AND wait-loop milestones. DRY-TESTED for arming stability before full resume.
   use_vision: true
   detection_hold_frames: 10     # hold last YOLO detection for N frames on miss (10 = 1s at 10Hz)
+  velocity_lpf_alpha: 0.4       # EMA smoothing on RL velocity setpoints in drone_controller. 1.0 = pass-through (raw); 0.4 ~= 75ms tau @20Hz. A/B confirmed −45% cmd jerk. Enabled so training==deploy plant (policy learns against the filtered controller).
 
 reward:
   # --- Approach shaping ---
@@ -62,8 +63,12 @@ reward:
 
   # --- Stability/efficiency ---
   w_time: 0.05
-  w_ang_vel: 0.05
-  w_action_smooth: 0.05
+  w_ang_vel: 0.15         # (C) 0.05→0.15: penalise body-rate wobble (not forward motion)
+  w_action_smooth: 0.20   # (C) 0.05→0.20: penalise per-step action jerk (raw cmd jerk_rms was ~2.9 m/s/sample)
+
+  # --- (B) Velocity damping near target: slow into the marker, not orbit it ---
+  w_vel: 0.15                   # penalty weight on horizontal speed, scaled by closeness
+  vel_damp_radius: 4.0          # metres; speed cost is 0 beyond this (cruise-out stays fast)
 
   # --- Layer 1 penalties ---
   penalty_crash: -50.0

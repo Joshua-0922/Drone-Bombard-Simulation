@@ -58,10 +58,25 @@ class DroneControllerNode(Node):
 
         # --- [4] 내부 변수 ---
         self.control_mode = "POSITION"
+        self._prev_control_mode = "POSITION"
 
         # 초기 고도 설정: 10m (NED 좌표계이므로 -10.0)
         self.target_pos = [0.0, 0.0, -10.0]
         self.target_vel = [0.0, 0.0, 0.0, 0.0]  # vx, vy, vz, yaw_speed
+
+        # --- Velocity low-pass filter (wobble empirical check) ---
+        # RL publishes step velocity setpoints at 10 Hz; this loop runs at 20 Hz.
+        # An EMA on the published velocity smooths the step changes that make the
+        # drone visibly wobble under RL control.
+        #   alpha in (0, 1]:  v_filt = alpha*cmd + (1-alpha)*v_filt
+        #   alpha >= 1.0  ->  pass-through (NO filtering) = raw baseline for A/B.
+        # Time constant tau ~= dt * (1/alpha - 1); at 20 Hz, alpha=0.4 -> tau~=75 ms.
+        # Default 1.0 = pass-through: identical to legacy behavior until opted in via
+        # launch arg, so v14 (trained without the filter) is A/B'd fairly.
+        self.declare_parameter('velocity_lpf_alpha', 1.0)
+        self._vel_lpf_alpha = float(
+            self.get_parameter('velocity_lpf_alpha').value)
+        self._v_filt = [0.0, 0.0, 0.0, 0.0]
 
         self.vehicle_status = VehicleStatus()
         self.offboard_set_counter = 0
@@ -133,8 +148,9 @@ class DroneControllerNode(Node):
         if self.control_mode == "POSITION":
             self.publish_position_setpoint(self.target_pos)
         elif self.control_mode == "VELOCITY":
-            self.publish_velocity_setpoint(self.target_vel)
+            self.publish_velocity_setpoint(self._filter_velocity(self.target_vel))
 
+        self._prev_control_mode = self.control_mode
         self.offboard_set_counter += 1
 
         # Wait until PX4 vehicle_status is actually received before arming.
@@ -172,6 +188,21 @@ class DroneControllerNode(Node):
         if self.offboard_set_counter % 10 == 0:
             if not in_offboard:
                 self.engage_offboard_mode()
+
+    def _filter_velocity(self, cmd):
+        """EMA low-pass on the RL velocity setpoint to damp wobble.
+
+        Snaps to the incoming command on the first VELOCITY tick (or when
+        filtering is disabled) to avoid a ramp-from-zero lag when RL takes
+        over from cruise; applies the exponential moving average thereafter.
+        """
+        a = self._vel_lpf_alpha
+        if a >= 1.0 or self._prev_control_mode != "VELOCITY":
+            self._v_filt = list(cmd)
+        else:
+            self._v_filt = [a * c + (1.0 - a) * f
+                            for c, f in zip(cmd, self._v_filt)]
+        return self._v_filt
 
     def publish_offboard_control_mode(self):
         msg = OffboardControlMode()

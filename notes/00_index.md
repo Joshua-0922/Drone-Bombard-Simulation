@@ -12,10 +12,12 @@ type: index
 
 ---
 
-## 현재 상태 (2026-06-23)
+## 현재 상태 (2026-07-01)
 
 - **알고리즘:** SAC, `net_arch=[256,256]`, L4 GPU
-- **현재 학습:** ⏸️ `rl_yolo_v14_softreset` (byxyaf4d) — **196.5K/500K(~39%)에서 SIGINT stop** (`sac_drop_195000_steps.zip` 보존). v13(iyhfy5ps 157.7K)는 `rl_checkpoints/archive/v13_iyhfy5ps_157k_20260622`에 백업.
+- **현재 학습:** ▶️ `rl_yolo_v15_bc_stable` — **Fresh 0→300K 진행 중** (tmux `rl_train`, wandb online). wobble 교정(B+C 보상 댐핑 + LPF 0.4) 적용. Fresh Start가 v14 5체크포인트 삭제 → **`rl_checkpoints/v14_backup/`에 백업**(195K 포함).
+- **이번 세션 (2026-07-01) — RL wobble 진단·교정:** 사용자 관찰(10 m 핸드오프 후 RL 인수하나 wobble). eval `deterministic=True`라 **탐험 노이즈 아님 = 학습된 bang-bang 정책.** LPF A/B: PX4 수신 속도명령 **jerk RMS 2.92→1.61(−45%)**, 평균 속력 1.13×(안 느려짐) → **smoothness-control 문제 확정.** 교정: (B) 근접-게이팅 속도 댐핑 `w_vel=0.15/R=4`, (C) `w_ang_vel 0.05→0.15`·`w_action_smooth 0.05→0.20`, 로직 LPF `velocity_lpf_alpha=0.4`(학습==배포). dry-run PASS → v15 fresh 기동. → [[experiments/exp_011_wobble_lpf_reward_damping]] / [[research/control_smoothness_wobble]] / Rule 15
+- **이전 학습:** ⏸️ `rl_yolo_v14_softreset` (byxyaf4d) — 196.5K/500K에서 SIGINT stop, `rl_checkpoints/v14_backup/`에 보존. v13(iyhfy5ps 157.7K)는 `rl_checkpoints/archive/v13_iyhfy5ps_157k_20260622`에 백업.
 - **이번 세션 (2026-06-23) — v14 195K eval = 65%(13/20):** plateau(70K부터 reward 평탄) 확인 후 stop → clean 20-ep deterministic eval **65%** (v13 80% 대비 회귀). 실패 7 전부 final-approach stagnation(0.5–0.8m, 0.50m gate 직전), EKF 귀책 0. **Soft reset 장기검증 ✅**(3096 resets, soft ~91%, EKF bounded, no teleport) → Rule 14 검증완료. 회귀=정책 미성숙(39% budget). 비디오 3/3 success 캡처(`rl_eval_results/v14_195k_flight_annotated.mp4`+`_raw.mp4`). v14 commit 결정 대기. → [[experiments/exp_010_byxyaf4d_v14_195k_eval]]
 - **이번 세션 (2026-06-22) — 리셋 처리량 ~3.9× (soft reset):**
   - 문제: v14 fps≈2, ETA ~2.5일. 에피소드마다 CRUISE timeout(~42s) + full restart(~22s).
@@ -83,6 +85,7 @@ type: index
 | 008 (dry-run) | dryrun_alt10 (uqy7lmny / _gated, offline) | 1500×2 | ✅ 완료 | 핸드오프 윈도우↑. 고도만 10 m=실패(레버 아님), 10 m+탐지 게이트(conf 0.5 + 200→300 px)=성공(핸드오프 2.7→5.0 m, spurious 0). 미커밋 → [[experiments/exp_008_dryrun_alt10_handoff_window]] / [[research/detection_gate_vs_altitude]] / Rule 13 |
 | 009 | EKF A/B + softreset (byxyaf4d) | proto+full | ✅ 완료 | 리셋 처리량 ~3.9×. EKF param A/B=음성, **soft reset(teleport 회피)=성공**(0.93→3.61 handoffs/min, fps 2→9, reset 65s→11s, soft 100%, EKF 안정). → [[experiments/exp_009_softreset_throughput]] / [[research/reset_throughput_bottleneck]] / Rule 14 |
 | 010 (eval) | rl_yolo_v14_softreset (byxyaf4d, 195K) | 20 ep | ✅ 완료 | **195K eval = 65%(13/20)**, v13 80% 대비 회귀(실패 전부 final-approach stagnation). EKF 귀책 0. **Soft reset 장기검증 ✅**(3096 resets, soft ~91%, EKF bounded) → Rule 14 검증완료. 비디오 3/3 success 캡처. commit 결정 대기. → [[experiments/exp_010_byxyaf4d_v14_195k_eval]] |
+| 011 | wobble A/B + v15_bc_stable | eval×2 + dry-run + 0→300K | ▶️ 학습 중 | **RL wobble = smoothness-control 문제 확정.** LPF A/B: 속도명령 jerk RMS 2.92→1.61(−45%), 평균 속력 불변. 교정(B 근접 속도 댐핑 + C smoothness↑ + LPF 0.4) dry-run PASS → v15 fresh 기동(v14 백업). → [[experiments/exp_011_wobble_lpf_reward_damping]] / [[research/control_smoothness_wobble]] / Rule 15 |
 
 ## 에러 현황
 

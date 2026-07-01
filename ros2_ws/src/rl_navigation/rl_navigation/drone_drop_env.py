@@ -367,6 +367,11 @@ class DroneDropEnv(gym.Env):
         # immediately instead of waiting out the full cruise_poll_timeout.
         self._cfg_arm_bail_timeout = cfg_env.get('arm_bail_timeout', 10.0)
         self._cfg_sim_speed_factor = int(cfg_env.get('sim_speed_factor', 1))
+        # EMA low-pass on RL velocity setpoints in drone_controller, to damp the
+        # visible wobble under RL control. 1.0 = pass-through (raw baseline);
+        # 0<alpha<1 filters (0.4 ~= 75ms tau at 20Hz). Passed to the controller
+        # subprocess in _launch_episode_layer().
+        self._cfg_velocity_lpf_alpha = cfg_env.get('velocity_lpf_alpha', 1.0)
         # use_vision=False: skip camera termination + synthesise conf=1.0 in obs
         self._cfg_use_vision = cfg_env.get('use_vision', True)
         self._cfg_detection_hold_frames = cfg_env.get('detection_hold_frames', 10)
@@ -392,6 +397,11 @@ class DroneDropEnv(gym.Env):
         self._cfg_w_time = r.get('w_time', 0.01)
         self._cfg_w_ang_vel = r.get('w_ang_vel', 0.05)
         self._cfg_w_action_smooth = r.get('w_action_smooth', 0.05)
+        # (B) Proximity-scaled velocity damping: penalise horizontal speed only
+        # near the target so the drone decelerates into the marker instead of
+        # orbiting/oscillating. Free to cruise fast far away (near_factor→0).
+        self._cfg_w_vel = r.get('w_vel', 0.15)
+        self._cfg_vel_damp_radius = r.get('vel_damp_radius', 4.0)
         self._cfg_w_vision_center = r.get('w_vision_center', 1.0)
         self._cfg_limit_ang_vel = r.get('limit_ang_vel', 2.0)
         self._cfg_limit_tilt = r.get('limit_tilt', 0.26)
@@ -938,6 +948,7 @@ class DroneDropEnv(gym.Env):
         #      + w_heading * cos_heading * speed_gate  ← heading alignment (0 when w_heading=0)
         #      + w_proximity * max(0, 1 - d_xy/r)     ← dense proximity bonus
         #      + w_vision_center * centering * conf    ← YOLO centering reward
+        #      - w_vel * speed_xy * near_factor        ← (B) velocity damping near target
         # ----------------------------------------------------------------
 
         # Distance gradient (positive when moving toward target)
@@ -946,6 +957,12 @@ class DroneDropEnv(gym.Env):
         # Heading alignment: cos(angle between drone velocity and bearing to target)
         vx_2d, vy_2d = float(vel[0]), float(vel[1])
         speed_xy = math.sqrt(vx_2d * vx_2d + vy_2d * vy_2d)
+
+        # (B) Velocity damping near target — cost grows linearly as d_xy shrinks
+        # inside vel_damp_radius, zero beyond it (cruise-out speed stays free).
+        near_factor = max(0.0, 1.0 - d_xy / self._cfg_vel_damp_radius)
+        r3_vel = -self._cfg_w_vel * speed_xy * near_factor
+
         if speed_xy > 0.1:
             dx_to_target = self._cfg_target_x - float(pos[0])
             dy_to_target = self._cfg_target_y - float(pos[1])
@@ -975,7 +992,7 @@ class DroneDropEnv(gym.Env):
 
         r3_proximity = self._cfg_w_proximity * max(0.0, 1.0 - d_xy / self._cfg_proximity_radius)
 
-        r3 = r3_dist + r3_orient + r3_proximity + r3_vision
+        r3 = r3_dist + r3_orient + r3_proximity + r3_vision + r3_vel
 
         # Advance d_xy_prev for next step
         self.d_xy_prev = d_xy
@@ -990,6 +1007,7 @@ class DroneDropEnv(gym.Env):
         info['rew_orient'] = r3_orient
         info['rew_proximity'] = r3_proximity
         info['rew_vision'] = r3_vision
+        info['rew_vel'] = r3_vel
 
         return reward, False, info
 
@@ -1501,11 +1519,12 @@ class DroneDropEnv(gym.Env):
 
         # drone_controller — PX4 -i N publishes to /px4_N/fmu/* topics,
         # so controller needs topic remapping for instances > 0
-        ctrl_cmd = ['ros2', 'run', 'drone_controller', 'controller']
+        ctrl_cmd = ['ros2', 'run', 'drone_controller', 'controller',
+                    '--ros-args',
+                    '-p', f'velocity_lpf_alpha:={self._cfg_velocity_lpf_alpha}']
         if iid > 0:
             ns = self._px4_ns   # e.g. '/px4_1'
             ctrl_cmd.extend([
-                '--ros-args',
                 '-r', f'/fmu/in/offboard_control_mode:={ns}/fmu/in/offboard_control_mode',
                 '-r', f'/fmu/in/trajectory_setpoint:={ns}/fmu/in/trajectory_setpoint',
                 '-r', f'/fmu/in/vehicle_command:={ns}/fmu/in/vehicle_command',

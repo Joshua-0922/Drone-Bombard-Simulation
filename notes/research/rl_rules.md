@@ -278,6 +278,26 @@ throughput ~3.9×, 32연속 soft reset에서 EKF d_xy 안정(4.5–5.8m, 발산 
 
 ---
 
+## Rule 15 — RL 인수 후 wobble = smoothness 문제, 보상+로직으로 교정
+
+**진단 먼저:** eval이 `deterministic=True`면 wobble은 탐험 노이즈가 아니라 **학습된 bang-bang 정책**이다.
+정량화: PX4 수신 속도명령(`/fmu/in/trajectory_setpoint.velocity`)의 **연속 차분 RMS(=command jerk)**로
+측정. v14: raw jerk RMS **2.92 m/s/sample**(50 ms마다 ~m/s 진동) = wobble의 정체.
+
+**원인 3종:** ① 과도한 액션 권한(vx=8/vy=5) ② 순수 진행 보상(w_dist=2.0)에 댐핑 거의 0
+(w_ang_vel=w_action_smooth=0.05, 속도 페널티 부재) ③ 출력 평활 없음(RL setpoint 직행).
+
+**교정(둘 다):**
+- **로직 = 출력 LPF**(컨트롤러 EMA `velocity_lpf_alpha`, 0.4≈75 ms tau). A/B로 jerk **−45%**, 평균 속력 불변.
+  값싸고 즉효지만 정책이 진동을 원하면 lag만 추가 → **원인 교정 병행 필수**. 학습 시에도 켜라(train==deploy plant).
+- **보상 = 근접-게이팅 속도 댐핑**(B) `−w_vel·speed_xy·max(0,1−d_xy/R)`: **먼 구간 0(순항 자유), 근처만 감속.**
+  "너무 느리게 하지 마라" 제약을 이렇게 만족(cruise-out 자유). + **smoothness 가중↑**(C).
+- **레버 우선순위:** 보상 shaping → (부족 시) 액션 스케일↓ → (구조적) 이전 액션을 obs에 추가.
+
+→ [[research/control_smoothness_wobble]] / [[experiments/exp_011_wobble_lpf_reward_damping]]
+
+---
+
 > **Phase 1 전체 계획:** [[research/phase1_plan]] — CCIP 기반 자율 접근, 8주, 14개 실험
 
 ---
