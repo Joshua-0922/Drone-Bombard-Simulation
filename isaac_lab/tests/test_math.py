@@ -270,6 +270,25 @@ def test_ballistic_impact_wind_is_true_zero_noop_in_phase1():
     torch.testing.assert_close(impact_no_wind, impact_ref_zero_wind, atol=1e-6, rtol=1e-6)
 
 
+def test_ballistic_impact_batched_no_broadcast_bug():
+    """Regression: with N != 1 and N != 2 envs, the time factor must
+    broadcast against the [N,2] horizontal vectors. A bare [N] (missing
+    unsqueeze) throws 'size of tensor a (2) must match tensor b (N)'."""
+    for n in (3, 5, 255, 256):
+        pos_xy = torch.randn(n, 2)
+        vel_xy = torch.randn(n, 2)
+        altitude = torch.rand(n) * 10 + 1
+        zero_drag = torch.zeros(n)
+        zero_wind = torch.zeros(n, 2)
+        impact = mu.ballistic_impact(pos_xy, vel_xy, altitude, 0.1, 9.81, zero_drag, zero_wind)
+        assert impact.shape == (n, 2)
+        # per-row equals the scalar closed form
+        for i in range(min(n, 4)):
+            t = math.sqrt(2.0 * altitude[i].item() / 9.81)
+            expected = pos_xy[i] + vel_xy[i] * (t + 0.1)
+            torch.testing.assert_close(impact[i], expected, atol=1e-5, rtol=1e-5)
+
+
 def test_ccip_residual_is_zero_stub_no_params():
     obs = torch.randn(8, 14)
     residual = mu.ccip_residual(obs)

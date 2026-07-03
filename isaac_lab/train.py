@@ -1,128 +1,113 @@
 """Train Isaac-DroneBombard-Direct-v0 with rsl_rl PPO.
 
-Ports the Spot-VM-preemption and checkpoint-hygiene behavior of
-``ros2_ws/src/rl_navigation/rl_navigation/train_sac.py`` (SIGTERM emergency
-save, keep-last-N rolling checkpoints, periodic milestone archives) onto
-Isaac Lab's standard rsl_rl launch shape.
+Mirrors Isaac Lab v2.3.2's stock rsl_rl train script API
+(RslRlVecEnvWrapper(clip_actions=...), OnPolicyRunner, single learn call)
+while building the env cfg directly (the path proven by
+verify_one_episode.py) and adding a SIGTERM preempt-save for Spot VMs.
 
-Usage (inside the isaac-lab Docker image, on the L4 Spot VM):
-    ./isaaclab.sh -p /workspace/drone-bombard/isaac_lab/train.py \\
-        --task Isaac-DroneBombard-Direct-v0 --headless --num_envs 2048
+Usage (inside the isaac-lab container, on the L4 Spot VM or any host with a
+working install):
+    ./isaaclab.sh -p train.py --task Isaac-DroneBombard-Direct-v0 \\
+        --headless --num_envs 2048
+Small dry-run:
+    ./isaaclab.sh -p train.py --headless --num_envs 256 --max_iterations 20
 """
 
 import argparse
-import glob
 import os
 import signal
 import sys
+from datetime import datetime
 
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Train Isaac-DroneBombard-Direct-v0 with rsl_rl PPO.")
 parser.add_argument("--task", type=str, default="Isaac-DroneBombard-Direct-v0")
-parser.add_argument("--num_envs", type=int, default=None)
+parser.add_argument("--num_envs", type=int, default=2048)
 parser.add_argument("--max_iterations", type=int, default=None)
-parser.add_argument("--seed", type=int, default=None)
-parser.add_argument("--resume", type=str, default=None, help="Path to a checkpoint to resume from, or 'latest'.")
-parser.add_argument("--checkpoint_dir", type=str, default="/workspace/logs/isaac_lab/drone_bombard")
-parser.add_argument("--keep_last", type=int, default=5)
-parser.add_argument("--milestone_interval", type=int, default=500, help="Iterations between permanent milestone archives.")
+parser.add_argument("--seed", type=int, default=42)
+parser.add_argument("--resume", type=str, default=None, help="Path to a checkpoint (.pt) to resume from.")
+parser.add_argument("--log_root", type=str, default="/workspace/logs/isaac_lab/drone_bombard")
+parser.add_argument("--run_name", type=str, default="")
 parser.add_argument("--wandb_project", type=str, default="drone-bombard-isaac")
+parser.add_argument("--logger", type=str, default="wandb", choices=["wandb", "tensorboard"])
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
-args_cli.headless = getattr(args_cli, "headless", True) or True
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
-import gymnasium as gym
-import torch
-from rsl_rl.runners import OnPolicyRunner
+import gymnasium as gym  # noqa: E402
+import torch  # noqa: E402
+from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
-from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper, RslRlOnPolicyRunnerCfg
-from isaaclab_tasks.utils import parse_env_cfg
+from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: E402
 
-import drone_bombard  # noqa: F401 - registers Isaac-DroneBombard-Direct-v0
-from drone_bombard.agents.rsl_rl_ppo_cfg import DroneBombardPPORunnerCfg
+import drone_bombard  # noqa: F401,E402 - registers the task
+from drone_bombard.drone_bombard_env import DroneBombardEnvCfg  # noqa: E402
+from drone_bombard.agents.rsl_rl_ppo_cfg import DroneBombardPPORunnerCfg  # noqa: E402
 
-
-def _latest_checkpoint(ckpt_dir: str) -> str | None:
-    files = sorted(glob.glob(os.path.join(ckpt_dir, "model_*.pt")), key=os.path.getmtime)
-    return files[-1] if files else None
-
-
-def _cleanup_old_checkpoints(ckpt_dir: str, keep_last: int):
-    files = sorted(glob.glob(os.path.join(ckpt_dir, "model_*.pt")), key=os.path.getmtime)
-    for old in files[:-keep_last] if keep_last > 0 else []:
-        try:
-            os.remove(old)
-            print(f"[Cleanup] Deleted old checkpoint: {old}")
-        except OSError:
-            pass
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 
 def main():
-    env_cfg = parse_env_cfg(args_cli.task, num_envs=args_cli.num_envs)
-    agent_cfg: RslRlOnPolicyRunnerCfg = DroneBombardPPORunnerCfg()
+    # --- env cfg (built directly — the path proven by verify_one_episode.py) ---
+    env_cfg = DroneBombardEnvCfg()
+    env_cfg.scene.num_envs = args_cli.num_envs
+    env_cfg.sim.device = args_cli.device if args_cli.device is not None else "cuda:0"
+    env_cfg.seed = args_cli.seed
+
+    # --- agent cfg ---
+    agent_cfg: DroneBombardPPORunnerCfg = DroneBombardPPORunnerCfg()
+    agent_cfg.seed = args_cli.seed
     if args_cli.max_iterations is not None:
         agent_cfg.max_iterations = args_cli.max_iterations
-    if args_cli.seed is not None:
-        agent_cfg.seed = args_cli.seed
-
-    os.makedirs(args_cli.checkpoint_dir, exist_ok=True)
-
-    env = gym.make(args_cli.task, cfg=env_cfg)
-    env = RslRlVecEnvWrapper(env)
-
-    agent_cfg.logger = "wandb"
+    agent_cfg.logger = args_cli.logger
     agent_cfg.wandb_project = args_cli.wandb_project
+    if args_cli.run_name:
+        agent_cfg.run_name = args_cli.run_name
 
-    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=args_cli.checkpoint_dir, device=agent_cfg.device)
+    log_root = os.path.abspath(os.path.join(args_cli.log_root, agent_cfg.experiment_name))
+    log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    if agent_cfg.run_name:
+        log_dir += f"_{agent_cfg.run_name}"
+    log_dir = os.path.join(log_root, log_dir)
+    os.makedirs(log_dir, exist_ok=True)
+    print(f"[INFO] Logging experiment to: {log_dir}")
 
-    resume_path = args_cli.resume
-    if resume_path == "latest":
-        resume_path = _latest_checkpoint(args_cli.checkpoint_dir)
-    if resume_path:
-        print(f"[Resume] Loading checkpoint: {resume_path}")
-        runner.load(resume_path)
+    # --- build env + rsl_rl runner (stock v2.3.2 API) ---
+    env = gym.make(args_cli.task, cfg=env_cfg)
+    env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
+    runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
 
+    if args_cli.resume:
+        print(f"[INFO] Resuming from checkpoint: {args_cli.resume}")
+        runner.load(args_cli.resume)
+
+    # --- Spot-VM preemption: save on SIGTERM before the box dies ---
     def _emergency_save(signum, frame):
-        preempt_path = os.path.join(args_cli.checkpoint_dir, "model_preempt.pt")
+        path = os.path.join(log_dir, "model_preempt.pt")
         try:
-            runner.save(preempt_path)
-            print(f"[Preempt] Emergency checkpoint saved: {preempt_path}")
+            runner.save(path)
+            print(f"[Preempt] Emergency checkpoint saved: {path}", flush=True)
         finally:
             try:
                 import wandb
-                if wandb.run:
-                    wandb.save(preempt_path)
+                if wandb.run is not None:
                     wandb.finish()
-            except ImportError:
+            except Exception:  # noqa: BLE001
                 pass
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _emergency_save)
 
-    total_iterations = agent_cfg.max_iterations
-    milestone_dir = os.path.join(args_cli.checkpoint_dir, "milestones")
-    os.makedirs(milestone_dir, exist_ok=True)
+    # --- train (single call; rsl_rl saves every save_interval to log_dir) ---
+    runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)
 
-    done_iterations = 0
-    while done_iterations < total_iterations:
-        chunk = min(agent_cfg.save_interval, total_iterations - done_iterations)
-        runner.learn(num_learning_iterations=chunk, init_at_random_ep_len=(done_iterations == 0))
-        done_iterations += chunk
-
-        _cleanup_old_checkpoints(args_cli.checkpoint_dir, args_cli.keep_last)
-
-        if done_iterations % args_cli.milestone_interval == 0 or done_iterations >= total_iterations:
-            milestone_path = os.path.join(milestone_dir, f"model_milestone_{done_iterations}.pt")
-            runner.save(milestone_path)
-            print(f"[Milestone] Saved {milestone_path}")
-
-    final_path = os.path.join(args_cli.checkpoint_dir, "model_final.pt")
-    runner.save(final_path)
-    print(f"[Done] Final model saved: {final_path}")
+    runner.save(os.path.join(log_dir, "model_final.pt"))
+    print(f"[Done] Final model saved to {log_dir}/model_final.pt")
+    env.close()
 
 
 if __name__ == "__main__":

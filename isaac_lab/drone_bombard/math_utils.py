@@ -124,7 +124,10 @@ def ballistic_impact(
         Gazebo referee.
     """
     t_fall = torch.sqrt(torch.clamp(2.0 * altitude / gravity, min=0.0))
-    impact = pos_xy + (vel_xy + wind_xy) * (t_fall + release_delay)
+    # t_fall is [N]; unsqueeze to [N,1] so it broadcasts against the [N,2]
+    # horizontal vectors (a bare [N] would try to broadcast N against the
+    # size-2 last dim and fail for any N != 2 — only N==1 slips through).
+    impact = pos_xy + (vel_xy + wind_xy) * (t_fall + release_delay).unsqueeze(-1)
 
     has_drag = drag_coef != 0.0
     if torch.any(has_drag):
