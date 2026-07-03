@@ -71,10 +71,10 @@ def run_zero_actions(env, steps=100):
     alt0 = env.unwrapped._robot.data.root_pos_w[:, 2].clone()
     max_drift = torch.zeros(n, device=device)
     for _ in range(steps):
-        obs, rew, terminated, truncated, info = env.step(zero)
+        obs, rew, dones, info = env.step(zero)
         alt = env.unwrapped._robot.data.root_pos_w[:, 2]
         max_drift = torch.maximum(max_drift, (alt - alt0).abs())
-        if torch.isnan(obs).any():
+        if torch.isnan(obs["policy"]).any():
             print("[FAIL] NaN detected in observations during zero-action hover.")
             return False
     ok = bool((max_drift < 1.0).all())
@@ -98,10 +98,10 @@ def run_scripted(env, episodes=5):
             action = torch.zeros(n, 4, device=device)
             action[:, 0] = dir_xy[:, 0] * 0.5
             action[:, 1] = dir_xy[:, 1] * 0.5
-            obs, rew, terminated, truncated, info = env.step(action)
+            obs, rew, dones, info = env.step(action)
             d_xy = env.unwrapped._current_d_xy()
             d_xy_trace.append(d_xy.mean().item())
-            done = done | terminated | truncated
+            done = done | dones.bool()
             if done.all():
                 break
         finals.append(d_xy_trace[-1])
@@ -145,8 +145,8 @@ def run_policy(env, policy_path, episodes=10):
     while n_done < episodes:
         with torch.inference_mode():
             action = policy(obs)
-        obs, rew, terminated, truncated, info = env.step(action)
-        done = terminated | truncated
+        obs, rew, dones, info = env.step(action)
+        done = dones.bool()
         if done.any():
             f = env.unwrapped._done_flags
             n_done += int(done.sum().item())
