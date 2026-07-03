@@ -60,6 +60,7 @@ from .math_utils import (
     overshoot_guard,
     stagnation_guard,
     hold_buffer_update,
+    quat_apply_inverse_pure,
 )
 
 # All action/vision/ballistic/reward/guard math lives in math_utils.py
@@ -275,27 +276,46 @@ class DroneBombardEnv(DirectRLEnv):
 
         self._robot: Articulation = self.scene["robot"]
 
+        # Body index for wrench application (Crazyflie's main link is "body").
+        self._body_id = self._robot.find_bodies("body")[0]
+
+        # Override the root body's mass/inertia to the measured x500 values so
+        # the velocity controller (which sizes thrust off mass) drives an
+        # x500-like plant rather than the 27 g Crazyflie shell. Must happen
+        # AFTER super().__init__() — root_physx_view is only valid once the
+        # sim is playing. Best-effort: if the API differs, fall back to the
+        # asset's actual mass so the controller stays self-consistent.
+        self._apply_body_mass_override()
+        self._ctrl_mass = float(self._robot.root_physx_view.get_masses()[0].sum())
+        self._max_thrust = self.cfg.asset.thrust_to_weight_unloaded * self._ctrl_mass * 9.81
+        self._inertia_diag = torch.tensor(self.cfg.asset.inertia_diag, device=self.device)
+        self._k_rate = torch.tensor(self.cfg.controller.k_rate, device=self.device)
+        print(f"[DroneBombardEnv] control mass={self._ctrl_mass:.3f}kg max_thrust={self._max_thrust:.2f}N "
+              f"body_id={self._body_id}")
+
+    def _apply_body_mass_override(self):
+        try:
+            asset = self.cfg.asset
+            view = self._robot.root_physx_view
+            masses = view.get_masses().clone()
+            inertias = view.get_inertias().clone()
+            bidx = self._body_id[0] if isinstance(self._body_id, (list, tuple)) else int(self._body_id)
+            masses[:, bidx] = asset.loaded_mass
+            ixx, iyy, izz = asset.inertia_diag
+            inertias[:, bidx, :] = torch.tensor(
+                [ixx, 0.0, 0.0, 0.0, iyy, 0.0, 0.0, 0.0, izz], dtype=inertias.dtype
+            )
+            idx = torch.arange(self.num_envs)
+            view.set_masses(masses, idx)
+            view.set_inertias(inertias, idx)
+        except Exception as e:  # noqa: BLE001
+            print(f"[DroneBombardEnv][warn] body mass/inertia override failed ({e!r}); "
+                  f"using asset default mass — controller will self-size to it.")
+
     # ------------------------------------------------------------------
     def _setup_scene(self):
-        self.cfg.robot_cfg.spawn.rigid_props.disable_gravity = False
-        robot = Articulation(self.cfg.robot_cfg)
-        self.scene.articulations["robot"] = robot
-
-        # Set true x500 mass/inertia on the root body — the USD asset shell
-        # (Crazyflie geometry) is purely visual/collision; all dynamics come
-        # from these overridden properties (see DroneBombardAssetCfg docstring
-        # rationale: actuation is a rigid-body wrench, not per-rotor forces).
-        asset = self.cfg.asset
-        ixx, iyy, izz = asset.inertia_diag
-        robot.root_physx_view  # noqa: B018 - ensure view is created before mass override
-        masses = robot.root_physx_view.get_masses()
-        masses[:] = asset.loaded_mass
-        robot.root_physx_view.set_masses(masses, torch.arange(self.num_envs))
-        inertias = robot.root_physx_view.get_inertias()
-        inertias[:, 0] = ixx
-        inertias[:, 4] = iyy
-        inertias[:, 8] = izz
-        robot.root_physx_view.set_inertias(inertias, torch.arange(self.num_envs))
+        self._robot = Articulation(self.cfg.robot_cfg)
+        self.scene.articulations["robot"] = self._robot
 
         spawn_ground = sim_utils.GroundPlaneCfg()
         spawn_ground.func("/World/ground", spawn_ground)
@@ -303,7 +323,8 @@ class DroneBombardEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
         self.scene.clone_environments(copy_from_source=False)
-        self.scene.filter_collisions(global_prim_paths=[])
+        if self.device == "cpu":
+            self.scene.filter_collisions(global_prim_paths=[])
 
     # ------------------------------------------------------------------
     # Action pipeline
@@ -335,13 +356,18 @@ class DroneBombardEnv(DirectRLEnv):
 
     def _run_velocity_controller(self, v_filt: torch.Tensor):
         """Cascaded PX4-shaped velocity -> wrench controller (velocity P ->
-        thrust vector -> attitude P -> rate P -> torque). See
+        desired thrust vector -> attitude P -> rate P -> body torque). Thrust
+        is applied along body +Z (rotors can only push "up" relative to the
+        airframe); the body tilts to redirect it. See
         DroneBombardControllerCfg / notes/research/isaac_velocity_controller.md
-        for gain provenance and calibration status."""
+        for gain provenance and calibration status.
+
+        Force/torque are applied in the BODY frame via the articulation's
+        permanent wrench composer (the API the stock Isaac Lab quadcopter env
+        uses on this version)."""
         from isaaclab.utils.math import matrix_from_quat
 
         c = self.cfg.controller
-        asset = self.cfg.asset
 
         vel_w = self._robot.data.root_lin_vel_w
         quat_w = self._robot.data.root_quat_w
@@ -352,51 +378,65 @@ class DroneBombardEnv(DirectRLEnv):
         accel_des_xy = torch.clamp(c.kp_vel_xy * vel_err_xy, min=-c.accel_xy_clamp, max=c.accel_xy_clamp)
         accel_des_z = torch.clamp(c.kp_vel_z * vel_err_z, min=-c.accel_z_clamp, max=c.accel_z_clamp)
 
+        # desired total force in WORLD frame: mass*(accel_cmd + gravity comp)
         f_des = torch.zeros_like(vel_w)
-        f_des[:, 0] = asset.loaded_mass * accel_des_xy[:, 0]
-        f_des[:, 1] = asset.loaded_mass * accel_des_xy[:, 1]
-        f_des[:, 2] = asset.loaded_mass * (accel_des_z + 9.81)
+        f_des[:, 0] = self._ctrl_mass * accel_des_xy[:, 0]
+        f_des[:, 1] = self._ctrl_mass * accel_des_xy[:, 1]
+        f_des[:, 2] = self._ctrl_mass * (accel_des_z + 9.81)
 
         f_norm = torch.linalg.norm(f_des, dim=-1, keepdim=True).clamp(min=1e-6)
-        thrust_dir = f_des / f_norm
+        thrust_dir_w = f_des / f_norm  # desired body-up direction (world frame)
 
-        tilt_limit = math.radians(asset.tilt_clamp_deg)
+        # tilt clamp: cap how far the desired thrust axis can lean from vertical
+        tilt_limit = math.radians(self.cfg.asset.tilt_clamp_deg)
         max_horiz_ratio = math.tan(tilt_limit)
-        horiz = thrust_dir[:, :2]
+        horiz = thrust_dir_w[:, :2]
         horiz_norm = torch.linalg.norm(horiz, dim=-1, keepdim=True).clamp(min=1e-6)
         horiz_clamped = torch.where(
-            horiz_norm.squeeze(-1) > max_horiz_ratio,
-            horiz / horiz_norm * max_horiz_ratio,
-            horiz,
+            horiz_norm > max_horiz_ratio, horiz / horiz_norm * max_horiz_ratio, horiz
         )
-        thrust_dir = torch.cat([horiz_clamped, thrust_dir[:, 2:3].clamp(min=1e-3)], dim=-1)
-        thrust_dir = thrust_dir / torch.linalg.norm(thrust_dir, dim=-1, keepdim=True).clamp(min=1e-6)
+        thrust_dir_w = torch.cat([horiz_clamped, thrust_dir_w[:, 2:3].clamp(min=1e-3)], dim=-1)
+        thrust_dir_w = thrust_dir_w / torch.linalg.norm(thrust_dir_w, dim=-1, keepdim=True).clamp(min=1e-6)
 
-        thrust_mag = torch.clamp((f_des * thrust_dir).sum(dim=-1), min=0.0, max=asset.max_thrust)
+        body_z_w = matrix_from_quat(quat_w)[:, :, 2]  # current body-up in world
+        # rotor thrust magnitude = projection of desired force onto current body-up
+        thrust_mag = torch.clamp((f_des * body_z_w).sum(dim=-1), min=0.0, max=self._max_thrust)
 
-        body_z_w = matrix_from_quat(quat_w)[:, :, 2]
-        cos_err = (thrust_dir * body_z_w).sum(dim=-1).clamp(-1.0, 1.0)
-        axis = torch.linalg.cross(body_z_w, thrust_dir, dim=-1)
-        axis_norm = torch.linalg.norm(axis, dim=-1, keepdim=True).clamp(min=1e-8)
-        rot_err_rp = (axis / axis_norm) * torch.acos(cos_err).unsqueeze(-1)
+        # attitude error: rotate current body-up toward desired thrust dir.
+        # axis*angle is a WORLD-frame rotation vector; convert to BODY frame
+        # because the rate loop and torque act in the body frame.
+        cos_err = (thrust_dir_w * body_z_w).sum(dim=-1).clamp(-1.0, 1.0)
+        axis_w = torch.linalg.cross(body_z_w, thrust_dir_w, dim=-1)
+        axis_norm = torch.linalg.norm(axis_w, dim=-1, keepdim=True).clamp(min=1e-8)
+        rot_err_w = (axis_w / axis_norm) * torch.acos(cos_err).unsqueeze(-1)
+        rot_err_b = quat_apply_inverse_pure(quat_w, rot_err_w)
 
-        yaw_err = v_filt[:, 3] * self.cfg.sim.dt * self.cfg.action.lpf_tick_period_steps
-        rot_err = rot_err_rp.clone()
-        rot_err[:, 2] += yaw_err
+        rate_sp = torch.zeros_like(ang_vel_b)
+        rate_sp[:, 0] = c.k_att_rp * rot_err_b[:, 0]
+        rate_sp[:, 1] = c.k_att_rp * rot_err_b[:, 1]
+        # yaw-rate is commanded directly (body z); roll/pitch attitude-controlled
+        rate_sp[:, 2] = v_filt[:, 3]
 
-        rate_sp_xy = c.k_att_rp * rot_err[:, :2]
-        rate_sp_z = c.k_att_yaw * rot_err[:, 2]
-        rate_sp = torch.cat([rate_sp_xy, rate_sp_z.unsqueeze(-1)], dim=-1)
-
+        # rate loop outputs a desired ANGULAR ACCELERATION (k_rate has units
+        # 1/s); the applied torque is inertia * angular_accel (tau = I*alpha).
+        # Skipping the inertia term makes torque ~1/I too large — for this
+        # airframe's ~0.022 kg.m^2 that is a ~46x over-torque that instantly
+        # spins the drone past the attitude limits.
         rate_err = rate_sp - ang_vel_b
-        kr = torch.tensor(c.k_rate, device=self.device)
-        torque = kr * rate_err
+        ang_accel_des = self._k_rate * rate_err
+        torque_b = self._inertia_diag * ang_accel_des
 
-        forces = torch.zeros(self.num_envs, 1, 3, device=self.device)
-        forces[:, 0, :] = body_z_w * thrust_mag.unsqueeze(-1)
-        torques = torch.zeros(self.num_envs, 1, 3, device=self.device)
-        torques[:, 0, :] = torque
-        self._robot.set_external_force_and_torque(forces, torques, body_ids=[0])
+        forces_b = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        forces_b[:, 0, 2] = thrust_mag  # body +Z
+        torques_b = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        torques_b[:, 0, :] = torque_b
+        # final safety: never inject a non-finite wrench into physics (a
+        # transient degenerate controller state must not NaN the whole sim)
+        forces_b = torch.nan_to_num(forces_b)
+        torques_b = torch.nan_to_num(torques_b)
+        self._robot.permanent_wrench_composer.set_forces_and_torques(
+            body_ids=self._body_id, forces=forces_b, torques=torques_b
+        )
 
     # ------------------------------------------------------------------
     # Vision
@@ -566,7 +606,8 @@ class DroneBombardEnv(DirectRLEnv):
     # Reset
     # ------------------------------------------------------------------
     def _reset_idx(self, env_ids: torch.Tensor):
-        super()._reset_idx(env_ids)
+        if env_ids is None or len(env_ids) == self.num_envs:
+            env_ids = self._robot._ALL_INDICES
 
         # Snapshot everything needed to log the JUST-ENDED episode's final
         # state BEFORE any of it is overwritten below (teleport, buffer
@@ -576,7 +617,10 @@ class DroneBombardEnv(DirectRLEnv):
         # position, or reward sums that were already zeroed).
         final_snapshot = self._snapshot_final_episode_state(env_ids)
 
-        n = env_ids.shape[0]
+        self._robot.reset(env_ids)
+        super()._reset_idx(env_ids)
+
+        n = len(env_ids)
         device = self.device
         rc = self.cfg.reset
 
@@ -606,6 +650,10 @@ class DroneBombardEnv(DirectRLEnv):
 
         self._robot.write_root_pose_to_sim(default_root[:, :7], env_ids)
         self._robot.write_root_velocity_to_sim(default_root[:, 7:13], env_ids)
+        # reset rotor joints (Crazyflie articulation has 4 prop joints)
+        joint_pos = self._robot.data.default_joint_pos[env_ids]
+        joint_vel = self._robot.data.default_joint_vel[env_ids]
+        self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)
 
         self._prev_action[env_ids] = 0.0
         self._v_filt[env_ids] = 0.0
