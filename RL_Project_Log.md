@@ -15,7 +15,7 @@
 > 동일) 발견·수정 후 재기동. 실패 3원인 규명: ①analytic conf 거리감쇠 누락→고도 상승
 > farming(max_alt 33%, **Rule 17**) ②farmer(+225)>finisher(+121) 보상 불균형 — Gazebo v14
 > final-approach stagnation과 동일 병인(**Rule 18a**) ③noise_std 0.8→3.92 폭주(**Rule 18b**).
-> **다음: exp_014 = conf 거리감쇠 + reward_success 300 + entropy_coef 0, fresh.** 온보딩 문서
+> **사후 검증: --zero-actions FAIL(11.9m) — 리셋 속도킥 버그가 run 전체 오염(36%는 오염 plant 수치). 다음: exp_014 = 0순위 킥 수정 → conf 거리감쇠 + reward_success 300 + entropy_coef 0, fresh.** 온보딩 문서
 > 3종(reward_tuning/wandb_guide/experiment_workflow) 신설. jekyun SAC 트랙 영향 없음.
 > → [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] / [[research/isaac_ppo_tuning_recommendations]] /
 > [[errors/err_20260703_vision_env_origin_frame]]
@@ -158,4 +158,4 @@
 | 2026-07-01 | rl_yolo_v15_bc_stable | 진행 중 (fresh 0→300K) | **wobble 교정(LPF+B+C) 적용 fresh run.** jerk RMS 2.92→1.61(−45%) A/B 확정 후 기동. → [[experiments/exp_011_wobble_lpf_reward_damping]] / Rule 15 |
 | 2026-07-03 | isaac_migration_phase2 (`feat/isaac-env-migration`, 병행 트랙) | 0 (코드만) | **Isaac Lab env+PPO 이식.** v13/v15 parity, `pytest test_math.py` 29/29 통과, L4 VM 미기동. jekyun SAC 학습과 별개 브랜치/워크트리. → [[experiments/exp_012_isaac_migration_phase2]] |
 | 2026-07-03 | exp013_v1_baseline (Isaac PPO, 병행 트랙, 중단 @iter 106) | ~7M steps | **비전 사멸 버그 발견·중단.** `rew_vision`≡0.0000 → `_update_vision` env-origin 프레임 혼용(2048-env grid에서 타겟 항상 프레임 밖). 수정+수치검증(visible 0%→63%). → [[errors/err_20260703_vision_env_origin_frame]] |
-| 2026-07-03 | **exp013_v2_visionfix (wcjklw7a, Isaac PPO, 병행 트랙)** | 65.5M steps (1000 iters 완주) | **첫 완주 + deterministic 200-ep eval = 36%.** plateau @iter 700, d_xy_min 1.4m 정체. 실패: max_alt 33%(상승 farming, Rule 17)+crash 27%. farmer(+225)>finisher(+121) 불균형(Rule 18a), noise_std 0.8→3.92 폭주(Rule 18b). 다음=exp_014(conf 거리감쇠+success 300+entropy 0, fresh). → [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] / [[research/isaac_ppo_tuning_recommendations]] |
+| 2026-07-03 | **exp013_v2_visionfix (wcjklw7a, Isaac PPO, 병행 트랙)** | 65.5M steps (1000 iters 완주) | **첫 완주 + deterministic 200-ep eval = 36%.** plateau @iter 700, d_xy_min 1.4m 정체. 실패: max_alt 33%(상승 farming, Rule 17)+crash 27%. farmer(+225)>finisher(+121) 불균형(Rule 18a), noise_std 0.8→3.92 폭주(Rule 18b). **사후 --zero-actions FAIL(11.9m): 리셋 속도킥 활성 — run 오염, max_alt 1차 용의자.** 다음=exp_014(0순위 킥 수정 → conf 거리감쇠+success 300+entropy 0, fresh). → [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] / [[research/isaac_ppo_tuning_recommendations]] |

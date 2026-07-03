@@ -63,7 +63,12 @@ mean drop_impact_error = 24.0 m (실패 지배 구간이라 무의미)
 > post-reset `_current_d_xy()`를 "final d_xy"로 읽는 버그(리셋 후 새 스폰 거리를 보고)가
 > 있어 종단 원인 분포+`extras["log"]` 스냅샷 기반으로 교체함.
 
-## 4. 진단 — 세 겹의 문제
+## 4. 진단 — 세 겹의 문제 + 사후 발견된 지배 교란(§4d)
+
+> ⚠️ **§4d를 먼저 읽을 것.** 아래 4a-4c는 로그·수식 수준에서 모두 실재하지만, 학습 후
+> `play.py --zero-actions` 재검증(FAIL, 고도 드리프트 11.9m)으로 **리셋 속도킥 버그**
+> ([[isaac_mass_override_reset_bug]] 메모리, 미해결로 알려져 있었음)가 이 run에도 활성이었음이
+> 확인됐다. 4a의 max_altitude 귀속은 이 교란과 분리 불가.
 
 ### 4a. Analytic vision 보상의 고도-상승 attractor (max_alt 33%의 원인)
 
@@ -91,17 +96,38 @@ rate_limit ±0.2 → LPF 0.4)이 **의도적으로**(v15 smoothness 이식) 고�
 −14, crash 39%가 그 산물), 학습이 plateau 위에서 진동만 한다. Gazebo SAC(ent_coef
 자동조정)에는 없던 **PPO×스무딩-파이프라인 조합의 신규 실패 모드.**
 
+### 4d. 리셋 속도킥 교란 — 사후 검증에서 확인 (지배적 가능성)
+
+학습·eval 완료 후 `play.py --zero-actions --num_envs 8` 재실행: **FAIL, 고도 드리프트
+11.9m** (통과 기준 <1m). 즉 [[isaac_mass_override_reset_bug]] 메모리에 기록된 **미해결
+버그** — `_apply_body_mass_override()`(set_masses)가 있으면 매 리셋 2번째 physics substep에
+~7-9 m/s 수직 속도킥 주입 — 이 이 학습 run 전체에 활성이었다. 물리 검산: 8 m/s 상승킥은
+accel_z_clamp 4 m/s² 회수 기준 ~8-12m 상승 = 스폰 9-11m에서 **~18-22m 도달, 25m 천장
+바로 밑**. 따라서:
+
+- **max_altitude 33%의 1차 설명은 4a(비전 farming)가 아니라 이 킥일 가능성이 높다**
+  (킥 후 약간의 +vz만으로 천장 도달). 4a는 실재하는 parity 결함이지만 이 run에서의
+  기여도는 킥과 분리 측정 불가.
+- crash 27%도 부분 설명 가능: 매 에피소드 킥을 상쇄하는 강한 −vz 반응을 학습 → 회수
+  이후 과하강.
+- 정책은 **오염된 plant를 상대로** 36%를 달성한 것 — 보상 지형 결론(4b)과 noise_std
+  결론(4c)은 로그·수식 기반이라 유효하나, 종단 분포 기반 귀속은 전부 재실험 필요.
+
+**교훈(뼈아픔):** 이 버그는 **학습 시작 전에 이미 메모리에 "미해결"로 기록되어 있었다.**
+[[research/isaac_lab_experiment_workflow]] §1의 사다리(--zero-actions 포함)를 "이전에
+통과했다"고 건너뛰지 말 것 — 알려진 미해결 물리 이슈가 있으면 그 검증부터. 사다리 3)이
+이번에 실행됐다면 43분짜리 오염 run을 통째로 막았다.
+
 ## 5. 결론
 
 - **수렴 판정: plateau 수렴(iter ~700), 목표 미달.** success 36%(deterministic 동일) —
-  Gazebo v13 eval 80%(clean 3-ep) / v14 65% 대비 낮다. 단, 태스크가 다름(타겟·스폰 랜덤화).
+  단, **리셋 속도킥(§4d)이 활성인 오염된 plant에서의 수치**라 정책/보상 능력의 상한으로
+  해석하면 안 된다. Gazebo v13 80%/v14 65%와의 비교도 동일 이유로 보류.
 - **d_xy 추세: 초중반 건강, 종반 정체.** `Episode_Metric/d_xy_min` 4.1→1.18(iter 700)
-  이후 1.4m 부근 정체 — 게이트(0.8m) 밖. "접근은 배웠고 마무리를 안 배운" 상태이며,
-  §4a/4b가 마무리를 배우지 않는 것이 합리적이도록 보상 지형을 만들고 있다.
-- **변경 권고(보상·하이퍼파라미터·고도)는 [[research/isaac_ppo_tuning_recommendations]]**
-  — 이 실험의 결론 문서. 요지: ① analytic conf에 거리 감쇠 추가(4a 제거, YOLO parity)
-  ② reward_success 100→300(4b 역전) ③ entropy_coef 0.005→0.0(4c) ④ 스폰 고도/거리는
-  현행 유지(v15 parity), success_radius 0.8 유지 후 커리큘럼.
+  이후 1.4m 정체 — 게이트(0.8m) 밖. 접근 학습은 확실히 일어났다(비전 수정 유효 포함).
+- **다음 실험 전 필수 게이트: 리셋 킥 수정**(스폰타임 USD 질량 설정으로 전환) →
+  `--zero-actions` PASS 확인 → 그 다음에야 보상/하이퍼 변경(4a-4c 교정)의 효과를 깨끗하게
+  측정 가능. 상세 우선순위: [[research/isaac_ppo_tuning_recommendations]].
 
 ## 관련
 
