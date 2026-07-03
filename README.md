@@ -111,22 +111,58 @@ rate_err)`로 관성을 곱해야 한다(Isaac은 직접 토크 → 관성 미�
 > 마운트해야 한다 — `Drone-Bombard-Simulation`을 마운트하면 컨테이너 안에
 > `isaac_lab/`이 아예 보이지 않는다.
 
+### 가장 빠른 방법 — 이미 떠 있는 컨테이너 재사용 (이 dev VM, 권장)
+
+> **⚠️ `drone-bombard-isaac:latest`는 어디에도 존재하지 않는다** (로컬에도, GCP Artifact
+> Registry `isaac-lab` 저장소에도 — pull 대상이 아예 없다). 아래 "컨테이너 빌드" 절의
+> `docker build -t drone-bombard-isaac:latest .`로 **직접 빌드**하거나, 이 dev VM에서는
+> 보통 아래처럼 **이미 실행 중인 컨테이너를 재사용**하면 된다(빌드 20–30분 불필요).
+
+```bash
+# 1. 실행 중인 Isaac 컨테이너 확인 (보통 isaac-verify, 이미지 isaac-lab-local:580)
+docker ps --filter ancestor=isaac-lab-local:580
+
+# 2. 있으면 exec로 바로 진입 — docker run 불필요
+docker exec -it -w /workspace/drone-bombard isaac-verify bash
+```
+
+**주의 (non-root exec):** `isaac-verify`는 기본적으로 root가 아닌 `isaac-sim`(uid 1234)
+사용자로 exec된다. 과거에 `docker exec -u root`로 들어가 만들어진 root 소유 캐시/로그
+파일이 `/isaac-sim/kit/cache`, `/isaac-sim/kit/data`, `/root/.cache/ov`,
+`/root/.nv/ComputeCache`, `/tmp/isaaclab/logs` 등에 남아있으면 `isaac-sim` 사용자로 실행 시
+`PermissionError`로 **바로 크래시**한다(경고가 아님 — 로그 파일 자체를 못 열면 스크립트가
+죽는다). 발생 시:
+```bash
+docker exec -u root isaac-verify chown -R isaac-sim:isaac-sim \
+  /isaac-sim/kit/cache /isaac-sim/kit/data /tmp/isaaclab/logs \
+  /root/.cache/ov /root/.cache/nvidia/GLCache /root/.nv/ComputeCache
+```
+
+**출력을 파일/로그로 리다이렉트할 때는 `PYTHONUNBUFFERED=1`을 함께 넘긴다** —
+`simulation_app.close()`가 프로세스를 하드 종료하는 것으로 보여, unbuffered가 아니면 마지막
+`print()`(PASS/FAIL 결과 줄 포함)가 버퍼에 남은 채 유실될 수 있다:
+```bash
+docker exec -e PYTHONUNBUFFERED=1 -w /workspace/drone-bombard isaac-verify \
+  bash -lc '/workspace/isaaclab/isaaclab.sh -p isaac_lab/play.py --zero-actions --headless'
+```
+
+컨테이너가 떠 있지 않다면 아래 "컨테이너 빌드" → "컨테이너 진입" 절차를 따른다.
+
 ### 컨테이너 빌드
 
 ```bash
 # Dockerfile을 사용해 Isaac Sim 5.1.0 + Isaac Lab v2.3.2 + rsl_rl 이미지 빌드
-# (첫 빌드 시 ~20–30분 소요)
+# (첫 빌드 시 ~20–30분 소요). GCP Artifact Registry에는 이 이미지가 push된 적이
+# 없으므로 pull로 대체할 수 없다 — 반드시 로컬 빌드가 필요하다.
 cd /opt/drone-bombard/isaac-worktree/drone_drop_system/docker
 docker build -t drone-bombard-isaac:latest .
-
-# 또는 GCP Artifact Registry에서 pull (GCP 인증 필요)
-gcloud auth configure-docker us-central1-docker.pkg.dev
-docker pull us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/isaac-lab:latest
 ```
 
 ### 컨테이너 진입 (대화형 bash) — 이 dev VM
 
-**`isaac-worktree`를 마운트한다 (`Drone-Bombard-Simulation`이 아님):**
+**`isaac-worktree`를 마운트한다 (`Drone-Bombard-Simulation`이 아님).** GPU
+셰이더/컴파일 캐시를 호스트에 마운트해두면 재시작 시 Isaac Sim 첫 구동이 훨씬 빨라진다
+(`isaac-verify`가 쓰는 방식):
 ```bash
 docker run -it --rm \
   --gpus all \
@@ -134,7 +170,10 @@ docker run -it --rm \
   -e ACCEPT_EULA=Y \
   -e PRIVACY_CONSENT=Y \
   -v /opt/drone-bombard/isaac-worktree:/workspace/drone-bombard \
-  -v /opt/drone-bombard/rl_runs:/workspace/logs \
+  -v /opt/drone-bombard/isaacsim-cache/kit:/isaac-sim/kit/cache \
+  -v /opt/drone-bombard/isaacsim-cache/ov:/root/.cache/ov \
+  -v /opt/drone-bombard/isaacsim-cache/glcache:/root/.cache/nvidia/GLCache \
+  -v /opt/drone-bombard/isaacsim-cache/computecache:/root/.nv/ComputeCache \
   drone-bombard-isaac:latest \
   bash
 
@@ -166,7 +205,7 @@ docker exec -it drone-bombard-isaac bash
 ```bash
 # 방법 1: isaaclab.sh 래퍼 사용 (권장)
 # --headless 플래그 없이 실행하면 GUI 활성화
-./isaaclab.sh -p isaac_lab/play.py --zero-actions
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/play.py --zero-actions
 
 # 방법 2: 직접 python.sh 사용
 /isaac-sim/python.sh isaac_lab/play.py --zero-actions
@@ -191,7 +230,7 @@ docker run -it --rm \
 
 # 컨테이너 내부:
 cd /workspace/drone-bombard
-./isaaclab.sh -p isaac_lab/play.py --zero-actions
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/play.py --zero-actions
 ```
 
 ### 어떤 Isaac Sim을 열어야 하는가?
@@ -200,12 +239,12 @@ cd /workspace/drone-bombard
 GUI를 활성화하려면:
 
 1. **학습 중 모니터링이 필요한 경우:**
-   - `./isaaclab.sh -p isaac_lab/play.py` — sanity check 모드 (작은 규모, 빠름)
-   - `./isaaclab.sh -p isaac_lab/record_episode.py` — 영상 녹화 (RTX 렌더링 필요)
+   - `/workspace/isaaclab/isaaclab.sh -p isaac_lab/play.py` — sanity check 모드 (작은 규모, 빠름)
+   - `/workspace/isaaclab/isaaclab.sh -p isaac_lab/record_episode.py` — 영상 녹화 (RTX 렌더링 필요)
 
 2. **headless 모드가 필요한 경우 (권장):**
-   - 전체 학습: `./isaaclab.sh -p isaac_lab/train.py --headless --num_envs 2048`
-   - 무학습 검증: `./isaaclab.sh -p isaac_lab/verify_one_episode.py --headless`
+   - 전체 학습: `/workspace/isaaclab/isaaclab.sh -p isaac_lab/train.py --headless --num_envs 2048`
+   - 무학습 검증: `/workspace/isaaclab/isaaclab.sh -p isaac_lab/verify_one_episode.py --headless`
    - 성능이 중요하므로 `--headless` 권장
 
 3. **드라이버 업그레이드 전 현재 상태:**
@@ -223,25 +262,25 @@ GUI를 활성화하려면:
 pytest isaac_lab/tests/test_math.py -v          # 30/30
 
 # 1. 무학습 1-에피소드 검증 (env 구성 → reset → 1 에피소드)
-./isaaclab.sh -p isaac_lab/verify_one_episode.py --headless --enable_cameras --num_steps 300
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/verify_one_episode.py --headless --enable_cameras --num_steps 300
 
 # 2. PPO 학습 (헤드리스, wandb)
-./isaaclab.sh -p isaac_lab/train.py --task Isaac-DroneBombard-Direct-v0 \
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/train.py --task Isaac-DroneBombard-Direct-v0 \
     --headless --num_envs 2048
 #   dry-run: --num_envs 256 --max_iterations 20 --run_name dryrun_256
 
 # 3. RTX 1-에피소드 영상 녹화 (드론 + 페이로드 + 타겟 마커; driver ≥580 필요)
-./isaaclab.sh -p isaac_lab/record_episode.py --headless --enable_cameras \
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/record_episode.py --headless --enable_cameras \
     --video_length 300 --out /workspace/logs/isaac_lab/videos
 
 # 4. 컨트롤러 물리 sanity + PX4 대비 스텝응답
-./isaaclab.sh -p isaac_lab/play.py --zero-actions --headless
-./isaaclab.sh -p isaac_lab/play.py --scripted --headless
-./isaaclab.sh -p isaac_lab/play.py --step-response --headless --out-csv .../step_response.csv
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/play.py --zero-actions --headless
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/play.py --scripted --headless
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/play.py --step-response --headless --out-csv .../step_response.csv
 
 # 5. 실제 YOLOv8 평가 + vision 캘리브레이션 (TiledCamera, num_envs ≤ 8)
-./isaaclab.sh -p isaac_lab/yolo_eval.py --calibrate --num_envs 8 --headless
-./isaaclab.sh -p isaac_lab/yolo_eval.py --eval --policy .../model_final.pt --num_envs 8 --headless
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/yolo_eval.py --calibrate --num_envs 8 --headless
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/yolo_eval.py --eval --policy .../model_final.pt --num_envs 8 --headless
 ```
 
 상세 절차·주의사항은 `isaac_lab/README.md` 참조.
@@ -291,23 +330,25 @@ pytest isaac_lab/tests/test_math.py -v          # 30/30
 
 ### 로컬 개발 (헤드리스 학습, 이 dev VM)
 ```bash
-# 1. 이미지 빌드
+# 1. 컨테이너가 이미 떠 있는지 먼저 확인 — 있으면 바로 exec (§5 "가장 빠른 방법" 참조)
+docker ps --filter ancestor=isaac-lab-local:580
+docker exec -it -w /workspace/drone-bombard isaac-verify bash
+
+# 없으면 이미지 빌드(20-30분, pull 불가 — §5 참조) 후 컨테이너 진입
 cd /opt/drone-bombard/isaac-worktree/drone_drop_system/docker
 docker build -t drone-bombard-isaac:latest .
-
-# 2. 컨테이너 진입 — isaac-worktree를 마운트 (Drone-Bombard-Simulation 아님, §5 참조)
 docker run -it --rm --gpus all --runtime=nvidia \
   -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y \
   -v /opt/drone-bombard/isaac-worktree:/workspace/drone-bombard \
   drone-bombard-isaac:latest bash
 
-# 3. 학습 시작 (컨테이너 내부)
+# 2. 학습 시작 (컨테이너 내부)
 cd /workspace/drone-bombard
-./isaaclab.sh -p isaac_lab/train.py --headless --num_envs 256 --max_iterations 20
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/train.py --headless --num_envs 256 --max_iterations 20
 ```
 
 ### GUI 모니터링 (드라이버 ≥ 580 필요)
 ```bash
 # 컨테이너 진입 후:
-./isaaclab.sh -p isaac_lab/play.py --zero-actions
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/play.py --zero-actions
 # (디스플레이가 있는 머신에서만 작동)
