@@ -1,0 +1,16 @@
+{
+  "n_episodes": 25,
+  "n_success": 22,
+  "success_rate": 0.88,
+  "mean_steps_to_success": 71.45454545454545,
+  "median_steps_to_success": 53.0,
+  "mean_final_d_xy_m": 0.7958317310021151,
+  "mean_closest_d_xy_m": 0.7942460217663253,
+  "min_closest_d_xy_m": 0.6345778232087349,
+  "mean_episode_reward": 148.89760306412046,
+  "std_episode_reward": 39.02284965421815,
+  "outcomes": {
+    "success": 22,
+    "stagnation": 3
+  }
+}

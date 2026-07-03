@@ -1,0 +1,196 @@
+================================================================================
+ Issue #015 — Observation 좌표와 Gazebo 실제 좌표 불일치
+================================================================================
+생성일 : 2026-05-26
+상태   : 진행 중
+관련   : #014 (pre-spawn 방식 변경으로 인해 발생 가능)
+
+
+================================================================================
+ 1. 문제점
+================================================================================
+
+drop_0302 (drop_error=4.64m, 420 step) GUI 재생 시:
+  - GUI에서 드론이 타겟(x_marker)을 훨씬 지나침
+  - 사용자: "marker로부터 3배 더 갔다"
+
+실제 Gazebo 좌표 확인:
+  드론:     (30.8, 31.0, 6.3)    ← Gazebo world frame
+  x_marker: (11.0, 10.0, 0.0)
+  payload:  (33.3, 32.6, 0.0)   ← 드론에서 분리되어 바닥에 착탄
+
+observation 데이터:
+  obs pos:  (6.9, 8.0, 8.3)     ← PX4 EKF local position (ENU)
+
+불일치:
+  Gazebo:     (30.8, 31.0)
+  Observation: (6.9,  8.0)
+  오프셋:     (23.9, 23.0)  ← 약 (24, 23)
+
+x_marker까지:
+  Gazebo 기준 드론→marker: sqrt((30.8-11)² + (31-10)²) = sqrt(392+441) = 28.8m
+  Observation 기준:        d_xy = 4.6m (obs 데이터)
+  실제 drop_error:         payload(33.3,32.6)→marker(11,10) = 29.3m ???
+
+→ drop_error 4.64m는 drop_calculator의 측정이지만,
+  실제 Gazebo 거리는 ~29m. 뭔가 심각하게 틀어져 있음.
+
+
+================================================================================
+ 2. 디버깅 과정
+================================================================================
+
+--- 2-1. PX4 gz_bridge 소스 분석 ---
+
+GZBridge::poseInfoCallback (line 584):
+  position = {pose_position.y(), pose_position.x(), -pose_position.z()}
+  → ENU→NED 변환 (축 교환, 오프셋 아님)
+
+drone_drop_env.py _on_local_pos (line 177-179):
+  pos_enu[0] = msg.y  (NED→ENU)
+  pos_enu[1] = msg.x
+  pos_enu[2] = -msg.z
+
+이건 좌표계 변환이지 오프셋 원인이 아님.
+
+
+--- 2-2. 오프셋 원인 추정 ---
+
+replay 시 문제:
+  1. 학습이 끝나고 드론이 (30.8, 31.0)에 있는 상태
+  2. replay가 env.reset() 호출
+  3. _gz_reset_poses()가 드론을 Gazebo (0, 0, 0)으로 텔레포트
+  4. 하지만 PX4의 EKF 원점이 학습 중 마지막 위치 근처에 남아있을 수 있음
+  5. → local position에 오프셋 발생
+
+또는 학습 중에도:
+  - _gz_reset_poses()로 텔레포트할 때 EKF가 즉시 위치를 인식하지 못함
+  - EKF가 이전 위치와 새 위치 사이를 보간하면서 오차 발생
+  - 에피소드 초반에 오프셋이 있다가 서서히 수렴
+
+확인 필요:
+  - 학습 중 첫 에피소드 obs의 pos_enu가 (0, 0, 4.8) 근처인지
+  - 또는 오프셋이 있는지
+  - _gz_reset_poses() 후 EKF settling 시간이 필요한지
+
+
+--- 2-3. 학습 데이터 분석 ---
+
+에피소드 초기 위치 (obs 기준):
+  Episode 1:   pos=(0.1, 0.0, 3.6)  ← 정상 (원점 근처)
+  Episode 302: pos=(0.0, 0.0, 4.8)  ← 정상
+  Episode 376: pos=(0.1, -0.1, 4.8) ← 정상
+
+학습 중 obs의 pos는 항상 원점 근처에서 시작 → EKF는 매 에피소드 정상 리셋됨.
+하지만 Gazebo 실제 좌표는 에피소드가 누적되면서 drift할 수 있음.
+
+
+--- 2-4. drop_calculator 좌표 확인 ---
+
+drop_calculator는 Gazebo odometry (/drone/payload/position) 사용.
+marker 좌표: (11, 10) Gazebo world frame.
+
+만약 payload가 Gazebo (33.3, 32.6)에 착탄했으면:
+  error = sqrt((33.3-11)² + (32.6-10)²) = 31.7m ≠ 4.64m
+
+→ 4.64m가 기록됐다는 건 학습 중에는 payload가 다른 위치에 착탄했다는 뜻.
+  GUI replay에서 본 (30.8, 31.0)은 replay 후 위치이므로 원래와 다를 수 있음.
+
+
+--- 2-5. 현재 결론 ---
+
+학습 중 obs와 drop_error는 정상일 가능성 높음 (EKF 매 에피소드 리셋).
+GUI replay에서 궤적이 다르게 나온 건 replay 재현성 문제.
+replay는 같은 action을 넣지만 sim 물리가 deterministic하지 않아
+원래와 다른 궤적이 나옴.
+
+--- 2-6. 2차 replay 후 좌표 비교 ---
+
+2차 replay에서도 비슷한 결과:
+  drone Gazebo:  (36.0, 34.1)  → marker 34.7m
+  payload Gazebo: (36.6, 35.7)  → marker 36.2m
+  obs 마지막:    (6.9, 8.0)    → marker 4.6m (d_xy)
+
+payload odometry 확인:
+  Gazebo model pose, gz odometry topic, ROS2 bridge topic 전부 (36.6, 35.7) 일치.
+  drop_calculator가 이 값을 쓰면 error=36.2m여야 하는데 학습 시 4.64m 기록.
+
+결론:
+  학습 중에는 드론/payload가 실제로 marker 근처에 있었고 drop_error 4.64m는 진짜.
+  replay에서 다른 궤적이 나온 건 sim 비결정성 (같은 action, 다른 결과).
+  **좌표 오프셋 문제 아님. replay 재현성 문제.**
+
+
+================================================================================
+ 3. 최종 결론
+================================================================================
+
+  - 학습 중 obs 좌표: 정상 (매 에피소드 원점 근처 시작)
+  - 학습 중 drop_error: 진짜 (drop_calculator가 Gazebo 실제 좌표로 측정)
+  - GUI replay: 원래 궤적과 다름 (sim 비결정성)
+  - 좌표 오프셋: 존재하지 않음
+
+  상태: 해결됨 (좌표 문제 없음, replay 방식의 근본적 한계)
+
+
+--- 2-7. 첫 에피소드 obs vs Gazebo 비교 ---
+
+첫 에피소드:
+  RESET:  obs=(0.1, 0.0, 4.9)  gazebo=(0.0, -0.1, 4.6)  offset ≈ 0.2m
+  STEP50: obs=(0.2, 0.6, 4.8)  gazebo=(0.0,  1.0, 4.5)  offset ≈ 0.4m
+
+첫 에피소드에서는 오프셋 거의 없음 — obs와 Gazebo 일치.
+하지만 replay에서 302번째 에피소드를 재생하면 오프셋 ~29m.
+
+원인: _gz_reset_poses()로 텔레포트 시 EKF와 Gazebo 사이에
+      미세한 차이가 에피소드마다 누적 → 수백 에피소드 후 수십 m drift.
+
+영향:
+  - obs 기준 d_xy: EKF 기반 → 누적 drift 영향
+  - Gazebo 기준 실제 거리: 정확
+  - drop_calculator: Gazebo 좌표 사용 → drop_error는 정확
+  - proximity bonus: obs의 d_xy 사용 → drift가 있으면 부정확
+  - 보상 신호가 에피소드 후반부에서 왜곡될 수 있음
+
+
+--- 2-8. Deterministic evaluate로 최종 검증 ---
+
+학습된 모델(sac_drop_final.zip)로 deterministic evaluate 5 episode 실행.
+매 에피소드 obs 좌표와 Gazebo 실제 좌표를 동시에 측정.
+
+결과:
+  EP1: obs=(1.9,5.0) gz=(2.0,5.0) offset=0.1m  drop_err=10.6 d_xy=10.4
+  EP2: obs=(1.1,7.5) gz=(1.4,7.8) offset=0.3m  drop_err=10.1 d_xy=10.3
+  EP3: obs=(1.4,14.8) gz=(1.2,14.7) offset=0.2m  timeout(500)
+  EP4: obs=(7.3,6.5) gz=(9.4,6.6) offset=2.1m  drop_err=5.3 d_xy=5.3 auto_drop
+  EP5: obs=(3.0,4.1) gz=(3.2,4.1) offset=0.2m  drop_err=9.9 d_xy=9.9
+
+확인된 사실:
+  1. obs ≈ Gazebo (오프셋 0.1~0.3m) — 좌표 문제 없음
+  2. drop_error ≈ d_xy — 실제 물리 drop 작동 확인
+  3. 학습된 모델이 타겟 방향 접근 학습됨 (d_xy 14.9→10m)
+  4. auto_drop도 정상 발동 (EP4: d_impact≤3m에서)
+
+
+================================================================================
+ 3. 최종 결론
+================================================================================
+
+좌표 오프셋 문제는 존재하지 않음.
+obs와 Gazebo 좌표는 일치 (오프셋 0.1~0.3m).
+drop_error는 실제 물리 낙하 기반으로 정확.
+
+GUI replay에서 30m 위치에 drop한 이유:
+  replay는 "저장된 action을 순서대로 넣는" open loop 방식.
+  원래 학습에서는 매 step obs를 보고 actor가 action을 결정 (closed loop).
+  replay에서는 obs와 무관하게 같은 action을 넣으므로,
+  step 1에서 0.01m 차이가 나면 그 다음 action이 엉뚱한 상황에 적용되고,
+  420 step 뒤에는 완전히 다른 곳(30m+)에 도달.
+
+  replay가 2번 비슷한 결과를 낸 이유:
+  초기 조건이 거의 같으므로 (같은 env, 같은 action sequence)
+  divergence 방향이 비슷. "비슷하게 틀림".
+
+검증 방법:
+  action replay (open loop) → 재현 불가 (근본적 한계)
+  deterministic evaluate (closed loop) → 실제 성능 확인 가능 ✓

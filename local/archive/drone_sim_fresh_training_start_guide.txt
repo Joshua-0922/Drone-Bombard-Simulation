@@ -1,0 +1,798 @@
+================================================================================
+ Drone-Bombard-Simulation — 본 학습 새로 시작 가이드 (v2)
+================================================================================
+작성일 : 2026-05-20  (v2 — 모호한 부분 12개 + 중단·재개 추가)
+상황   : 10k smoke 검증 완료. 회의에서 M3 / L7 / N1 결정 받은 후 본 학습 시작.
+관련   : drone_sim_tmux_training_guide.txt    (tmux 사용법 자세히)
+         meeting_notes_2026-05-20.txt          (회의 결정 사항)
+         backup_2026-05-20_drone-bombard/      (이전 상태 백업)
+
+이 가이드는 "결정 받았다 → 본 학습 시작 → 결과 보존 → 다음 사이클" 한 사이클
+walkthrough.  순서대로 따라 가면 됨.  중간에 학습이 죽거나 Ctrl+C 로 멈추는
+경우 처리는 APPENDIX 참조.
+
+
+────────────────────────────────────────────────────────────────────────────────
+ 표기 약속 (이 가이드 전체에 적용)
+────────────────────────────────────────────────────────────────────────────────
+
+  [host]    호스트 셸 (보통의 SSH/터미널) 에서 실행
+  [ctr]     docker exec ... 로 컨테이너 안에서 실행
+  [tmux]    tmux 세션 안의 어느 페인에서 실행
+
+  파일 경로:
+    /home/juns/...                  →  호스트 경로
+    /workspace/...                  →  컨테이너 안 경로
+    /tmp/train.log                  →  컨테이너 안 /tmp  (호스트 /tmp 아님)
+
+  Ctrl 키 표기:
+    Ctrl+B → D       Ctrl 누른 채 B 치고, 둘 다 떼고, D 따로 치기
+                     (tmux prefix 기본값 = Ctrl+B)
+
+
+################################################################################
+#  STEP 0 — 회의 결정 사항 정리 (시작 전 1분)
+################################################################################
+
+회의 결정값을 여기에 받아 적은 다음 STEP 1 로 진행:
+
+[ ] M3  total_timesteps     :  __________     (200k / 500k / 1M / 2M / 기타)
+[ ] L7  PX4 영구화           :  __________     (A 지금 / B Dockerfile / C 나중)
+[ ] N1  Drop Sparse Signal   :  __________     (A curriculum / B w_impact↑ / C 분할 / D 그대로)
+
+위 3개 결정 외 H1/H2/H3/M1/M2/L4/L6 는 이미 적용·검증 완료. 추가 작업 없음.
+
+⚠ N1=A 또는 C 를 선택했다면 별도 코드 패치가 필요합니다.
+   가이드 한 줄로 안 끼워지는 작업 (env 의 누적 step 추적 구조 추가 등).
+   회의 후 별도로 코드 작업 후 본 학습 진입하세요. STEP 2-2 참조.
+
+
+################################################################################
+#  STEP 1 — 환경 점검 (5분)
+################################################################################
+
+────────────────────────────────────────────────────────────────────────────────
+ 1-1. 컨테이너 / 백업 / 잔존 프로세스
+────────────────────────────────────────────────────────────────────────────────
+
+[host]  컨테이너 살아있는지
+
+    docker ps --filter name=drone-bombard-harmonic --format '{{.Names}} {{.Status}}'
+
+  멈춰있으면:
+
+    docker start drone-bombard-harmonic
+
+[host]  백업 폴더 확인
+
+    ls -d /home/juns/backup_2026-05-20_drone-bombard/ 2>/dev/null \
+      && echo "백업 존재" || echo "백업 없음 → 아래 명령으로 새로 떠두기"
+
+  백업 없으면 (또는 현재 상태를 한 번 더 백업하고 싶으면):
+
+    BACKUP=/home/juns/backup_$(date +%Y-%m-%d_%H%M)_pre_main
+    mkdir -p $BACKUP/{config,code,checkpoints,wandb}
+    docker cp drone-bombard-harmonic:/workspace/ros2_ws/src/rl_navigation/config/hyperparams.yaml \
+      $BACKUP/config/hyperparams.src.yaml
+    docker cp drone-bombard-harmonic:/workspace/ros2_ws/install/rl_navigation/share/rl_navigation/config/hyperparams.yaml \
+      $BACKUP/config/hyperparams.install.yaml
+    docker cp drone-bombard-harmonic:/workspace/ros2_ws/src/rl_navigation/rl_navigation/drone_drop_env.py \
+      $BACKUP/code/
+    docker cp drone-bombard-harmonic:/workspace/ros2_ws/src/rl_navigation/rl_navigation/train_sac.py \
+      $BACKUP/code/
+    docker cp drone-bombard-harmonic:/workspace/ros2_ws/rl_checkpoints $BACKUP/checkpoints/
+    docker cp drone-bombard-harmonic:/workspace/ros2_ws/wandb           $BACKUP/wandb/
+    du -sh $BACKUP
+
+[host]  잔존 학습 프로세스 검사 (이전 학습이 죽다 말았을 때 대비)
+
+    docker exec drone-bombard-harmonic bash -c \
+      'ps -ef | grep -E "(train_sac|px4|gz sim|MicroXRCEAgent)" | grep -v grep \
+       || echo "(clean)"'
+
+  분기:
+    [A] "(clean)" 만 떴음        →  잔존 없음.  그대로 1-2 로.
+    [B] 프로세스 목록이 떴음      →  아래 4 줄 모두 실행 (어느 하나만 남아있어도 충돌)
+
+    docker exec drone-bombard-harmonic pkill -f train_sac
+    docker exec drone-bombard-harmonic pkill -f px4
+    docker exec drone-bombard-harmonic pkill -f "gz sim"
+    docker exec drone-bombard-harmonic pkill -f MicroXRCEAgent
+
+    # 정리 후 다시 확인 — "(clean)" 떠야 함
+    docker exec drone-bombard-harmonic bash -c \
+      'ps -ef | grep -E "(train_sac|px4|gz sim|MicroXRCEAgent)" | grep -v grep \
+       || echo "(clean)"'
+
+
+────────────────────────────────────────────────────────────────────────────────
+ 1-2. PX4 airframe rootfs 점검 (양쪽 분기)
+────────────────────────────────────────────────────────────────────────────────
+
+[host]
+
+    docker exec drone-bombard-harmonic bash -c \
+      'ls /opt/PX4-Autopilot/build/px4_sitl_default/rootfs/etc/init.d-posix/airframes/ \
+       | grep -E "401[6-9]_gz_x500"'
+
+  분기:
+    [A] 4016~4019 가 모두 보임   →  airframe OK.  그대로 STEP 2 로.
+    [B] 출력이 비거나 일부만 보임 →  컨테이너 재생성/리빌드로 다 사라졌거나 부분 누락.
+                                    아래 L7 결정에 따라 처리:
+
+  [B-1]  L7 = A (지금 영구화)
+
+    docker exec drone-bombard-harmonic bash -c \
+      'cd /opt/PX4-Autopilot && make px4_sitl_default'
+    # 15~20분 소요.  끝난 후 위 ls 명령 다시 쳐서 4016~4019 다 보이는지 확인.
+
+  [B-2]  L7 = B 또는 C (영구화 안 함 / 나중에)
+
+    docker exec drone-bombard-harmonic bash -c '
+    SRC=/opt/PX4-Autopilot/ROMFS/px4fmu_common/init.d-posix/airframes
+    DST=/opt/PX4-Autopilot/build/px4_sitl_default/rootfs/etc/init.d-posix/airframes
+    for f in 4016_gz_x500_bombard_r0 4017_gz_x500_bombard_r1 \
+             4018_gz_x500_bombard_r2 4019_gz_x500_bombard_r3; do
+      cp -v "$SRC/$f" "$DST/$f"
+    done'
+    # 즉시 끝남.  컨테이너 라이프타임 동안 유효.
+
+
+################################################################################
+#  STEP 2 — 회의 결정 반영 (3분)
+################################################################################
+
+────────────────────────────────────────────────────────────────────────────────
+ 2-1. hyperparams.yaml — M3 (total_timesteps) 갱신
+────────────────────────────────────────────────────────────────────────────────
+
+[host]  편집기로 열기 (nano 가 가장 단순):
+
+    nano /home/juns/Drone-Bombard-Simulation/ros2_ws/src/rl_navigation/config/hyperparams.yaml
+
+  vim 선호 시:  vim /home/juns/Drone-Bombard-Simulation/ros2_ws/src/rl_navigation/config/hyperparams.yaml
+  GUI 편집기 (VSCode 등) 있으면 그것도 OK.
+
+  바꿀 곳 — training 섹션:
+
+    training:
+      total_timesteps: <STEP 0 의 M3 값>      ← 이 한 줄만 필수 변경
+
+  같은 섹션의 eval_freq 도 본 학습이면 더 큰 값으로 권장 (선택사항):
+
+      eval_freq: 2000  →  10000     # smoke 용 2000 → 본학습 10000 권장 (선택)
+
+  저장 후 종료 (nano: Ctrl+O → Enter → Ctrl+X / vim: :wq).
+
+────────────────────────────────────────────────────────────────────────────────
+ 2-2. N1 결정에 따라 추가 변경
+────────────────────────────────────────────────────────────────────────────────
+
+  N1 = D 권장 (그대로) →  추가 변경 없음.  2-3 으로.
+
+  N1 = B (w_impact 강화) →
+    같은 hyperparams.yaml 의 reward 섹션:
+
+      w_impact: 2.0  →  5.0
+      k_impact: 0.05 →  0.1
+
+  N1 = A (curriculum threshold) 또는 N1 = C (terminal reward 시간 분할) →
+    ⚠ 가이드 한 줄로 끼워지지 않는 코드 작업입니다.
+    A: 환경 내부에 학습 시작부터의 누적 step 추적 구조 + threshold 동적 변경 로직 추가
+    C: terminal reward 를 마지막 N step 에 progressive 하게 분배하는 새 로직
+    회의 후 별도 패치로 진행하고, 그 코드 변경이 commit/적용된 다음 이 가이드 STEP 2-3 으로.
+
+────────────────────────────────────────────────────────────────────────────────
+ 2-3. src → install 동기화 (필수)
+────────────────────────────────────────────────────────────────────────────────
+
+[host]  yaml 동기화 (모든 N1 옵션에서 필수)
+
+    docker cp /home/juns/Drone-Bombard-Simulation/ros2_ws/src/rl_navigation/config/hyperparams.yaml \
+      drone-bombard-harmonic:/workspace/ros2_ws/install/rl_navigation/share/rl_navigation/config/hyperparams.yaml
+
+[host]  drone_drop_env.py 동기화 (N1=A 또는 C 의 코드 패치 했을 때만)
+
+    docker cp /home/juns/Drone-Bombard-Simulation/ros2_ws/src/rl_navigation/rl_navigation/drone_drop_env.py \
+      drone-bombard-harmonic:/workspace/ros2_ws/install/rl_navigation/lib/python3.10/site-packages/rl_navigation/drone_drop_env.py
+
+[host]  검증 — 둘 다 결과가 비어야 OK (diff 결과 없음 = 동일)
+
+    docker exec drone-bombard-harmonic diff \
+      /workspace/ros2_ws/src/rl_navigation/config/hyperparams.yaml \
+      /workspace/ros2_ws/install/rl_navigation/share/rl_navigation/config/hyperparams.yaml \
+      && echo "yaml synced"
+
+    # N1=A/C 시
+    docker exec drone-bombard-harmonic diff \
+      /workspace/ros2_ws/src/rl_navigation/rl_navigation/drone_drop_env.py \
+      /workspace/ros2_ws/install/rl_navigation/lib/python3.10/site-packages/rl_navigation/drone_drop_env.py \
+      && echo "env synced"
+
+
+################################################################################
+#  STEP 3 — WandB Incremental Sync 가동 (1분)
+################################################################################
+
+학습은 offline 으로 돌고, 별도 프로세스가 10분마다 클라우드 sync.
+
+[host]  먼저 이미 떠있는지 확인 (중복 가동 방지)
+
+    pgrep -af wandb_incremental_sync.sh
+
+  분기:
+    [A] PID 가 떴음                →  이미 돌고 있음. 추가 가동 불필요. STEP 4 로.
+    [B] 빈 출력 (또는 그냥 ↵ 만)   →  아래 명령으로 띄움.
+
+[host]  새로 띄우기
+
+    nohup /home/juns/wandb_incremental_sync.sh > /tmp/wandb_sync.log 2>&1 &
+
+[host]  몇 초 후 동작 확인
+
+    sleep 3 && tail -5 /tmp/wandb_sync.log
+    # "[wandb-sync] start" 줄이 보이면 OK
+
+
+################################################################################
+#  STEP 4 — tmux 세션에서 본 학습 시작 (3분)
+################################################################################
+
+────────────────────────────────────────────────────────────────────────────────
+ 4-1. tmux 세션 + 3-페인 구성
+────────────────────────────────────────────────────────────────────────────────
+
+[host]
+
+    tmux new -s train
+
+  → tmux 안으로 들어감. 하단 초록 상태바 보이면 OK.
+
+[tmux]  3-페인 만들기
+
+    Ctrl+B  →  %        # 세로 분할 (커서가 오른쪽 페인으로 이동)
+    Ctrl+B  →  "        # 오른쪽 페인을 가로 분할
+
+  레이아웃:
+    ┌─────────────────────┬──────────────────┐
+    │   왼쪽 (학습)         │  우상 (로그 tail) │
+    │                     ├──────────────────┤
+    │                     │  우하 (nvidia-smi) │
+    └─────────────────────┴──────────────────┘
+
+  현재 커서 위치는 우하 페인.
+
+────────────────────────────────────────────────────────────────────────────────
+ 4-2. 학습 시작 (왼쪽 페인)
+────────────────────────────────────────────────────────────────────────────────
+
+[tmux]  왼쪽 페인으로 이동
+
+    Ctrl+B  →  ←
+
+[tmux 왼쪽 페인]  컨테이너 안으로 진입 + 환경 source + 학습 시작
+
+    docker exec -it drone-bombard-harmonic bash
+    # 이제 컨테이너 셸 안 (프롬프트가 root@... 로 바뀜)
+
+    source /opt/ros/humble/setup.bash
+    source /workspace/ros2_ws/install/setup.bash
+    cd /workspace/ros2_ws
+    export WANDB_MODE=offline      # ⚠ 학습 재시작마다 매번 export 필요 (셸 변수)
+    ros2 run rl_navigation train_sac 2>&1 | tee /tmp/train.log
+
+  ⚠ 위 /tmp/train.log 는 컨테이너 안의 /tmp.  호스트의 /tmp 가 아님.
+  ⚠ WANDB_MODE 가 그 셸 세션에만 유효.  학습 중단 후 재시작할 때 까먹지 말 것.
+
+────────────────────────────────────────────────────────────────────────────────
+ 4-3. 로그 추적 (우상 페인)
+────────────────────────────────────────────────────────────────────────────────
+
+[tmux]  우상 페인으로 이동
+
+    Ctrl+B  →  →           # 먼저 오른쪽으로
+    Ctrl+B  →  ↑           # 위로 (이미 위면 그대로)
+
+[tmux 우상 페인]
+
+    docker exec drone-bombard-harmonic tail -F /tmp/train.log
+
+  tee 로 떨어뜨렸으니 왼쪽과 같은 내용이 보임.
+  여기서 Ctrl+C 누르면 tail 만 멈춤 — 학습은 계속.
+
+────────────────────────────────────────────────────────────────────────────────
+ 4-4. GPU / 시스템 모니터 (우하 페인)
+────────────────────────────────────────────────────────────────────────────────
+
+[tmux]  우하 페인으로 이동
+
+    Ctrl+B  →  ↓
+
+[tmux 우하 페인]
+
+    docker exec drone-bombard-harmonic bash -c 'nvidia-smi -l 5'
+
+  5초마다 GPU 상태 갱신. fps 떨어지거나 멈춤 의심 시 GPU 사용률 확인용.
+
+────────────────────────────────────────────────────────────────────────────────
+ 4-5. 학습 정상 시작 확인 (~90초)
+────────────────────────────────────────────────────────────────────────────────
+
+왼쪽 페인 (또는 우상 페인) 에 다음 줄이 차례로 떠야 정상:
+
+    [Instance 0] Starting infra (port=8888)...
+    [Instance 0] Waiting for PX4 position data...
+    [Instance 0] PX4 ready — infra up        ← 핵심 — 90초 안에 떠야 함
+    Starting training...
+    Using cuda device
+    ---------------------------------
+    | rollout/      |               |
+    |    ep_rew_mean| ...           |
+
+  PX4 ready 가 90초 안에 안 뜨면 트러블슈팅:
+    1) STEP 1-2 다시 — airframe rootfs 누락 가능성
+    2) train.log 마지막에 Traceback / ERROR 있나 확인 :
+         docker exec drone-bombard-harmonic tail -40 /tmp/train.log
+    3) 컨테이너 안 ROS workspace source 누락 (4-2 순서 다시 확인)
+    4) docker exec drone-bombard-harmonic free -h  로 메모리 부족 여부 확인
+
+────────────────────────────────────────────────────────────────────────────────
+ 4-6. Detach — 노트북 닫아도 안전한 상태
+────────────────────────────────────────────────────────────────────────────────
+
+[tmux]
+
+    Ctrl+B  →  D       # 세션에서 빠져나옴
+
+  호스트 셸 프롬프트로 돌아옴.  학습은 서버에서 계속.
+
+[host]  확인
+
+    tmux ls     # train: 1 windows ...
+
+  SSH 끊겨도 살아남음. 다시 들어오려면:  tmux attach -t train
+
+
+################################################################################
+#  STEP 5 — 학습 도중 모니터링 (학습 진행 중 수시)
+################################################################################
+
+────────────────────────────────────────────────────────────────────────────────
+ 빠른 진행 step 확인 (한 줄)
+────────────────────────────────────────────────────────────────────────────────
+
+[host]
+
+    docker exec drone-bombard-harmonic bash -c \
+      "grep total_timesteps /tmp/train.log | tail -1"
+
+────────────────────────────────────────────────────────────────────────────────
+ 종합 메트릭 (마지막 SAC 테이블)
+────────────────────────────────────────────────────────────────────────────────
+
+[host]
+
+    docker exec drone-bombard-harmonic bash -c \
+      "grep -E 'total_timesteps|episodes|ep_rew_mean|fps|actor_loss|critic_loss|ent_coef' \
+       /tmp/train.log | tail -15"
+
+────────────────────────────────────────────────────────────────────────────────
+ WandB 클라우드 모니터링 (~10분 지연)
+────────────────────────────────────────────────────────────────────────────────
+
+    https://wandb.ai/nayoonho0922-seoul-national-university/drone-bombard-sac
+
+[host]  마지막 sync 시각 확인
+
+    tail -5 /tmp/wandb_sync.log
+
+────────────────────────────────────────────────────────────────────────────────
+ 학습이 멈춘 것 같으면 (이전 사고와 같은 상황 확인)
+────────────────────────────────────────────────────────────────────────────────
+
+  3가지 신호 모두 보면 멈춤 확정:
+
+  1) CPU 사용률 — 정상 학습이면 50% 이상.
+     [host]
+     docker exec drone-bombard-harmonic top -bn 1 -p $(docker exec drone-bombard-harmonic pgrep -f "rl_navigation/lib/rl_navigation/train_sac" | head -1) 2>/dev/null | tail -3
+
+
+     CPU < 5% 이면 멈춤 강한 신호.
+
+  2) train.log 마지막 수정 시각 — fps≈25 면 4초마다 갱신.
+     1분 이상 안 갱신되면 의심.  2분 이상이면 멈춤 확정.
+     [host]
+     docker exec drone-bombard-harmonic stat -c '%y' /tmp/train.log
+     # 호스트 시각과 비교
+
+  3) GPU 사용률 — nvidia-smi 페인에서 0% 가 계속.
+
+  멈춤이 확정되면 → APPENDIX B (중단된 학습 처리) 참조.
+
+
+################################################################################
+#  STEP 6 — 학습 종료 처리 (학습 끝났을 때)
+################################################################################
+
+────────────────────────────────────────────────────────────────────────────────
+ 6-1. 정상 종료 확인
+────────────────────────────────────────────────────────────────────────────────
+
+왼쪽 페인 마지막 출력:
+
+    Training complete. Final model saved to /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip
+    Final model uploaded to WandB as artifact.
+
+[host]  잔존 프로세스 검사
+
+    docker exec drone-bombard-harmonic bash -c \
+      'ps -ef | grep -E "(train_sac|px4|gz sim|MicroXRCEAgent)" | grep -v grep \
+       || echo "(clean)"'
+
+  분기:
+    [A] "(clean)" 만 떴음   →  자동 정리됨.  6-2 로.
+    [B] 일부 남아있음        →  STEP 1-1 의 정리 4 줄 (pkill train_sac / px4 / gz sim / MicroXRCEAgent) 실행.
+
+────────────────────────────────────────────────────────────────────────────────
+ 6-2. WandB 마지막 sync
+────────────────────────────────────────────────────────────────────────────────
+
+[host]  Incremental sync 가 다음 사이클까지 기다리지 않게 즉시 한 번 더
+        ⚠ 주의: glob 으로 모든 옛 offline-run 까지 sync 시도하면, entity 가 바뀐
+                후의 옛 run 은 옛 entity (예: 만료된 junsanglee64) 로 가서 혼란.
+                따라서 오늘 시작된 run 으로 한정하는 게 안전.
+
+    docker exec drone-bombard-harmonic bash -c \
+      'cd /workspace/ros2_ws && wandb sync wandb/offline-run-'$(date -u +%Y%m%d)'_*'
+
+    # 자정 넘어서 학습이 시작되거나 끝났으면 어제 날짜도 같이:
+    # docker exec drone-bombard-harmonic bash -c \
+    #   'cd /workspace/ros2_ws && wandb sync wandb/offline-run-'$(date -u -d "yesterday" +%Y%m%d)'_* wandb/offline-run-'$(date -u +%Y%m%d)'_*'
+
+[host]  sync 결과의 URL 에 entity 가 맞는지 확인 (예: nayoonho0922-seoul-national-university)
+
+[host]  WandB 대시보드 열어서 그래프 확인
+
+    https://wandb.ai/nayoonho0922-seoul-national-university/drone-bombard-sac
+
+────────────────────────────────────────────────────────────────────────────────
+ 6-3. 결과 산출물 확인
+────────────────────────────────────────────────────────────────────────────────
+
+[host]
+
+    docker exec drone-bombard-harmonic ls -lh /workspace/ros2_ws/rl_checkpoints/
+    docker exec drone-bombard-harmonic ls -lh /workspace/ros2_ws/wandb/
+    docker exec drone-bombard-harmonic ls -lh /tmp/train.log
+
+
+################################################################################
+#  STEP 7 — 다음 사이클 준비 / 마무리 (5분)
+################################################################################
+
+────────────────────────────────────────────────────────────────────────────────
+ 7-1. 결과 백업 (이번 학습 결과 보존)
+────────────────────────────────────────────────────────────────────────────────
+
+[host]
+
+    BACKUP=/home/juns/backup_$(date +%Y-%m-%d_%H%M)_main_training
+    mkdir -p $BACKUP/{checkpoints,wandb,config,logs}
+
+  ⚠ wandb/ 가 거대해질 수 있음.  먼저 크기 확인:
+    docker exec drone-bombard-harmonic du -sh /workspace/ros2_ws/wandb/
+  → 호스트 디스크 충분한지 df -h /home 으로 확인 후 진행.
+
+  백업 진행:
+
+    docker cp drone-bombard-harmonic:/workspace/ros2_ws/rl_checkpoints \
+      $BACKUP/checkpoints/
+    docker cp drone-bombard-harmonic:/workspace/ros2_ws/wandb \
+      $BACKUP/wandb/
+    docker cp drone-bombard-harmonic:/workspace/ros2_ws/src/rl_navigation/config/hyperparams.yaml \
+      $BACKUP/config/
+    docker cp drone-bombard-harmonic:/tmp/train.log \
+      $BACKUP/logs/
+    du -sh $BACKUP
+
+────────────────────────────────────────────────────────────────────────────────
+ 7-2. WandB Sync 확정 → 컨테이너 안 wandb 폴더 정리
+────────────────────────────────────────────────────────────────────────────────
+
+이 단계는 "클라우드 sync 가 모든 run 에 대해 끝났음" 을 확인한 후에만 진행.
+sync 미완료 상태에서 폴더 지우면 데이터 영영 못 봄.
+
+[host]  단계 1: 모든 offline-run 을 다시 한 번 sync (안전 차원)
+
+    docker exec drone-bombard-harmonic bash -c \
+      'cd /workspace/ros2_ws && wandb sync wandb/offline-run-*'
+
+  명령이 끝나고 출력에 "Syncing run ..." → "Synced" 가 모든 run 에 대해 떠야 함.
+  에러가 있으면 (네트워크 등) 절대 지우지 말고 재시도.
+
+[host]  단계 2: WandB 대시보드에서 시각 확인
+
+    https://wandb.ai/nayoonho0922-seoul-national-university/drone-bombard-sac
+    → 이번 학습 run 의 그래프가 끝까지 들어와 있는지 눈으로 확인.
+
+[host]  단계 3: 단계 1+2 확인됐을 때만 — 컨테이너 안 wandb 폴더 정리
+
+  ⚠ 백업 폴더 (7-1) 에는 wandb 가 이미 복사되어 있음.  추가로 보존하고 싶다면
+    백업이 있는지 한 번 더 확인:
+        ls -lh $BACKUP/wandb/ 2>/dev/null && echo "백업 OK" || echo "⚠ 백업 없음 — 지우지 마!"
+
+  단계 1+2+백업 확인 모두 통과했으면:
+
+    docker exec drone-bombard-harmonic bash -c \
+      'rm -rf /workspace/ros2_ws/wandb/offline-run-* \
+              /workspace/ros2_ws/wandb/debug.log \
+              /workspace/ros2_ws/wandb/debug-internal.log \
+              /workspace/ros2_ws/wandb/latest-run'
+
+  확인:
+    docker exec drone-bombard-harmonic ls /workspace/ros2_ws/wandb/ \
+      || echo "(폴더 자체가 비었거나 없음)"
+
+────────────────────────────────────────────────────────────────────────────────
+ 7-3. WandB Sync 스크립트 처리
+────────────────────────────────────────────────────────────────────────────────
+
+  다음 사이클 곧 돌 거면 → 그대로 둠.
+  완전히 끝났으면:
+
+    [host]
+    pkill -f wandb_incremental_sync.sh
+    # 확인
+    pgrep -af wandb_incremental_sync.sh && echo "아직 떠있음" || echo "정리됨"
+
+────────────────────────────────────────────────────────────────────────────────
+ 7-4. tmux 세션 정리
+────────────────────────────────────────────────────────────────────────────────
+
+  학습 페인의 셸이 그대로 살아있는 상태에서 한 번에 정리:
+
+    [host]
+    tmux kill-session -t train
+
+  확인:
+    tmux ls 2>&1 | grep train || echo "정리됨"
+
+────────────────────────────────────────────────────────────────────────────────
+ 7-5. 회의 자료 / 메모리 업데이트 (선택)
+────────────────────────────────────────────────────────────────────────────────
+
+  본 학습 결과로 새로 알아낸 게 있으면:
+  - meeting_notes_2026-05-20.txt 에 결과 섹션 추가
+  - Claude 메모리에 새 사실 기록 (다음 세션 자동 활용)
+
+
+################################################################################
+#  APPENDIX A — 자주 쓰는 한 줄 명령 모음
+################################################################################
+
+[host]
+
+    # 학습 살아있나
+    docker exec drone-bombard-harmonic pgrep -af train_sac
+
+    # 진행 step 한 줄
+    docker exec drone-bombard-harmonic bash -c \
+      "grep total_timesteps /tmp/train.log | tail -1"
+
+    # 마지막 SAC 테이블
+    docker exec drone-bombard-harmonic bash -c \
+      "grep -E 'total_timesteps|ep_rew_mean|actor_loss|critic_loss' /tmp/train.log | tail -10"
+
+    # GPU 사용률
+    docker exec drone-bombard-harmonic nvidia-smi
+
+    # tmux 세션 목록
+    tmux ls
+
+    # tmux 다시 들어가기
+    tmux attach -t train
+
+    # 학습 강제 종료 (잔존 정리)
+    docker exec drone-bombard-harmonic pkill -f train_sac
+    docker exec drone-bombard-harmonic pkill -f px4
+    docker exec drone-bombard-harmonic pkill -f "gz sim"
+    docker exec drone-bombard-harmonic pkill -f MicroXRCEAgent
+
+    # WandB 즉시 sync
+    docker exec drone-bombard-harmonic bash -c \
+      'cd /workspace/ros2_ws && wandb sync wandb/offline-run-*'
+
+
+################################################################################
+#  APPENDIX B — 중단된 학습 처리 (Ctrl+C / kill / 멈춤)
+################################################################################
+
+먼저 알아둘 점:
+
+  • Ctrl+C (SIGINT) → train_sac 코드는 SIGINT 핸들러를 따로 두지 않음.
+    프로세스가 즉시 죽고 sac_drop_preempt.zip 도 만들어지지 않음.
+    → 이어서 재개하고 싶다면 가장 가까운 checkpoint (sac_drop_<N>_steps.zip) 에서 시작.
+
+  • kill -TERM <pid> (SIGTERM) → _emergency_save 핸들러 발동.
+    sac_drop_preempt.zip + sac_drop_preempt_replay.pkl 저장됨.
+    → 가장 정확한 재개 (replay buffer 까지 포함).
+
+  • WandB IPC 데드락으로 멈춤 → 프로세스 살아있지만 일은 안 함.
+    pkill -KILL 로 죽이면 preempt 안 만들어짐.
+    → 그래도 마지막 checkpoint 에서 재개 가능.
+
+────────────────────────────────────────────────────────────────────────────────
+ B-1.  먼저 현재 상태 파악
+────────────────────────────────────────────────────────────────────────────────
+
+[host]  학습이 진짜 죽었는지 확인
+
+    docker exec drone-bombard-harmonic pgrep -af train_sac
+
+  분기:
+    [A] PID 가 떴음     →  멈춘 척 살아있음. B-2 로 정중하게 종료 시도.
+    [B] 빈 출력         →  죽은 상태. B-3 로 재개/지우기 결정.
+
+────────────────────────────────────────────────────────────────────────────────
+ B-2.  살아있는 학습을 정중하게 종료 (preempt zip 받기)
+────────────────────────────────────────────────────────────────────────────────
+
+[host]  PID 알아내고 SIGTERM 보냄
+
+    PID=$(docker exec drone-bombard-harmonic pgrep -f \
+          "rl_navigation/lib/rl_navigation/train_sac" | head -1)
+    echo "PID = $PID"
+
+    docker exec drone-bombard-harmonic kill -TERM $PID
+
+  최대 ~30초 기다린 후 (replay buffer 저장 시간) 잔존 프로세스 정리:
+
+    sleep 30
+    docker exec drone-bombard-harmonic pkill -f train_sac
+    docker exec drone-bombard-harmonic pkill -f px4
+    docker exec drone-bombard-harmonic pkill -f "gz sim"
+    docker exec drone-bombard-harmonic pkill -f MicroXRCEAgent
+
+[host]  preempt 저장됐는지 확인
+
+    docker exec drone-bombard-harmonic ls -lh \
+      /workspace/ros2_ws/rl_checkpoints/sac_drop_preempt*
+
+  파일 두 개 보이면 OK:
+    sac_drop_preempt.zip
+    sac_drop_preempt_replay.pkl
+
+  만약 안 보이면 → IPC 데드락 등으로 핸들러도 못 돈 상황.  B-3 의 checkpoint 재개로.
+
+────────────────────────────────────────────────────────────────────────────────
+ B-3.  사용 가능한 재개 지점 확인
+────────────────────────────────────────────────────────────────────────────────
+
+[host]
+
+    docker exec drone-bombard-harmonic ls -lh /workspace/ros2_ws/rl_checkpoints/
+
+  나오는 후보 :
+    sac_drop_preempt.zip            ← SIGTERM 으로 만들어진 zip (있을 때만)
+    sac_drop_preempt_replay.pkl     ← preempt 와 짝
+    sac_drop_<N>_steps.zip          ← checkpoint_freq 마다 자동 저장 (5000 step 마다)
+    sac_drop_final.zip              ← 학습 정상 종료 시 (멈춤 상황엔 없음)
+    best_model/best_model.zip       ← BestModelCallback 이 저장 (최고 ep_rew_mean 시점)
+
+  재개 우선순위 (정확도 높은 순):
+    1) sac_drop_preempt.zip          (replay buffer 까지 복원, 가장 정확)
+    2) sac_drop_<N>_steps.zip 중 N 가장 큰 것
+    3) best_model.zip                 (성능 기준, 학습 진행도 아님)
+
+────────────────────────────────────────────────────────────────────────────────
+ B-4.  이어서 재개 (선택지 1)
+────────────────────────────────────────────────────────────────────────────────
+
+[host]  STEP 1-1 의 잔존 프로세스 정리 먼저 (필수)
+
+    docker exec drone-bombard-harmonic bash -c \
+      'ps -ef | grep -E "(train_sac|px4|gz sim|MicroXRCEAgent)" | grep -v grep \
+       || echo "(clean)"'
+    # 안 비었으면 STEP 1-1 의 pkill 4 줄
+
+  airframe r0~r3 확인 (STEP 1-2 분기 A 처럼):
+
+    docker exec drone-bombard-harmonic bash -c \
+      'ls /opt/PX4-Autopilot/build/px4_sitl_default/rootfs/etc/init.d-posix/airframes/ \
+       | grep -E "401[6-9]_gz_x500"'
+
+  WandB sync 스크립트 살아있는지 (STEP 3 검사):
+
+    pgrep -af wandb_incremental_sync.sh
+
+  재개 명령 (tmux 안에서 STEP 4 와 동일한 흐름, ros2 run 명령만 다름):
+
+  [tmux 왼쪽 페인]
+    docker exec -it drone-bombard-harmonic bash
+    source /opt/ros/humble/setup.bash
+    source /workspace/ros2_ws/install/setup.bash
+    cd /workspace/ros2_ws
+    export WANDB_MODE=offline
+
+    # 재개 — 위 B-3 에서 정한 zip 경로 사용 (예시: preempt)
+    ros2 run rl_navigation train_sac \
+      --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip \
+      2>&1 | tee -a /tmp/train.log
+
+    # 또는 checkpoint 에서 (예: 30000 step 까지 갔다면)
+    ros2 run rl_navigation train_sac \
+      --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_30000_steps.zip \
+      2>&1 | tee -a /tmp/train.log
+
+  주의:
+  • tee 의 -a 옵션 → 기존 train.log 에 이어쓰기.  덮어쓰지 않음.
+  • replay buffer 는 zip 옆의 _replay.pkl 이 있으면 자동 로드.
+  • num_envs 가 그대로면 replay buffer 도 복원됨.  바꿨다면 자동으로 skip.
+  • total_timesteps 은 yaml 값을 이어서 채움.  100k 까지 갔는데 yaml 이 200k 면 추가
+    100k 만 더 학습.  처음부터 200k 학습 의도였으면 yaml 의 total_timesteps 조정 필요.
+
+────────────────────────────────────────────────────────────────────────────────
+ B-5.  지우고 처음부터 다시 (선택지 2)
+────────────────────────────────────────────────────────────────────────────────
+
+⚠ 되돌릴 수 없음.  진행 전에 한 번 더 결정 확인.
+⚠ STEP 1-1 의 백업이 있는지 확인.  결과를 영영 보존 안 할 거면 OK.
+
+[host]  사용한 WandB run 도 함께 정리 (sync 안 한 게 있으면 한 번 더)
+
+    docker exec drone-bombard-harmonic bash -c \
+      'cd /workspace/ros2_ws && wandb sync wandb/offline-run-*'
+
+[host]  컨테이너 안의 체크포인트 / 로그 정리
+
+    docker exec drone-bombard-harmonic bash -c '
+      rm -f /workspace/ros2_ws/rl_checkpoints/sac_drop_preempt*
+      rm -f /workspace/ros2_ws/rl_checkpoints/sac_drop_*_steps.zip
+      rm -f /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip
+      rm -f /workspace/ros2_ws/rl_checkpoints/model.zip
+      rm -rf /workspace/ros2_ws/rl_checkpoints/best_model/*
+      rm -f /tmp/train.log
+    '
+
+  ⚠ archive/ 폴더 (MilestoneArchiveCallback) 는 일부러 남겨둠.  지우려면 추가:
+      rm -rf /workspace/ros2_ws/rl_checkpoints/archive/*
+
+[host]  WandB 폴더도 정리 (STEP 7-2 와 동일)
+
+    docker exec drone-bombard-harmonic bash -c \
+      'rm -rf /workspace/ros2_ws/wandb/offline-run-* \
+              /workspace/ros2_ws/wandb/debug*.log \
+              /workspace/ros2_ws/wandb/latest-run'
+
+[host]  처음부터 다시 시작 — STEP 4 (tmux + 학습) 로 돌아감.
+        STEP 0 ~ 3 은 다시 점검 안 해도 OK (이미 처리됨).
+
+
+################################################################################
+#  체크리스트 (시작 전 한 번 훑기)
+################################################################################
+
+  [ ] STEP 0   회의 결정 사항 받아 적음 (M3, L7, N1)
+  [ ] STEP 0   N1=A 또는 C 면 코드 패치 별도 완료
+  [ ] 1-1     컨테이너 Up / 백업 존재 / 잔존 프로세스 정리
+  [ ] 1-2     PX4 airframe r0~r3 rootfs 점검 + 분기 처리
+  [ ] 2-1     hyperparams.yaml total_timesteps 갱신
+  [ ] 2-2     N1 결정에 따른 추가 변경
+  [ ] 2-3     src → install 동기화 + diff 확인 (yaml / env)
+  [ ] STEP 3  WandB sync 스크립트 중복 가동 안 함 — pgrep 먼저
+  [ ] 4-1~4   tmux 세션 + 3-페인 + 학습 시작
+  [ ] 4-5     "PX4 ready — infra up" 확인 (90초 안)
+  [ ] 4-6     Ctrl+B → D 로 detach
+  [ ] STEP 5  주기적 (예: 30분~1시간마다) 한 줄 명령으로 진행 step / WandB 그래프 확인
+  [ ] 6-1     "Training complete" + 잔존 프로세스 (clean)
+  [ ] 6-2     마지막 sync + WandB 그래프 끝까지 확인
+  [ ] 7-1     결과 백업 (du -sh 로 크기 미리 확인)
+  [ ] 7-2     sync 완료 + 백업 존재 확인 후 컨테이너 안 wandb 폴더 정리
+  [ ] 7-3     WandB sync 스크립트 정리 (다음 사이클 없을 때만)
+  [ ] 7-4     tmux 세션 정리
+  학습 중단:  APPENDIX B 참조 (이어서 / 지우기 선택)
+
+
+================================================================================
+ 끝
+================================================================================

@@ -45,7 +45,7 @@ cd /opt/PX4-Autopilot && DONT_RUN=1 make px4_sitl gz_x500
 ```bash
 cd /workspace/ros2_ws
 colcon build
-source install/setup.bash
+source /workspace/ros2_ws/source_container_env.sh
 ```
 
 ---
@@ -58,7 +58,7 @@ in each new tab after the container is running).
 ### Terminal 1 — Gazebo + PX4 SITL + DDS bridge + Vision
 
 ```bash
-source /workspace/ros2_ws/install/setup.bash
+source /workspace/ros2_ws/source_container_env.sh
 ros2 launch path_generation gz_harmonic_sitl.launch.py
 ```
 
@@ -83,8 +83,7 @@ ros2 launch path_generation gz_harmonic_sitl.launch.py headless:=true enable_vis
 ### Terminal 2 — Mission nodes
 
 ```bash
-source /workspace/ros2_ws/install/setup.bash
-ros2 launch mission_manager drone_mission.launch.py
+/workspace/ros2_ws/run_drone_mission.sh
 ```
 
 This launches the four mission nodes:

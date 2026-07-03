@@ -67,7 +67,7 @@ def generate_launch_description():
         description="Run Gazebo server-only without GUI (default: true for RL)")
 
     vision_arg = DeclareLaunchArgument(
-        "enable_vision", default_value="false",
+        "enable_vision", default_value="true",
         description="Launch xmarker_detector YOLO detection node (default: false for RL)")
 
     headless = LaunchConfiguration("headless")

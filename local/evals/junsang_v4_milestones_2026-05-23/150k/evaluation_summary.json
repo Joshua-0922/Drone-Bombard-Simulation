@@ -1,0 +1,13 @@
+{
+  "n_episodes": 5,
+  "n_drops": 0,
+  "mean_drop_error_m": NaN,
+  "std_drop_error_m": NaN,
+  "min_drop_error_m": NaN,
+  "max_drop_error_m": NaN,
+  "cep50_m": NaN,
+  "success_rate_05m": 0.0,
+  "mean_drop_speed_mps": NaN,
+  "mean_episode_reward": -141.2933220520561,
+  "std_episode_reward": 178.11608851118032
+}

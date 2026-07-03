@@ -1,13 +1,7 @@
 #!/bin/bash
 
-# ROS2 Humble
-source /opt/ros/humble/setup.bash
-
-# px4_msgs workspace
-source /opt/px4_msgs_ws/install/setup.bash
-
-# Current workspace
-source /workspace/ros2_ws/install/setup.bash
+# ROS2 + px4_msgs + current workspace
+source /workspace/ros2_ws/source_container_env.sh
 
 # PX4 paths
 export PX4_DIR=/opt/PX4-Autopilot

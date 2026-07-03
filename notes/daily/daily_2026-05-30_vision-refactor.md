@@ -1,0 +1,79 @@
+---
+date: 2026-05-30
+tags: [daily, log]
+type: daily
+status: complete
+---
+
+# 연구 일지 — 2026-05-30 (Vision Refactor / junsang 브랜치)
+
+> 같은 날짜에 Isaac migration과 별도로 진행된 작업 스트림. 병합(jekyun→feat/isaac-env-migration) 시
+> add/add 충돌로 [[daily/daily_2026-05-30]]과 분리 보존.
+
+---
+
+## 오늘 한 일
+
+> 오늘 수행한 작업을 항목별로 정리. 코드 변경, 실험, 환경 설정 등 모두 포함.
+
+- `drone_drop_env.py` 전면 리팩터링: 투하(drop) 로직 전체 제거, vision centering 보상 추가
+- Observation space 축소: `Box(17,)` → `Box(14,)` (payload_attached, d_impact, t_f 제거)
+- Action space 축소: `Box(5,)` → `Box(4,)` (drop trigger action 제거)
+- `hyperparams.yaml` 업데이트: `use_vision: true`, drop 파라미터 제거, `w_vision_center: 1.0` 추가
+- `infra.launch.py` 업데이트: `enable_vision` 기본값 `false` → `true` (YOLO 노드 기본 실행)
+- 기존 버그 수정: `_RLBridgeNode` 생성 시 불필요한 인자 2개 전달되던 오류 제거
+
+---
+
+## 주요 결정 & 발견
+
+> 오늘 내린 중요한 판단, 새로 알게 된 사실, 설계 변경 이유 등.
+
+- **목표 변경**: 페이로드 투하 → X 마커에 최대한 근접 비행으로 태스크 재정의
+- **Vision centering 보상 공식**: `max(0, 1 - √(u²+v²)) * conf`
+  - u, v ∈ [-1, 1] (카메라 정규화 좌표, 중앙=0)
+  - X가 이미지 중앙에 있을 때 최대 보상 1.0, YOLO 미검출 시 0
+- **`_predict_impact_point` (CCIP 탄도 예측) 완전 제거**: drop 없으므로 불필요
+- **payload 물리 객체**: Gazebo 시뮬레이션 상에서는 여전히 attached 상태로 남음 (DetachableJoint 미사용), 학습에는 무관
+
+---
+
+## 코드 변경 사항
+
+> 수정한 파일, 변경 내용 요약. 커밋 메시지와 연결.
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `ros2_ws/src/rl_navigation/rl_navigation/drone_drop_env.py` | drop 로직 전체 제거, obs Box(14,), action Box(4,), 새 보상 함수(3-Layer) 작성, CCIP 제거, `_RLBridgeNode` 버그 수정 |
+| `ros2_ws/src/rl_navigation/config/hyperparams.yaml` | `use_vision: true`, drop 파라미터 제거, `w_vision_center: 1.0` 추가 |
+| `ros2_ws/src/mission_manager/launch/infra.launch.py` | `enable_vision` 기본값 `"false"` → `"true"` |
+
+---
+
+## 문제 & 해결
+
+> 발생한 에러, 시도한 방법, 최종 해결책. 미해결이면 상태 명시.
+
+| 문제 | 해결 여부 | 메모 |
+|------|----------|------|
+| `_RLBridgeNode.__init__`가 `(state_lock, obs_ready_event, px4_topic_prefix)` 3개만 받는데 `_drop_error_event`, `_drop_error_queue` 2개를 추가로 전달하던 버그 | ✅ | 리팩터링 과정에서 drop 관련 인자 전부 제거 |
+| 리팩터링 중 남은 `else:` 블록 들여쓰기 오류 | ✅ | 해당 블록 제거 후 `ast.parse()` 통과 확인 |
+
+---
+
+## 내일 할 일
+
+> 내일 가장 먼저 해야 할 것을 우선순위 순서로.
+
+- [ ] `colcon build` 실행하여 `ros2_ws/install/` 하위 설치본 동기화
+- [ ] `train_sac.py` 실행 후 런타임 오류 없는지 확인 (obs shape=14, action shape=4)
+- [ ] YOLO 검출 시 vision centering 보상이 실제로 발생하는지 로그로 검증
+- [ ] `w_vision_center` 튜닝 (초기값 1.0 기준으로 학습 경향 확인 후 조정)
+- [ ] `_start_infra()` / `_start_episode()` 내 잔존 drop 관련 브릿지 설정 정리 (cosmetic)
+
+---
+
+## 관련 노트
+
+- `junsang` 브랜치 작업
+- 프로젝트: `/opt/drone-bombard/Drone-Bombard-Simulation`

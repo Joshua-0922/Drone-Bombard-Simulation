@@ -1,0 +1,344 @@
+================================================================================
+ Drone-Bombard-Simulation — tmux 기반 본 학습 실행 가이드 (v4)
+================================================================================
+작성일 : 2026-05-23 (v3), 2026-05-26 갱신 (v4 — Round 2 반영, metric 정리)
+대상   : drone-bombard-harmonic 컨테이너에서 SAC 본 학습 실행 + 모니터링
+관련 (path 는 이 파일이 있는 guides/ 기준) :
+  - ../design/design_review.md              (현재 최종 설계)
+  - ../parameter_log.md                     (parameter history)
+  - ../meeting_notes/meeting_notes_2026-05-26.txt (최근 세션 정리)
+  - ../README_local_backup.md               (전체 폴더 navigator)
+  - wandb_metrics_guide.txt                 (metric 정의 및 해석)
+  - 절대경로 base: /home/juns/Drone-Bombard-Simulation/local/
+
+
+================================================================================
+ 0. 왜 tmux 인가?
+================================================================================
+
+본 학습은 200k = 2~10시간, 500k = 5~25시간, 1M = 10~50시간. 그 동안 :
+  - SSH 끊김 / 노트북 절전 / 네트워크 끊김
+  - 터미널 창 실수 닫기
+  - 학습 로그 보면서 다른 명령도 치고 싶음
+
+tmux = "원격에 떠 있는 가상 터미널" :
+  - 세션은 SSH 끊겨도 계속 살아있음
+  - 다시 attach 하면 그대로 이어짐
+  - 한 세션 안 여러 윈도우/페인 가능
+
+핵심 : **본 학습은 무조건 tmux 안에서 시작한다.**
+
+
+================================================================================
+ 1. 학습 사이클 — 5k dry-run → 200k → resume
+================================================================================
+
+새 parameter 적용 후 표준 사이클 :
+
+  1. ../design_review_2026-05-23.md 의 처방 적용 (yaml + code + 미러)
+  2. ../parameter_log.md 에 entry 추가
+  3. **5k dry-run** (offline) — sim 정상 동작 + 통과 기준 검증
+  4. 5k 통과 시 **200k 본학습** (online)
+  5. 200k 완주 후 성공 판정 (deterministic evaluate 포함)
+  6. 분기 :
+       성공 → Run 다음 phase (curriculum 좁힘 또는 200k→500k resume)
+       부분 성공 → Tier 2 처방
+       실패 → Tier 1 수치 재조정 또는 Tier 3
+
+
+================================================================================
+ 2. 사전 정리 (학습 시작 전)
+================================================================================
+
+매번 학습 시작 전 :
+
+  # Host
+  # 1. 이전 tmux session 정리
+  tmux kill-session -t train 2>/dev/null
+
+  # 2. host docker exec process 정리
+  ps aux | grep 'docker exec' | grep -v grep
+  # 살아있으면 kill
+
+  # 3. Container 안 sim process 정리 (pkill -f 는 substring — OR 안 됨, 개별 호출)
+  docker exec drone-bombard-harmonic bash -c "\
+    pkill -9 -f 'gz sim'; \
+    pkill -9 -f 'bin/px4'; \
+    pkill -9 -f 'MicroXRCEAgent'; \
+    pkill -9 -f 'parameter_bridge'; \
+    pkill -9 -f 'train_sac'; \
+    sleep 2; \
+    rm -f /dev/shm/fastrtps_* /tmp/px4_lock-* /tmp/px4-sock-*; \
+    rm -f /tmp/*.log /tmp/launch_params_* /tmp/drone_env_gz_ready /tmp/ros_gz_bridge_*.yaml /tmp/x_marker_world_rl_*.sdf"
+
+  # 4. PX4 비행 로그 삭제 (매 에피소드마다 누적, 수GB 차지)
+  docker exec drone-bombard-harmonic bash -c "\
+    rm -rf /opt/PX4-Autopilot/build/px4_sitl_default/rootfs/log/* && \
+    echo 'PX4 logs cleaned'"
+
+  # 5. 이전 run 체크포인트 archive 이동 (이전 run 보존)
+  docker exec drone-bombard-harmonic bash -c "\
+    ARCHIVE=/workspace/ros2_ws/rl_checkpoints/archive/<run_name>_<run_id>_<date> && \
+    mkdir -p \$ARCHIVE && \
+    cd /workspace/ros2_ws/rl_checkpoints && \
+    mv sac_drop_*_steps.zip sac_drop_final.zip model.zip \$ARCHIVE/ 2>/dev/null; \
+    rm -rf best_model/*"
+
+
+================================================================================
+ 3. 5k dry-run (offline)
+================================================================================
+
+목적 : sim 정상 동작 + 통과 기준 검증 + 임계 적정성 점검
+
+설정 :
+
+  # Host : yaml total_timesteps 임시 5000
+  sed -i 's/total_timesteps: 200000/total_timesteps: 5000/' \
+    /home/juns/Drone-Bombard-Simulation/ros2_ws/src/rl_navigation/config/hyperparams.yaml
+  docker cp /home/juns/Drone-Bombard-Simulation/ros2_ws/src/rl_navigation/config/hyperparams.yaml \
+    drone-bombard-harmonic:/workspace/ros2_ws/install/rl_navigation/share/rl_navigation/config/hyperparams.yaml
+
+실행 (host tmux) :
+
+  tmux new -s dryrun
+  # tmux 안 :
+  docker exec -it drone-bombard-harmonic bash
+  # 컨테이너 bash 안 :
+  source /opt/ros/humble/setup.bash
+  source /workspace/ros2_ws/install/setup.bash
+  export WANDB_MODE=offline
+  cd /workspace/ros2_ws
+  ros2 run rl_navigation train_sac 2>&1 | tee /tmp/train_dryrun.log
+
+분리 : Ctrl+B → D / 재접속 : tmux attach -t dryrun
+끝나면 tmux exit 자동 또는 'exit' 입력
+
+통과 기준 (Round 2 시점) :
+  ✓ Training complete 메시지 (자연 완주)
+  ✓ RuntimeError / Traceback 없음
+  ✓ env/total_drops ≥ 1 (drop 학습 동기 신호 작동)
+  ✓ env/d_xy 측정됨 (NaN 아님)
+  ✓ rollout/ep_len_mean < 500 (early terminate 작동)
+  ✓ env/d_xy 5k 동안 어느 정도 감소 (답답함 점검)
+
+통과 후 :
+  - yaml total_timesteps 5000 → 200000 복원 + 미러
+  - 5k checkpoint archive 이동
+  - 200k 본학습 진입
+
+
+================================================================================
+ 4. 200k 본학습 (online)
+================================================================================
+
+설정 :
+  - yaml total_timesteps = 200000
+  - WANDB_MODE = online (사용자 결정)
+  - 예상 시간 : 2~10 시간
+
+실행 (host tmux) :
+
+  tmux new -s train
+  # tmux 안 :
+  docker exec -it drone-bombard-harmonic bash
+  # 컨테이너 bash 안 :
+  source /opt/ros/humble/setup.bash
+  source /workspace/ros2_ws/install/setup.bash
+  export WANDB_MODE=online
+  cd /workspace/ros2_ws
+  ros2 run rl_navigation train_sac 2>&1 | tee /tmp/train_<run_name>_200k.log
+
+분리 : Ctrl+B → D
+재접속 : tmux attach -t train
+
+
+================================================================================
+ 5. 학습 도중 모니터링 (10~30분 단위)
+================================================================================
+
+WandB 대시보드 :
+  https://wandb.ai/nayoonho0922-seoul-national-university/drone-bombard-sac
+
+핵심 metric (Round 2 — 8개로 정리, 상세: wandb_metrics_guide.txt) :
+
+  x축 = step:
+    env/d_xy                     타겟 수평 거리 평균   ← 가장 중요
+    env/drop_error               drop 착탄 오차 평균   ← 핵심 목표
+    env/rew_drop                 drop 보상 평균        ← gradient 효과 확인
+
+  x축 = env/total_episodes:
+    env/total_episodes           에피소드 누적 (x축)
+    env/total_drops              drop 누적             ← drop 빈도
+    env/total_auto_drops         auto drop 누적        ← 정밀 drop 지표
+    env/total_success            success (<5m) 누적
+    env/total_jackpot            jackpot (<0.1m) 누적
+
+  --- 정상 신호 ---
+  train/critic_loss              < 500 안정
+  train/ent_coef                 단조 감소 (1.0→0.2)
+  env/total_drops                stair-step ↑ (150k 외삽 ≥ 30)
+  env/d_xy                       단조 감소 추세
+  env/rew_drop                   증가 추세 (Round 2 gradient 효과)
+  rollout/ep_rew_mean            점진 개선
+
+  --- 발산 신호 (하나라도 → abort 검토) ---
+  train/critic_loss              > 5000
+  train/ent_coef                 > 1.0 또는 증가
+  env/total_drops                50k step 이후 < 25
+  env/d_xy                       100k 이후도 > 50m
+
+
+================================================================================
+ 6. 학습 중단 (graceful kill) + resume
+================================================================================
+
+OOM 위험 또는 사용자 판단으로 중단 시 :
+
+  # tmux attach -t train 후 :
+  Ctrl+C   ← SIGINT, train_sac 가 graceful 종료
+            sac_drop_preempt.zip + sac_drop_preempt_replay.pkl 자동 저장
+
+  # 또는 host 에서 직접 SIGINT :
+  docker exec drone-bombard-harmonic bash -c "\
+    pkill -INT -f 'install/rl_navigation/lib/rl_navigation/train_sac'"
+  # 10초 기다림 후 sim process 정리 (sec 2 명령)
+
+  # 절대 SIGKILL 먼저 보내지 마라 — preempt 저장 못 함.
+  # SIGINT → 안 죽으면 → SIGTERM → 그래도 안 죽으면 → SIGKILL
+
+resume (이전 학습 이어 학습) :
+
+  cd /workspace/ros2_ws
+  ros2 run rl_navigation train_sac --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip
+  # 또는 milestone:
+  ros2 run rl_navigation train_sac --resume /workspace/ros2_ws/rl_checkpoints/archive/sac_drop_milestone_100000_steps.zip
+
+
+================================================================================
+ 7. 200k 완주 후 성공 판정 (../design_review_2026-05-23.md §6-6 Step 3)
+================================================================================
+
+다음 5개 중 4개 이상 만족 → 성공 :
+
+  1. env/total_drops ≥ 30
+  2. env/d_xy (final) ≤ 10m
+  3. train/critic_loss (final) < 500
+  4. train/ent_coef (final) < 0.5
+  5. Deterministic evaluate 5 epi : drops ≥ 2
+
+deterministic evaluate 실행 :
+
+  # 학습 끝난 후 (sim 살아있는 상태)
+  docker exec -it drone-bombard-harmonic bash
+  source /opt/ros/humble/setup.bash
+  source /workspace/ros2_ws/install/setup.bash
+  mkdir -p /workspace/ros2_ws/rl_eval_results/<run_name>_200k
+  ros2 run rl_navigation evaluate \
+    --model /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip \
+    --episodes 5 \
+    --output-dir /workspace/ros2_ws/rl_eval_results/<run_name>_200k
+
+GUI 관찰 :
+  # 별도 tmux/터미널 :
+  xhost +local:root   # host 에서
+  docker exec drone-bombard-harmonic bash -c "DISPLAY=:1 gz sim -g"
+  # 끝나면 :
+  xhost -local:root
+
+
+================================================================================
+ 8. 분기 — 다음 Run
+================================================================================
+
+성공 (5개 중 4개+) :
+  → 150k → 500k resume (yaml total_timesteps 500000 + --resume)
+  → 또는 curriculum phase 2 (auto_drop_threshold 축소)
+
+부분 성공 (drops 있지만 d_xy 정체) :
+  → k값/w값 추가 조율 (Round 2 분석 기반)
+
+실패 (drops < 5, d_xy > 30m, critic 발산) :
+  → 보상 구조 재검토, observation/action 점검
+
+
+================================================================================
+ 9. WandB 데이터 분석 (학습 끝난 후)
+================================================================================
+
+run_id 확보 :
+  log 끝에 "View run <name> at: https://wandb.ai/.../runs/<id>" 또는
+  대시보드 URL 에서
+
+전체 history retrieve (python, 컨테이너 안 또는 host) :
+
+  docker exec drone-bombard-harmonic python3 -c "
+  import wandb
+  api = wandb.Api(timeout=60)
+  run = api.run('nayoonho0922-seoul-national-university/drone-bombard-sac/runs/<id>')
+  print(f'state={run.state}, total_timesteps={run.summary.get(\"time/total_timesteps\")}')
+  # summary 전체
+  for k, v in sorted(run.summary.items()):
+      if not k.startswith('_') and not k.startswith('gradients/'):
+          print(f'  {k}: {v}')
+  "
+
+timeline (40 sample) :
+
+  docker exec drone-bombard-harmonic python3 -c "
+  import wandb
+  api = wandb.Api(timeout=60)
+  run = api.run('nayoonho0922-seoul-national-university/drone-bombard-sac/runs/<id>')
+  df = run.history(samples=40).sort_values('time/total_timesteps').reset_index(drop=True)
+  print(df[['time/total_timesteps','train/critic_loss','train/ent_coef',
+            'env/total_drops','env/d_xy','env/drop_error']])
+  "
+
+
+================================================================================
+ 10. 함정 (이전 세션 학습) — 피해야 할 것
+================================================================================
+
+  ⚠ docker exec 안에서 학습 직접 실행 (tmux 없이) — SSH 끊기면 죽음
+  ⚠ SIGKILL 먼저 → preempt 손실
+  ⚠ src 만 편집 + install/share 미러 안 함 → ros2 가 옛 코드 실행
+       (메모리 feedback_ros2_install_cache)
+  ⚠ pkill -f 'gz sim|bin/px4' — pkill -f 는 substring, | 작동 X, 개별 호출
+  ⚠ 컨테이너 OOM (이전 200k 학습 중 발생) → docker start 후 PX4 airframe rootfs
+       cp 다시 (메모리 project_px4_airframe_sync)
+  ⚠ wandb online mode 의 deadlock 가능성 (이전 세션 3,612 step 손실 사례)
+       → 위험 인지 후 결정
+  ⚠ 코드 default값과 yaml 불일치 — drone_drop_env.py의 .get() default를
+       yaml과 동기화해야 함. 미러링: src → install (docker cp)
+
+
+================================================================================
+ 11. 빠른 명령 reference
+================================================================================
+
+상태 확인 :
+  docker ps --filter "name=drone-bombard"
+  docker exec drone-bombard-harmonic ps aux | grep -E 'gz sim|bin/px4|train_sac'
+  tmux ls
+
+로그 tail :
+  docker exec drone-bombard-harmonic tail -f /tmp/train_<run>.log
+  # 또는 tmux 안에서 직접 보기 : tmux attach -t train
+
+학습 끝났는지 확인 :
+  docker exec drone-bombard-harmonic bash -c "ls /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip 2>/dev/null && echo done"
+
+체크포인트 위치 :
+  /workspace/ros2_ws/rl_checkpoints/
+    sac_drop_<step>_steps.zip   (rolling 5)
+    sac_drop_final.zip          (학습 끝)
+    sac_drop_preempt.zip        (SIGINT graceful kill)
+    best_model/                 (best ep_rew_mean)
+    archive/
+      sac_drop_milestone_<step>.zip  (50k 자동 archive)
+      <run_name>_<id>_<date>/         (이전 run 보존)
+
+
+================================================================================
+ 끝
+================================================================================

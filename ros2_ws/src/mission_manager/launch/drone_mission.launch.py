@@ -16,12 +16,12 @@ Prerequisites (inside drone-bombard-harmonic container):
        cd /opt/PX4-Autopilot
        cd /opt/PX4-Autopilot && DONT_RUN=1 make px4_sitl gz_x500
   2. Build ROS2 workspace:
-       cd /workspace/ros2_ws && colcon build && source install/setup.bash
+       cd /workspace/ros2_ws && colcon build && source /workspace/ros2_ws/source_container_env.sh
 
 Run:
-  ros2 launch mission_manager drone_mission.launch.py
-  ros2 launch mission_manager drone_mission.launch.py headless:=true
-  ros2 launch mission_manager drone_mission.launch.py enable_vision:=false
+  source /workspace/ros2_ws/source_container_env.sh && ros2 launch mission_manager drone_mission.launch.py
+  source /workspace/ros2_ws/source_container_env.sh && ros2 launch mission_manager drone_mission.launch.py headless:=true
+  source /workspace/ros2_ws/source_container_env.sh && ros2 launch mission_manager drone_mission.launch.py enable_vision:=false
 
 Launch arguments:
   headless      Run Gazebo without GUI (default: false)
@@ -44,32 +44,108 @@ from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
+def _first_existing_path(candidates, predicate, description: str) -> str:
+    checked = []
+    for path in candidates:
+        if not path:
+            continue
+        checked.append(path)
+        if predicate(path):
+            return path
+
+    raise FileNotFoundError(
+        f"{description} not found. Checked: {', '.join(checked)}"
+    )
+
+
 def _find_models_dir() -> str:
     candidates = [
+        os.environ.get("DRONE_BOMBARD_MODELS_PATH"),
         "/workspace/gazebo_models",
         "/opt/drone-bombard/Drone-Bombard-Simulation/gazebo_models",
         str(Path.home() / "Drone-Bombard-Simulation/gazebo_models"),
     ]
+    return _first_existing_path(candidates, os.path.isdir, "Gazebo models directory")
+
+
+def _find_px4_dir() -> str:
+    candidates = [
+        os.environ.get("PX4_AUTOPILOT_PATH"),
+        "/opt/PX4-Autopilot",
+        "/workspace/PX4-Autopilot",
+        str(Path.home() / "PX4-Autopilot"),
+    ]
+    return _first_existing_path(candidates, os.path.isdir, "PX4-Autopilot directory")
+
+
+def _find_ros2_ws_dir() -> str:
+    candidates = [
+        os.environ.get("ROS2_WS_PATH"),
+        "/workspace/ros2_ws",
+        "/opt/drone-bombard/Drone-Bombard-Simulation/ros2_ws",
+        str(Path.home() / "Drone-Bombard-Simulation/ros2_ws"),
+    ]
+    return _first_existing_path(candidates, os.path.isdir, "ROS2 workspace")
+
+
+def _find_optional_file(candidates) -> str | None:
     for path in candidates:
-        if os.path.isdir(path):
+        if path and os.path.isfile(path):
             return path
-    return candidates[0]
+    return None
+
+
+def _find_required_file(candidates, description: str) -> str:
+    return _first_existing_path(candidates, os.path.isfile, description)
 
 
 def generate_launch_description():
     models_dir = _find_models_dir()
+    ros2_ws_dir = _find_ros2_ws_dir()
+    px4_dir = _find_px4_dir()
     worlds_dir = os.path.join(models_dir, "worlds")
-    px4_gz_models = "/opt/PX4-Autopilot/Tools/simulation/gz/models"
-    px4_gz_worlds = "/opt/PX4-Autopilot/Tools/simulation/gz/worlds"
-    px4_dir = "/opt/PX4-Autopilot"
+    px4_gz_models = os.path.join(px4_dir, "Tools", "simulation", "gz", "models")
+    px4_gz_worlds = os.path.join(px4_dir, "Tools", "simulation", "gz", "worlds")
+    px4_gz_bridge_dir = os.path.join(
+        px4_dir, "build", "px4_sitl_default", "src", "modules", "simulation", "gz_bridge"
+    )
+    px4_bin = _find_required_file(
+        [os.path.join(px4_dir, "build", "px4_sitl_default", "bin", "px4")],
+        "PX4 SITL binary (build with `cd /opt/PX4-Autopilot && DONT_RUN=1 make px4_sitl gz_x500` inside the container)",
+    )
+    _first_existing_path(
+        [px4_gz_bridge_dir],
+        os.path.isdir,
+        "PX4 gz_bridge working directory",
+    )
+    yolo_model_path = _find_required_file(
+        [
+            os.environ.get("YOLO_MODEL_PATH"),
+            os.path.join(
+                ros2_ws_dir,
+                "yolo_workspace",
+                "runs",
+                "train",
+                "drone_bombard_train2",
+                "weights",
+                "best.pt",
+            ),
+        ],
+        "YOLO weights file",
+    )
+    camera_stub_path = _find_optional_file(
+        [
+            os.path.join(
+                ros2_ws_dir,
+                "src",
+                "vision_detection",
+                "vision_detection",
+                "camera_stub.py",
+            )
+        ]
+    )
 
     gz_resource_path = ":".join([models_dir, px4_gz_models, px4_gz_worlds])
-
-    gz_env = {
-        "GZ_SIM_RESOURCE_PATH": gz_resource_path,
-        "PX4_GZ_STANDALONE": "1",
-        "ROS_DOMAIN_ID": os.environ.get("ROS_DOMAIN_ID", "0"),
-    }
 
     bridge_config = os.path.join(
         os.path.dirname(__file__), "..", "config", "ros_gz_bridge.yaml")
@@ -138,20 +214,16 @@ def generate_launch_description():
     # 'make px4_sitl gz_x500' hardcodes PX4_SIM_MODEL=gz_x500 via cmake and cannot be
     # overridden; running the binary directly lets us choose any SITL model at runtime.
     # Working directory must be the gz_bridge subdir so PX4 resolves its etc/ tree.
-    _px4_gz_bridge_dir = (
-        f"{px4_dir}/build/px4_sitl_default/src/modules/simulation/gz_bridge"
-    )
-    _px4_bin = f"{px4_dir}/build/px4_sitl_default/bin/px4"
     px4_sitl = TimerAction(
         period=12.0,
         actions=[ExecuteProcess(
             cmd=["bash", "-c",
-                 f"cd {_px4_gz_bridge_dir} && "
+                 f"cd {px4_gz_bridge_dir} && "
                  f"PX4_GZ_STANDALONE=1 "
                  f"PX4_GZ_WORLD=x_marker_world "
                  f"PX4_SIM_MODEL=gz_x500_bombard "
                  f"GZ_SIM_RESOURCE_PATH={gz_resource_path} "
-                 f"{_px4_bin}"],
+                 f"{px4_bin}"],
             name="px4_sitl",
             output="screen",
         )],
@@ -174,6 +246,16 @@ def generate_launch_description():
     # ---------------------------------------------------------------------------
     # [5] YOLO vision node (t=22s — wait for bridge + camera)
     # ---------------------------------------------------------------------------
+    camera_stub = TimerAction(
+        period=20.0,
+        actions=[ExecuteProcess(
+            cmd=["python3", camera_stub_path],
+            name="camera_stub",
+            output="screen",
+        )],
+        condition=IfCondition(enable_vision),
+    )
+
     xmarker_detector = TimerAction(
         period=22.0,
         actions=[Node(
@@ -183,9 +265,7 @@ def generate_launch_description():
             output="screen",
             parameters=[
                 {"inference_rate": 10.0},
-                {"model_path":
-                    "/workspace/ros2_ws/yolo_workspace/runs/train/"
-                    "drone_bombard_train2/weights/best.pt"},
+                {"model_path": yolo_model_path},
             ],
             condition=IfCondition(enable_vision),
         )],
@@ -222,7 +302,7 @@ def generate_launch_description():
         parameters=[{"x_marker_x": 11.0}, {"x_marker_y": 10.0}],
     )
 
-    return LaunchDescription([
+    launch_actions = [
         headless_arg,
         vision_arg,
         rl_mode_arg,
@@ -240,7 +320,26 @@ def generate_launch_description():
             "\n=== Drone Mission Launch (Gazebo Harmonic) ===\n",
             f"  World:       {worlds_dir}/x_marker_world.sdf\n",
             f"  Model:       x500_bombard\n",
+            f"  PX4 dir:     {px4_dir}\n",
+            f"  ROS2 ws:     {ros2_ws_dir}\n",
             f"  Models path: {gz_resource_path}\n",
             f"  Bridge cfg:  {bridge_config}\n",
         ]),
-    ])
+    ]
+
+    if camera_stub_path is not None:
+        launch_actions.insert(8, camera_stub)
+    else:
+        launch_actions.insert(
+            8,
+            LogInfo(
+                msg=[
+                    "camera_stub.py not found under ",
+                    ros2_ws_dir,
+                    "; skipping camera stub launch.\n",
+                ],
+                condition=IfCondition(enable_vision),
+            ),
+        )
+
+    return LaunchDescription(launch_actions)

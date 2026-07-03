@@ -37,9 +37,9 @@
          infra.launch.py together; verify DDS sync stays stable.
     ============================================================ -->
     <physics type="ode">
-      <max_step_size>0.01</max_step_size>
+      <max_step_size>0.004</max_step_size>
       <real_time_factor>1</real_time_factor>
-      <real_time_update_rate>100</real_time_update_rate>
+      <real_time_update_rate>250</real_time_update_rate>
     </physics>
 
     <!-- ============================================================
@@ -55,10 +55,15 @@
     <plugin name="gz::sim::systems::Contact"
             filename="gz-sim-contact-system"/>
 
-    <!-- Sensor systems: handle IMU, baro, GPS, magnetometer for PX4 SITL -->
-    <!-- NOTE: gz-sim-sensors-system (camera/ogre2 rendering) is intentionally
-         omitted for RL training — no camera sensor exists in x500_bombard RL
-         model variant, so removing it eliminates GPU rendering overhead entirely. -->
+    <!-- Sensor systems: handle IMU, baro, GPS, magnetometer, camera for PX4 SITL -->
+    <!-- NOTE: gz-sim-sensors-system (ogre2 camera rendering) is required for
+         vision-based RL training (use_vision=True). The x500_bombard model
+         includes a downward-facing camera sensor used by the YOLO xmarker_detector.
+         GPU VM required; camera rendering overhead is acceptable at RTF=1. -->
+    <plugin name="gz::sim::systems::Sensors"
+            filename="gz-sim-sensors-system">
+      <render_engine>ogre2</render_engine>
+    </plugin>
     <plugin name="gz::sim::systems::Imu"
             filename="gz-sim-imu-system"/>
     <plugin name="gz::sim::systems::AirPressure"
@@ -285,7 +290,8 @@
       <pose>0 450 0.14 0 0 0</pose>
     </include>
 
-    <!-- Drones are NOT pre-spawned — PX4 SITL spawns each x500_bombard_rN at startup
+    <!-- Drones are pre-spawned at runtime by drone_drop_env.py (inject into SDF).
+         Original note: Drones were NOT pre-spawned — PX4 SITL spawns each x500_bombard_rN at startup
          via PX4_SIM_MODEL=x500_bombard_rN + PX4_GZ_MODEL_POSE=0,N*150,0.
          Pre-spawning all 4 at t=0 causes ODE AABB crash: motor plugins for all 4
          drones activate simultaneously at physics step 1, generating numerical

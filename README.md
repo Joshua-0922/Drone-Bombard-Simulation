@@ -217,30 +217,29 @@ docker rm drone-bombard-harmonic
 1. https://console.cloud.google.com 접속
 2. 개인 Google 계정 로그인
 3. 프로젝트 선택
-4. Compute Engine -> VM -> SSH 버튼 클릭
+4. Compute Engine → VM → SSH 버튼 클릭
 
 ### 9.2 로컬 환경에서 접속
 #### 9.2.1 로컬 PC에서 최초 1회 설정
-```
+```bash
 gcloud auth login
 gcloud config set project charming-league-481306-d8
 ```
 * Google 계정 로그인
 
 #### 9.2.2 VM 접속 명령
+```bash
+gcloud compute ssh l4-spot \
+  --zone asia-east1-a
 ```
-gcloud compute ssh l4-dev-spot \
-  --zone us-central1-a
-```
-* l4-dev-spot : VM 이름
-* us-central1-a : VM이 생성된 zone
+* `l4-spot` : 현재 VM 이름
+* `asia-east1-a` : VM이 생성된 zone
 
 #### 9.2.3 VM 접속 확인
+```bash
+hostname    # l4-spot
+nvidia-smi  # NVIDIA L4가 보이면 정상
 ```
-hostname
-nvidia-smi
-```
-* GPU : nvidia-l4가 보이면 정상
 
 
 ## 10. 프로젝트 원격 데스크톱 접속 가이드
@@ -248,10 +247,27 @@ nvidia-smi
 프로젝트의 Ubuntu VM에 GUI로 접속
 PC, 태블릿, 휴대폰 어디서든 웹 브라우저만 있으면 접속 가능
 
+> ⚠️ **Spot VM 특성상 선점(preemption) 후 재기동 시 외부 IP가 바뀔 수 있습니다.**
+> IP 변경 시 Discord `#vm-status` 채널에서 최신 IP를 확인하세요.
+> 현재 외부 IP: `gcloud compute instances describe l4-spot --zone=asia-east1-a --format="value(networkInterfaces[0].accessConfigs[0].natIP)"`
+
 ### 1. 접속 정보
-- **접속 URL:** https://136.113.193.83 (HTTP 접속 시 자동 HTTPS 리다이렉트)
+- **접속 URL:** https://130.211.241.166 (HTTP 접속 시 자동 HTTPS 리다이렉트)
 - **ID/PW:** (개별 전달받은 계정 사용) Discord / ide-server-cloud 참조
 - ⚠️ **자체 서명 SSL 인증서** 사용 — 브라우저에서 "연결이 안전하지 않음" 경고가 뜨면 **고급 → 계속 진행** 클릭 (1회만)
+
+#### 접속 전 확인 — GCP 방화벽 (포트 443)
+브라우저에서 접속이 안 될 때는 GCP VPC 방화벽에 HTTPS(443) 규칙이 없는 경우입니다.
+아래 명령으로 한 번만 추가하면 됩니다 (팀 관리자가 설정):
+```bash
+gcloud compute firewall-rules create allow-https-novnc \
+  --direction=INGRESS \
+  --action=ALLOW \
+  --rules=tcp:443 \
+  --source-ranges=0.0.0.0/0 \
+  --target-tags=l4-spot \
+  --project=charming-league-481306-d8
+```
 
 ### 2. 아키텍처
 
@@ -277,7 +293,7 @@ PC, 태블릿, 휴대폰 어디서든 웹 브라우저만 있으면 접속 가�
 ### 3. 접속 방법
 
 #### 3.1 정상 접속 (VNC + Guacamole 모두 실행 중인 경우)
-1. **https://136.113.193.83** 접속 → SSL 경고 무시 후 진행
+1. **https://130.211.241.166** 접속 → SSL 경고 무시 후 진행
 2. Guacamole 로그인
 3. **[모든연결]** 목록에서 **"VM-XFCE4"** 클릭
 4. 잠시 기다리면 XFCE4 Ubuntu Desktop 화면 나타남
@@ -370,8 +386,7 @@ source install/setup.bash
 Launch 파일 하나로 전체 스택을 기동합니다.
 
 ```bash
-cd /workspace/ros2_ws && source install/setup.bash
-ros2 launch mission_manager drone_mission.launch.py
+cd /workspace/ros2_ws && ./run_drone_mission.sh
 ```
 
 자동 기동 순서:
@@ -401,24 +416,22 @@ pkill -f "gz sim" ; pkill -f "px4" ; pkill -f "MicroXRCEAgent" ; pkill -f "ros2"
 
 ---
 
-### 11.4 RL 학습용 2-레이어 실행 (권장)
+### 11.4 RL 학습 실행 (Self-Managed Infra)
 
-에피소드를 수만 번 반복하는 RL 학습에서는 프로세스를 **역할별로 분리**합니다.
+`DroneDropEnv`가 Gazebo, PX4, MicroXRCEAgent, ros_gz_bridge를 **모두 자동으로 관리**합니다.
+`infra.launch.py`는 **실행하지 마세요** — 별도로 띄우면 PX4 모델명 불일치로 학습이 실패합니다.
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  INFRA LAYER  (학습 세션 내내 유지)              │
-│  infra.launch.py                                 │
-│  - MicroXRCEAgent  (DDS 브릿지, 완전 무상태)    │
-│  - Gazebo Harmonic (물리 엔진; 에피소드 간 리셋)│
-│  - ros_gz_bridge   (토픽 포워더)                │
-│  - xmarker_detector (YOLO 모델 상주)            │
+│  DroneDropEnv._start_infra()  (학습 시작 시 1회) │
+│  - MicroXRCEAgent  (DDS 브릿지)                 │
+│  - Gazebo Harmonic (물리 엔진)                   │
+│  - ros_gz_bridge   (토픽 포워더, 인스턴스별)     │
+│  - PX4 SITL        (gz_x500_bombard_rN 에어프레임)│
 └─────────────────────────────────────────────────┘
              ↕  에피소드마다 재시작
 ┌─────────────────────────────────────────────────┐
-│  EPISODE LAYER  (DroneDropEnv.reset()가 자동 관리)│
-│  episode.launch.py                               │
-│  - PX4 SITL         (t=2s, Gazebo 이미 기동 중) │
+│  DroneDropEnv.reset()  (에피소드 자동 관리)      │
 │  - mission_manager  (FSM 커맨더)                │
 │  - drone_controller (PX4 브릿지)                │
 │  - drop_calculator  (착탄 오차 계산)            │
@@ -430,34 +443,44 @@ pkill -f "gz sim" ; pkill -f "px4" ; pkill -f "MicroXRCEAgent" ; pkill -f "ros2"
 | 단계 | 시간 |
 |------|-----|
 | 에피소드 프로세스 종료 | ~1.5 s |
-| Gazebo 월드 리셋 | ~0.5 s |
-| PX4 재기동 및 드론 스폰 | ~3 s |
+| 드론·페이로드 포즈 리셋 | ~0.5 s |
+| 에피소드 노드 기동 | ~2 s |
 | ARM + Offboard 진입 | ~2 s |
 | 10 m 고도 도달 후 CRUISE 진입 | ~5 s |
-| **합계** | **~12 s** |
+| **합계** | **~11 s** |
 
-#### Step 1 — Infra Layer 기동 (1회)
+#### Step 1 — 스테일 프로세스 정리 (학습 세션 시작 전 1회)
 
 ```bash
-cd /workspace/ros2_ws && source install/setup.bash
-ros2 launch mission_manager infra.launch.py          # headless=true 기본값
-ros2 launch mission_manager infra.launch.py headless:=false  # GUI 포함
+bash /workspace/ros2_ws/start_infra_clean.sh
 ```
 
-Gazebo가 완전히 로드될 때까지(~25 s) 기다린 후 학습을 시작합니다.
+#### Step 2 — 빌드 (소스 코드 변경 후 또는 최초 세팅 시)
 
-#### Step 2 — SAC 학습 시작 (별도 터미널)
+> `build/`, `install/`은 Git에서 관리하지 않으므로, clone 또는 pull 후 반드시 빌드해야 합니다.
 
 ```bash
-cd /workspace/ros2_ws && source install/setup.bash
+cd /workspace/ros2_ws
+colcon build --packages-select rl_navigation
+source install/setup.bash
+```
+
+#### Step 3 — SAC 학습 시작 (터미널 1개)
+
+```bash
+# source 순서 중요: /opt/ros → /root → /workspace 순서 필수
+# 순서 틀리면 px4_msgs import 에러로 에피소드 노드 silent crash
+source /opt/ros/humble/setup.bash
+source /root/ros2_ws/install/setup.bash
+source /workspace/ros2_ws/install/setup.bash
+export GZ_SIM_RESOURCE_PATH=/workspace/gazebo_models:/opt/PX4-Autopilot/Tools/simulation/gz/models:/opt/PX4-Autopilot/Tools/simulation/gz/worlds
 ros2 run rl_navigation train_sac
 ```
 
-`DroneDropEnv.reset()` 가 호출될 때마다 자동으로:
-1. 이전 에피소드 프로세스 종료 (`SIGTERM` → 프로세스 그룹)
-2. Gazebo 월드 리셋 (`gz service`)
-3. `episode.launch.py` 재기동
-4. CRUISE 상태까지 대기
+`DroneDropEnv.__init__()` 실행 시 자동으로:
+1. Gazebo + PX4 + MicroXRCEAgent + bridge 기동 (~90s 초기화 대기)
+2. 에피소드마다 mission_manager / drone_controller / drop_calculator 재시작
+3. CRUISE 상태까지 대기 후 학습 시작
 
 체크포인트는 `/workspace/ros2_ws/rl_checkpoints/`에 5,000 스텝마다 저장됩니다.
 
@@ -469,7 +492,7 @@ ros2 run rl_navigation train_sac --resume /workspace/ros2_ws/rl_checkpoints/sac_
 tensorboard --logdir /workspace/ros2_ws/rl_logs/sac_drop
 ```
 
-#### Step 3 — 평가
+#### Step 4 — 평가
 
 ```bash
 ros2 run rl_navigation evaluate \
@@ -478,6 +501,146 @@ ros2 run rl_navigation evaluate \
 ```
 
 결과는 `/workspace/ros2_ws/rl_eval_results/`에 저장됩니다.
+
+---
+
+### 보상 함수 구조 및 설계 이력
+
+#### 보상 레이어 개요
+
+드론의 투하 정책 학습을 위해 보상 함수를 4개의 레이어로 구성합니다.
+
+| 레이어 | 적용 시점 | 역할 |
+|--------|-----------|------|
+| **Layer 1 — 안전** | 매 스텝 | 비정상 비행 억제 (에피소드 종료 없음) |
+| **Layer 2 — 안정/효율** | 매 스텝 | 불필요한 기동 억제, 빠른 임무 수행 유도 |
+| **Layer 3 — 접근** | 매 스텝 | 타겟 방향으로 비행하도록 유도 |
+| **Layer 4 — 투하 정확도** | 투하 시 (에피소드 종료) | 정확한 위치에서 투하하도록 유도 |
+
+**에피소드 종료 조건:**
+- `d_impact ≤ auto_drop_threshold` → 자동 투하 → Layer 4 보상 후 `terminated`
+- 최대 스텝(500) 초과 → 미투하 패널티 후 `truncated`
+
+**CCIP(Continuously Computed Impact Point)**: 현재 위치·속도로 지금 투하했을 때의 착탄 예측 지점을 매 스텝 실시간 계산.
+
+$$d_{impact} = \sqrt{(x_p - x_{target})^2 + (y_p - y_{target})^2}$$
+
+$$x_p = x + v_x \cdot t_f, \quad t_f = \frac{v_z + \sqrt{v_z^2 + 2gz}}{g}$$
+
+---
+
+#### 각 레이어 계산식
+
+**Layer 1 — 안전 패널티**
+
+```
+R1 = penalty_crash      if altitude < min_altitude (after step 20)
+   + penalty_overspeed  if speed > 20 m/s
+```
+
+**Layer 2 — 안정/효율 패널티**
+
+$$R_2 = -w_{time} \cdot 5 - w_{\omega} \cdot \|\omega\|^2 - w_{smooth} \cdot \|\Delta a\|^2$$
+
+- $w_{time}$: 시간 패널티 가중치 (스텝당 고정 비용)
+- $\|\omega\|^2$: 각속도 크기 제곱 (기체 불안정도)
+- $\|\Delta a\|^2$: 연속 스텝 간 액션 변화량 제곱 (급격한 조작 억제)
+
+**Layer 3 — 접근 보상**
+
+$$R_3 = w_{dist} \cdot (d_{prev} - d_{now}) + w_{heading} \cdot \cos(\theta) \cdot \text{gate}(v_{xy}) + w_{impact} \cdot e^{-k_{impact} \cdot d_{impact}}$$
+
+- $d_{prev} - d_{now}$: 타겟까지 거리 감소량 (접근할수록 양수)
+- $\cos(\theta)$: 드론 진행 방향과 타겟 방향 사이 각도의 코사인 (헤딩 정렬)
+- $\text{gate}(v_{xy}) = \min(v_{xy}/2, 1)$: 속도 게이트 (정지 상태에서 헤딩 보상 수집 방지)
+- $e^{-k_{impact} \cdot d_{impact}}$: CCIP 예측 오차 감소 보상
+
+**Layer 4 — 투하 정확도 보상 (에피소드 종료)**
+
+$$R_4 = w_{drop} \cdot e^{-k_2 \cdot d_{error}} + r_{jackpot} \cdot \mathbf{1}[d_{error} \leq 0.1m] + r_{attempt} - \text{penalty}_{instability}$$
+
+- $d_{error}$: Gazebo 물리 시뮬레이션에서 측정한 **실제** 착탄 오차 (m)
+- $e^{-k_2 \cdot d_{error}}$: 오차가 작을수록 높은 보상
+- $r_{jackpot}$: 0.1m 이내 착탄 시 추가 보너스
+- $r_{attempt}$: 투하 시도 자체에 대한 보너스 (v2 추가)
+- $\text{penalty}_{instability}$: 투하 시 각속도/기울기 초과 시 차감
+
+**미투하 패널티 (스텝 초과 시)**
+
+```
+truncation_penalty = -N   (투하 없이 500 스텝 초과)
+```
+
+---
+
+#### v1 설정 (초기)
+
+```yaml
+# Layer 3
+w_dist: 1.0
+w_heading: 1.0
+w_impact: 2.0
+k_impact: 0.05
+
+# Layer 4
+auto_drop_threshold: 2.0   # CCIP 예측 오차 ≤ 2m 시 자동 투하
+k2_precision: 5.0
+w_drop_base: 50.0
+r_success_jackpot: 100.0
+# 미투하 패널티: -50
+# drop attempt bonus: 없음
+```
+
+#### v1 학습 결과 및 문제점 (333K steps 기준)
+
+| 지표 | 결과 |
+|------|------|
+| `success_rate` 피크 | 118K steps에서 2.56%, 이후 1.0%까지 하락 및 정체 |
+| `ep_rew_mean` | -455까지 개선 후 다시 -939로 악화 |
+| `ep_len_mean` | 430 → 442로 증가 (투하 없이 에피소드 끝까지 소모) |
+
+**근본 원인**: `k2_precision=5.0`에서 2m 오차 투하 시 Layer 4 보상:
+
+$$R_4 = 50 \cdot e^{-5 \times 2} = 50 \times 0.0000454 \approx 0$$
+
+투하해도 보상이 거의 0이어서 agent가 맴돌며 Layer 3 보상만 수집하는 전략을 선택.
+
+#### v2 변경 사항 및 이유
+
+```yaml
+# Layer 3
+w_dist: 0.3          # 1.0 → 0.3: 맴돌기 전략으로 얻는 보상 축소
+w_heading: 0.4       # 1.0 → 0.4: heading farming 억제
+w_impact: 0.2        # 2.0 → 0.2: CCIP orbit 수확 차단 (핵심)
+
+# Layer 4
+auto_drop_threshold: 4.0   # 2.0 → 4.0: 투하 경험 빈도 증가
+k2_precision: 0.3    # 5.0 → 0.3: 먼 거리 투하도 의미 있는 보상
+w_drop_base: 100.0   # 50 → 100: 투하 보상 전체 스케일 상향
+# 미투하 패널티: -50 → -120
+# drop attempt bonus: +20 → +120
+```
+
+**배경**: 이전 설정(`w_impact=2.0`, `w_heading=1.0`)에서 per-step orbit 보상이 너무 커서 drop보다 timeout이 수학적으로 이득인 구조 발생.
+```
+per-step ≈ 1.9/step → orbit 300step: +420 vs drop 200step: +450 (차이 +30 → critic 추정 불가)
+```
+→ `w_impact`, `w_heading` 축소 + `drop_attempt_bonus` 대폭 증가로 drop이 항상 orbit보다 명확히 유리하게 조정:
+```
+per-step ≈ 0.52/step → orbit: +36 vs drop: +264 (7배 차이)
+```
+
+**오차별 Layer 4 보상 비교**
+
+| 오차 | v1: $50 \cdot e^{-5d}$ | v2: $100 \cdot e^{-0.3d} + 120$ |
+|------|------------------------|----------------------------------|
+| 0.1m | 50×0.607 = **30.4** (+100 jackpot) | 100×0.970 + 120 = **217** (+100 jackpot) |
+| 0.5m | 50×0.082 = **4.1** | 100×0.861 + 120 = **206** |
+| 2.0m | 50×0.000045 ≈ **0** | 100×0.549 + 120 = **175** |
+| 5.0m | ≈ **0** | 100×0.223 + 120 = **142** |
+| 10m  | ≈ **0** | 100×0.050 + 120 = **125** |
+
+먼 거리에서 투하해도 의미 있는 보상이 주어져 agent가 투하 경험을 쌓고, 점차 더 정확한 위치에서 투하하도록 수렴하는 것을 기대합니다.
 
 ---
 
@@ -549,9 +712,9 @@ rviz2
 ### 11.8 전체 미션 시퀀스
 
 ```
-[INFRA]  Gazebo 기동 → x_marker_world 로드
-[INFRA]  t=16s ros_gz_bridge 기동
-[INFRA]  t=22s YOLOv8 노드 기동
+[DroneDropEnv] Gazebo 기동 → x_marker_world 로드
+[DroneDropEnv] t=10s ros_gz_bridge 기동
+[DroneDropEnv] t=20s PX4 SITL 기동 → x500_bombard_rN_N 스폰
 
 --- 에피소드 시작 (reset() 호출) ---
 [EPISODE] Gazebo 월드 리셋 → 드론·페이로드 초기 위치 복원
@@ -677,10 +840,16 @@ ros2 run rl_navigation train_sac \
 ### Training
 
 ```bash
-# Terminal 1 — start persistent infra (once per session)
-ros2 launch mission_manager infra.launch.py
+# 스테일 프로세스 정리 (세션 시작 전 1회)
+bash /workspace/ros2_ws/start_infra_clean.sh
 
-# Terminal 2 — start SAC training (episode.launch.py managed automatically)
+# SAC 학습 시작 — Gazebo/PX4/bridge 모두 자동 관리됨
+# source 순서 중요: /opt/ros → /root → /workspace 순서 필수
+# 순서 틀리면 px4_msgs import 에러로 에피소드 노드 silent crash
+source /opt/ros/humble/setup.bash
+source /root/ros2_ws/install/setup.bash
+source /workspace/ros2_ws/install/setup.bash
+export GZ_SIM_RESOURCE_PATH=/workspace/gazebo_models:/opt/PX4-Autopilot/Tools/simulation/gz/models:/opt/PX4-Autopilot/Tools/simulation/gz/worlds
 ros2 run rl_navigation train_sac
 
 # With explicit config path
@@ -694,6 +863,8 @@ ros2 run rl_navigation train_sac \
 # Monitor (TensorBoard + WandB both active)
 tensorboard --logdir /workspace/ros2_ws/rl_logs/sac_drop
 ```
+
+> ⚠️ `infra.launch.py`는 실행하지 마세요. `DroneDropEnv`가 인프라를 자동 관리합니다.
 
 Checkpoints saved to `/workspace/ros2_ws/rl_checkpoints/` every 5,000 steps (model + replay buffer).
 
@@ -718,31 +889,40 @@ Outputs written to `/workspace/ros2_ws/rl_eval_results/`:
 
 | 항목 | 값 |
 |------|----|
-| VM 이름 | `g2-standard-16-nvidia-l4-dev` |
-| Zone | `us-central1-a` |
+| VM 이름 | `l4-spot` |
+| Zone | `asia-east1-a` |
 | GCP 프로젝트 | `charming-league-481306-d8` |
 | GPU | NVIDIA L4 |
-| 타입 | Spot VM (선점 시 자동 재시작) |
+| 타입 | Spot VM (선점 시 자동 재시작, IP 변경 가능) |
+| 현재 외부 IP | `130.211.241.166` (변경될 수 있음) |
+
+> **IP 확인 명령:**
+> ```bash
+> gcloud compute instances describe l4-spot \
+>   --zone=asia-east1-a --project=charming-league-481306-d8 \
+>   --format="value(networkInterfaces[0].accessConfigs[0].natIP)"
+> ```
 
 ### 접속 방법
 
 **방법 1 — gcloud SSH (권장)**
 ```bash
-gcloud compute ssh g2-standard-16-nvidia-l4-dev \
-  --zone=us-central1-a --project=charming-league-481306-d8
+gcloud compute ssh l4-spot \
+  --zone=asia-east1-a --project=charming-league-481306-d8
 ```
 
 **방법 2 — Guacamole 웹 GUI (브라우저)**
 ```
-https://<VM_EXTERNAL_IP>
-기본 계정: guacadmin / guacadmin (최초 로그인 후 변경 필수)
+https://130.211.241.166
+계정: Discord / ide-server-cloud 채널 참조
 ```
-VM 외부 IP 확인: `gcloud compute instances describe g2-standard-16-nvidia-l4-dev --zone=us-central1-a --format="value(networkInterfaces[0].accessConfigs[0].natIP)"`
+- SSL 경고 시 **고급 → 계속 진행** 클릭
+- Spot VM 선점 후 재기동 시 IP가 바뀔 수 있으니 위 IP 확인 명령으로 최신 IP 확인
 
 **방법 3 — VNC 직접 (SSH 터널)**
 ```bash
-gcloud compute ssh g2-standard-16-nvidia-l4-dev \
-  --zone=us-central1-a -- -L 5901:localhost:5901
+gcloud compute ssh l4-spot \
+  --zone=asia-east1-a -- -L 5901:localhost:5901
 # 이후 VNC 클라이언트로 localhost:5901 접속
 ```
 
@@ -828,8 +1008,8 @@ bash infra/deploy.sh
 
 연속 3회 재시작 실패로 watchdog이 멈췄을 때:
 ```bash
-gcloud compute instances add-metadata g2-standard-16-nvidia-l4-dev \
-  --zone=us-central1-a --project=charming-league-481306-d8 \
+gcloud compute instances add-metadata l4-spot \
+  --zone=asia-east1-a --project=charming-league-481306-d8 \
   --metadata watchdog_restart_count=0
 ```
 - `speed_vs_accuracy.png` — drop speed vs miss distance scatter

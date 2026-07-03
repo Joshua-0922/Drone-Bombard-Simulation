@@ -41,9 +41,7 @@ if [ "$FRESH" = false ]; then
 fi
 
 # --- [2] Source ROS ---
-source /opt/ros/humble/setup.bash
-source /root/ros2_ws/install/setup.bash
-source /workspace/ros2_ws/install/setup.bash
+source /workspace/ros2_ws/source_container_env.sh
 
 # --- [3] Start training in background ---
 cd /workspace/ros2_ws

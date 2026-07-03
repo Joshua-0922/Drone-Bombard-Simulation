@@ -1,4 +1,4 @@
-"""SAC training script for drone fly-by drop policy."""
+"""SAC training script for drone approach-to-X navigation policy."""
 
 import argparse
 import glob as _glob
@@ -41,57 +41,136 @@ def _emergency_save(signum, frame):
     sys.exit(0)
 
 
+_REACHED_CLOSE_THRESHOLD_M = 3.0  # drone within this distance = "reached close"
+
+
 class WandbMetricsCallback(BaseCallback):
-    """Forward SB3 rollout/train metrics + env custom metrics to WandB."""
+    """Forward SB3 rollout/train metrics + vision-approach env metrics to WandB.
+
+    Metrics logged per rollout:
+      Navigation:
+        env/mean_d_xy         — mean XY distance to X marker (↓ better)
+        env/ep_final_d_xy     — final d_xy when episode ends (↓ better)
+        env/ep_best_d_xy      — closest approach within episode (↓ better)
+
+      Reward breakdown:
+        env/rew_dist          — distance-gradient reward component
+        env/rew_orient        — heading-alignment reward component
+        env/rew_vision        — YOLO centering reward component
+        env/rew_ctrl          — stability/control penalty (r2, negative)
+        env/cos_heading       — cosine of angle between velocity and target bearing
+
+      Vision quality:
+        env/target_lost_rate  — fraction of steps with no YOLO detection (↓ better)
+
+      Episode outcomes (cumulative):
+        env/total_episodes
+        env/reached_close     — episodes where best d_xy ≤ 3 m
+        env/end_timeout       — episodes ended by step-limit
+        env/end_crash         — episodes ended by crash
+        env/end_stagnation    — episodes ended by stagnation
+        env/end_out_of_range  — episodes ended by leaving boundary
+        env/end_ang_vel       — episodes ended by attitude instability
+    """
 
     def __init__(self):
         super().__init__()
-        self._ep_drop_errors: list = []
-        self._ep_success_flags: list = []
+        # Per-step buffers (cleared each rollout)
         self._step_d_xy: list = []
-        self._step_d_impact: list = []
-        self._step_rew_ctrl: list = []
         self._step_rew_dist: list = []
         self._step_rew_orient: list = []
-        self._step_rew_drop: list = []
-        self._physics_glitch_count: int = 0
-        self._safety_violation_count: int = 0
-        self._total_steps: int = 0
+        self._step_rew_vision: list = []
+        self._step_rew_ctrl: list = []
+        self._step_cos_heading: list = []
+        self._step_target_lost: int = 0
+        self._step_total: int = 0
+
+        # Per-episode buffers (populated on done, cleared each rollout)
+        self._ep_d_xy_min: dict = {}   # env_idx → best d_xy so far this episode
+        self._ep_final_d_xy: list = []
+        self._ep_best_d_xy: list = []
+        self._ep_reward: list = []
+
+        # Cumulative episode counters
+        self._total_episodes: int = 0
+        self._reached_close: int = 0
+        self._end_timeout: int = 0
+        self._end_crash: int = 0
+        self._end_stagnation: int = 0
+        self._end_out_of_range: int = 0
+        self._end_ang_vel: int = 0
+        self._end_inverted: int = 0
+        self._end_overspeed: int = 0
+        self._end_max_altitude: int = 0
+        self._end_ekf_drift: int = 0
+        self._end_unknown: int = 0
 
     def _on_step(self):
         infos = self.locals.get('infos', [])
         dones = self.locals.get('dones', [])
-        for info, done in zip(infos, dones):
-            self._total_steps += 1
-            # physics_glitch steps: count for monitoring but DO NOT add their
-            # 'd_xy' to _step_d_xy — the key is 'glitch_d_xy' on glitch steps,
-            # so the 'd_xy' check below naturally skips them.
-            if info.get('physics_glitch'):
-                self._physics_glitch_count += 1
-            # Safety violations: Layer 1 crash or overspeed events
-            if info.get('crash') or info.get('overspeed'):
-                self._safety_violation_count += 1
+
+        for i, (info, done) in enumerate(zip(infos, dones)):
+            # --- Per-step accumulation ---
             if 'd_xy' in info:
-                self._step_d_xy.append(info['d_xy'])
-            if 'd_impact' in info:
-                self._step_d_impact.append(info['d_impact'])
-            if 'rew_ctrl' in info:
-                self._step_rew_ctrl.append(info['rew_ctrl'])
-            if 'rew_dist' in info:
-                self._step_rew_dist.append(info['rew_dist'])
-            if 'rew_orient' in info:
-                self._step_rew_orient.append(info['rew_orient'])
-            if 'rew_drop' in info:
-                self._step_rew_drop.append(info['rew_drop'])
-            if done and 'drop_error_actual_m' in info:
-                self._ep_drop_errors.append(info['drop_error_actual_m'])
-                self._ep_success_flags.append(float(info['is_success']))
+                d = info['d_xy']
+                self._step_d_xy.append(d)
+                # Track best (min) d_xy per env for this episode
+                if i not in self._ep_d_xy_min or d < self._ep_d_xy_min[i]:
+                    self._ep_d_xy_min[i] = d
+            for key, buf in (
+                ('rew_dist',    self._step_rew_dist),
+                ('rew_orient',  self._step_rew_orient),
+                ('rew_vision',  self._step_rew_vision),
+                ('rew_ctrl',    self._step_rew_ctrl),
+                ('cos_heading', self._step_cos_heading),
+            ):
+                if key in info:
+                    buf.append(info[key])
+            if info.get('target_lost'):
+                self._step_target_lost += 1
+            self._step_total += 1
+
+            # --- On episode end ---
+            if done:
+                self._total_episodes += 1
+                if 'd_xy' in info:
+                    self._ep_final_d_xy.append(info['d_xy'])
+                if i in self._ep_d_xy_min:
+                    best = self._ep_d_xy_min.pop(i)
+                    self._ep_best_d_xy.append(best)
+                    if best <= _REACHED_CLOSE_THRESHOLD_M:
+                        self._reached_close += 1
+                if 'episode_reward' in info:
+                    self._ep_reward.append(info['episode_reward'])
+                reason = info.get('truncate_reason', '')
+                if reason == 'crash':
+                    self._end_crash += 1
+                elif reason == 'stagnation':
+                    self._end_stagnation += 1
+                elif reason == 'timeout':
+                    self._end_timeout += 1
+                elif reason == 'out_of_range':
+                    self._end_out_of_range += 1
+                elif reason == 'ang_vel':
+                    self._end_ang_vel += 1
+                elif reason == 'inverted':
+                    self._end_inverted += 1
+                elif reason == 'overspeed':
+                    self._end_overspeed += 1
+                elif reason == 'max_altitude':
+                    self._end_max_altitude += 1
+                elif reason == 'ekf_drift':
+                    self._end_ekf_drift += 1
+                elif reason and reason != '':
+                    self._end_unknown += 1
         return True
 
     def _on_rollout_end(self):
         if not wandb.run:
             return
         log_dict = {}
+
+        # SB3 internal metrics
         for key in ('rollout/ep_rew_mean', 'rollout/ep_len_mean',
                      'train/actor_loss', 'train/critic_loss',
                      'train/ent_coef', 'train/ent_coef_loss',
@@ -104,38 +183,53 @@ class WandbMetricsCallback(BaseCallback):
         def _mean(lst):
             return sum(lst) / len(lst) if lst else None
 
-        for attr, key in (
-            ('_step_d_xy',       'env/mean_d_xy'),
-            ('_step_d_impact',   'env/mean_d_impact'),
-            ('_step_rew_ctrl',   'env/mean_rew_ctrl'),
-            ('_step_rew_dist',   'env/mean_rew_dist'),
-            ('_step_rew_orient', 'env/mean_rew_orient'),
-            ('_step_rew_drop',   'env/mean_rew_drop'),
+        # Per-step means
+        if self._step_d_xy:
+            log_dict['env/mean_d_xy'] = _mean(self._step_d_xy)
+            self._step_d_xy.clear()
+        for key, buf in (
+            ('env/rew_dist',    self._step_rew_dist),
+            ('env/rew_orient',  self._step_rew_orient),
+            ('env/rew_vision',  self._step_rew_vision),
+            ('env/rew_ctrl',    self._step_rew_ctrl),
+            ('env/cos_heading', self._step_cos_heading),
         ):
-            lst = getattr(self, attr)
-            if lst:
-                log_dict[key] = _mean(lst)
-                lst.clear()
+            if buf:
+                log_dict[key] = _mean(buf)
+                buf.clear()
+        if self._step_total > 0:
+            log_dict['env/target_lost_rate'] = (
+                self._step_target_lost / self._step_total)
+            self._step_target_lost = 0
+            self._step_total = 0
 
-        if self._ep_drop_errors:
-            log_dict['env/drop_error_actual_m'] = _mean(self._ep_drop_errors)
-            log_dict['env/success_rate'] = _mean(self._ep_success_flags)
-            log_dict['env/drop_count'] = len(self._ep_drop_errors)
-            self._ep_drop_errors.clear()
-            self._ep_success_flags.clear()
+        # Per-episode means (over episodes that finished this rollout)
+        if self._ep_final_d_xy:
+            log_dict['env/ep_final_d_xy'] = _mean(self._ep_final_d_xy)
+            self._ep_final_d_xy.clear()
+        if self._ep_best_d_xy:
+            log_dict['env/ep_best_d_xy'] = _mean(self._ep_best_d_xy)
+            self._ep_best_d_xy.clear()
+        if self._ep_reward:
+            log_dict['env/ep_reward'] = _mean(self._ep_reward)
+            self._ep_reward.clear()
 
-        if self._physics_glitch_count:
-            log_dict['env/physics_glitch_count'] = self._physics_glitch_count
-            self._physics_glitch_count = 0
-
-        if self._total_steps > 0:
-            log_dict['env/safety_violation_rate'] = (
-                self._safety_violation_count / self._total_steps)
-            self._safety_violation_count = 0
-            self._total_steps = 0
+        # Cumulative counters (always logged)
+        log_dict['env/total_episodes'] = self._total_episodes
+        log_dict['env/reached_close'] = self._reached_close
+        log_dict['env/end_timeout'] = self._end_timeout
+        log_dict['env/end_crash'] = self._end_crash
+        log_dict['env/end_stagnation'] = self._end_stagnation
+        log_dict['env/end_out_of_range'] = self._end_out_of_range
+        log_dict['env/end_ang_vel'] = self._end_ang_vel
+        log_dict['env/end_inverted'] = self._end_inverted
+        log_dict['env/end_overspeed'] = self._end_overspeed
+        log_dict['env/end_max_altitude'] = self._end_max_altitude
+        log_dict['env/end_ekf_drift'] = self._end_ekf_drift
+        log_dict['env/end_unknown'] = self._end_unknown
 
         if log_dict:
-            log_dict['time/total_timesteps'] = self.num_timesteps
+            log_dict.setdefault('time/total_timesteps', self.num_timesteps)
             wandb.log(log_dict, step=self.num_timesteps)
 
 
@@ -215,8 +309,12 @@ class CleanupOldCheckpointsCallback(BaseCallback):
         self._keep = keep_last
 
     def _on_step(self):
-        files = sorted(_glob.glob(
-            os.path.join(self._dir, f'{self._prefix}_*_steps.zip')))
+        # Sort by modification time (oldest first) so checkpoints from
+        # a previous run with higher step numbers don't outlive the current
+        # run's newer-but-lower-numbered files.
+        files = sorted(
+            _glob.glob(os.path.join(self._dir, f'{self._prefix}_*_steps.zip')),
+            key=os.path.getmtime)
         for old in files[:-self._keep]:
             os.remove(old)
             if self.verbose:
@@ -226,7 +324,7 @@ class CleanupOldCheckpointsCallback(BaseCallback):
 
 def _parse_args():
     parser = argparse.ArgumentParser(
-        description='Train SAC policy for drone fly-by drop.')
+        description='Train SAC policy for drone approach-to-X navigation.')
     parser.add_argument(
         '--config', type=str,
         default=_DEFAULT_CONFIG,
@@ -240,6 +338,9 @@ def _parse_args():
     parser.add_argument(
         '--checkpoint-dir', type=str, default=None,
         help='Override checkpoint directory from config')
+    parser.add_argument(
+        '--run-name', type=str, default=None,
+        help='Override wandb run_name from config')
     return parser.parse_args()
 
 
@@ -265,11 +366,22 @@ def main(args=None):
         'checkpoint_dir', '/workspace/ros2_ws/rl_checkpoints')
     checkpoint_freq = cfg_train.get('checkpoint_freq', 5_000)
     max_checkpoints_kept = cfg_train.get('max_checkpoints_kept', 5)
+    eval_freq = cfg_train.get('eval_freq', 10_000)   # L6: read from yaml
     _checkpoint_dir = checkpoint_dir
 
     best_model_dir = os.path.join(checkpoint_dir, 'best_model')
     archive_dir = os.path.join(checkpoint_dir, 'archive')
     os.makedirs(checkpoint_dir, exist_ok=True)
+
+    # On a fresh start (no --resume), remove any checkpoint files left over
+    # from a previous run so CleanupOldCheckpointsCallback doesn't keep
+    # higher-numbered old files and delete the current run's newer ones.
+    if cli.resume is None:
+        stale = _glob.glob(os.path.join(checkpoint_dir, 'sac_drop_*_steps.zip'))
+        for f in stale:
+            os.remove(f)
+        if stale:
+            print(f'[Startup] Removed {len(stale)} stale checkpoint(s) from previous run.')
 
     # --- Prune stale WandB offline-run directories (older than 7 days) ---
     _wandb_dir = os.path.join(os.getcwd(), 'wandb')
@@ -283,20 +395,27 @@ def main(args=None):
     wandb.init(
         project=cfg_wandb.get('project', 'drone-bombard-sac'),
         entity=cfg_wandb.get('entity') or None,
-        name=cfg_wandb.get('run_name') or None,
+        name=cli.run_name or cfg_wandb.get('run_name') or None,
         tags=cfg_wandb.get('tags', []),
         config=cfg,
         resume='allow',   # re-attaches to existing run after preemption
     )
 
+    # ---- WandB x축 자동 매핑 ----
+    # 누적 count metric 의 x축을 env/total_episodes 로 자동 설정.
+    wandb.define_metric('env/total_episodes')
+    wandb.define_metric('env/end_*',      step_metric='env/total_episodes')
+    wandb.define_metric('env/reached_*',  step_metric='env/total_episodes')
+
     num_envs = cfg_train.get('num_envs', 1)
 
-    print('=== SAC Drone Drop Training ===')
+    print('=== SAC Drone Approach-to-X Training ===')
     print(f'  Config     : {config_path}')
     print(f'  Timesteps  : {total_timesteps:,}')
     print(f'  Checkpoints: {checkpoint_dir}')
     print(f'  Best model : {best_model_dir}')
     print(f'  Archive    : {archive_dir}')
+    print(f'  Close thresh: {_REACHED_CLOSE_THRESHOLD_M} m')
     print(f'  Device     : {cfg_sac.get("device", "cuda")}')
     print(f'  Num envs   : {num_envs}')
     print(f'  WandB run  : {wandb.run.name}')
@@ -327,7 +446,7 @@ def main(args=None):
     cleanup_callback = CleanupOldCheckpointsCallback(
         checkpoint_dir, 'sac_drop', keep_last=max_checkpoints_kept, verbose=1)
     best_model_callback = BestModelCallback(
-        save_path=best_model_dir, eval_freq=10_000, verbose=1)
+        save_path=best_model_dir, eval_freq=eval_freq, verbose=1)
     milestone_callback = MilestoneArchiveCallback(
         archive_dir=archive_dir, archive_freq=50_000, verbose=1)
     wandb_callback = WandbCallback(

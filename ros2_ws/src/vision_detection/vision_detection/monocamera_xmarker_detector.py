@@ -29,9 +29,15 @@ class XMarkerDetectorNode(Node):
                                    'drone_bombard_train2/weights/best.pt')
         if not self.has_parameter('inference_rate'):
             self.declare_parameter('inference_rate', 10.0)  # Hz
+        if not self.has_parameter('inference_device'):
+            self.declare_parameter('inference_device', 'cuda')
+        if not self.has_parameter('conf_threshold'):
+            self.declare_parameter('conf_threshold', 0.25)
 
         model_path = self.get_parameter('model_path').value
         inference_rate = self.get_parameter('inference_rate').value
+        self._inference_device = self.get_parameter('inference_device').value
+        self._conf_threshold = self.get_parameter('conf_threshold').value
 
         self.bridge = CvBridge()
 
@@ -114,6 +120,9 @@ class XMarkerDetectorNode(Node):
             '/target/pixel_coords',
             qos_reliable
         )
+        # Flush any stale non-zero message sitting in the DDS queue from a
+        # previous run (could otherwise trigger a spurious CRUISE→TRACKING).
+        self.pixel_coords_pub.publish(Point())
 
         # [추가됨] 비전 상태 퍼블리셔
         self.vision_status_pub = self.create_publisher(
@@ -122,11 +131,15 @@ class XMarkerDetectorNode(Node):
             qos_reliable
         )
 
+        self._debug_frame_saved = False  # save one annotated frame on first detection
+
         # 타이머 설정
         timer_period = 1.0 / inference_rate
         self.timer = self.create_timer(timer_period, self.detect_callback)
 
-        self.get_logger().info(f'X-Marker Detector (Mono) initialized at {inference_rate} Hz')
+        self.get_logger().info(
+            f'X-Marker Detector (Mono) initialized at {inference_rate} Hz '
+            f'on device={self._inference_device}')
 
     def rgb_callback(self, msg):
         self.latest_rgb = msg
@@ -184,8 +197,15 @@ class XMarkerDetectorNode(Node):
 
         try:
             cv_image = self.bridge.imgmsg_to_cv2(self.latest_rgb, 'bgr8')
-            results = self.model(cv_image, verbose=False)
+            results = self.model(cv_image, device=self._inference_device, verbose=False,
+                                 conf=self._conf_threshold)
             detections = results[0].boxes
+            # Boolean tensor indexing on Boxes fails silently in some ultralytics versions.
+            # Use max-conf check + integer slice [:0] which is always supported.
+            if len(detections) > 0:
+                _max_conf = float(detections.conf.max().item())
+                if _max_conf < self._conf_threshold:
+                    detections = detections[:0]
 
             detected = False
             confidence = 0.0
@@ -206,52 +226,95 @@ class XMarkerDetectorNode(Node):
                 box = detections.xyxy[best_idx].cpu().numpy()
                 confidence = float(detections.conf[best_idx].cpu().numpy())
 
-                # [디버깅] 감지 성공 로그 (1초에 한 번만 출력)
-                self.get_logger().info(f'Target Found! Conf: {confidence:.2f}', throttle_duration_sec=1.0)
-
-                x1, y1, x2, y2 = box
-                bbox_center_x = float((x1 + x2) / 2)
-                bbox_center_y = float((y1 + y2) / 2)
-                bbox_width = float(x2 - x1)
-                bbox_height = float(y2 - y1)
-                detected = True
-
-                # 상태 업데이트: 타겟 찾음
-                status_msg.data = "TARGET_LOCKED"
-
-                # ... (좌표 변환 로직은 동일) ...
-                if self.vehicle_position is not None:
-                    current_altitude = -self.vehicle_position.z
-                    if current_altitude > 0.1:
-                        depth_value = current_altitude
-                        cam_coords = self.pixel_to_camera_frame(bbox_center_x, bbox_center_y, depth_value)
-                        if cam_coords is not None:
-                            camera_coords.x = cam_coords[0]
-                            camera_coords.y = cam_coords[1]
-                            camera_coords.z = cam_coords[2]
-                            body_coords = self.camera_to_body_frame(*cam_coords)
-                            ned = self.body_to_ned_frame(*body_coords)
-                            if ned is not None:
-                                ned_coords.x = ned[0]
-                                ned_coords.y = ned[1]
-                                ned_coords.z = ned[2]
-                                ned_valid = True
-                    else:
-                        depth_value = 0.0
+                # Hard confidence gate — works regardless of ultralytics Boxes filter quirks.
+                if confidence < self._conf_threshold:
+                    self.get_logger().info(
+                        f'[CONF GATE] Suppressed conf={confidence:.2f} < {self._conf_threshold:.2f}',
+                        throttle_duration_sec=1.0)
+                    zero_msg = Point()
+                    self.pixel_coords_pub.publish(zero_msg)
+                    status_msg.data = "SEARCHING"
                 else:
-                    self.get_logger().warning('Vehicle pos missing', throttle_duration_sec=2.0)
+                    # [디버깅] 감지 성공 로그 (1초에 한 번만 출력)
+                    if self.vehicle_position is not None:
+                        # NED → ENU for readability
+                        enu_x = self.vehicle_position.y
+                        enu_y = self.vehicle_position.x
+                        enu_z = -self.vehicle_position.z
+                        self.get_logger().info(
+                            f'Target Found! Conf: {confidence:.2f} | '
+                            f'Drone ENU: ({enu_x:.1f}, {enu_y:.1f}, {enu_z:.1f})',
+                            throttle_duration_sec=1.0)
+                    else:
+                        self.get_logger().info(
+                            f'Target Found! Conf: {confidence:.2f}',
+                            throttle_duration_sec=1.0)
 
-                # 시각화 그리기
-                cv2.rectangle(cv_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-                label = f'X-marker {confidence:.2f}'
-                cv2.putText(cv_image, label, (int(x1), int(y1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    x1, y1, x2, y2 = box
+                    bbox_center_x = float((x1 + x2) / 2)
+                    bbox_center_y = float((y1 + y2) / 2)
+                    bbox_width = float(x2 - x1)
+
+                    # Save first-detection frame + write diagnostic file for camera direction diagnosis
+                    if not self._debug_frame_saved:
+                        self._debug_frame_saved = True
+                        debug_img = cv_image.copy()
+                        cv2.rectangle(debug_img, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                        cv2.putText(debug_img, f'conf:{confidence:.2f} cx:{bbox_center_x:.0f} cy:{bbox_center_y:.0f}',
+                                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                        cv2.imwrite('/tmp/yolo_first_detection.png', debug_img)
+                        diag_line = (
+                            f'bbox_cx={bbox_center_x:.0f} bbox_cy={bbox_center_y:.0f} '
+                            f'(image center=320,240) conf={confidence:.2f}\n'
+                            f'interpretation: cy>350=forward cam, cy~240=downward cam\n'
+                        )
+                        with open('/tmp/yolo_camera_diag.txt', 'w') as _f:
+                            _f.write(diag_line)
+                    bbox_height = float(y2 - y1)
+                    detected = True
+
+                    # 상태 업데이트: 타겟 찾음
+                    status_msg.data = "TARGET_LOCKED"
+
+                    # ... (좌표 변환 로직은 동일) ...
+                    if self.vehicle_position is not None:
+                        current_altitude = -self.vehicle_position.z
+                        if current_altitude > 0.1:
+                            depth_value = current_altitude
+                            cam_coords = self.pixel_to_camera_frame(bbox_center_x, bbox_center_y, depth_value)
+                            if cam_coords is not None:
+                                camera_coords.x = cam_coords[0]
+                                camera_coords.y = cam_coords[1]
+                                camera_coords.z = cam_coords[2]
+                                body_coords = self.camera_to_body_frame(*cam_coords)
+                                ned = self.body_to_ned_frame(*body_coords)
+                                if ned is not None:
+                                    ned_coords.x = ned[0]
+                                    ned_coords.y = ned[1]
+                                    ned_coords.z = ned[2]
+                                    ned_valid = True
+                        else:
+                            depth_value = 0.0
+                    else:
+                        self.get_logger().warning('Vehicle pos missing', throttle_duration_sec=2.0)
+
+                    # 시각화 그리기
+                    cv2.rectangle(cv_image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                    label = f'X-marker {confidence:.2f}'
+                    cv2.putText(cv_image, label, (int(x1), int(y1)-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
             else:
                 # [디버깅] 감지 실패 로그 (2초에 한 번만 출력 - 너무 시끄럽지 않게)
                 self.get_logger().info('Searching... (No Target)', throttle_duration_sec=2.0)
-                
+
                 # 상태 업데이트: 찾는 중
                 status_msg.data = "SEARCHING"
+
+                # Publish zeros so RL env sees conf=0 immediately on detection loss.
+                # Without this, pixel_coords[2] retains the last confidence value,
+                # causing stale vision reward and missing penalty_target_lost.
+                zero_msg = Point()
+                self.pixel_coords_pub.publish(zero_msg)
 
             # --- 상태 메시지 발행 ---
             self.vision_status_pub.publish(status_msg)

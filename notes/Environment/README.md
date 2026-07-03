@@ -1,8 +1,8 @@
 # GCP VM 완전 복구 가이드 — Drone Bombard 환경
 
 > **이 파일 하나만 보고 새 VM에서 전체 환경을 원상 복구할 수 있도록 작성됨.**
-> 순서대로 실행하면 됨. VM IP: `136.113.193.83`
-> 접속: **https://136.113.193.83** (HTTP는 자동으로 HTTPS로 리다이렉트)
+> 순서대로 실행하면 됨. VM IP: `130.211.241.166`
+> 접속: **https://130.211.241.166** (HTTP는 자동으로 HTTPS로 리다이렉트)
 
 ---
 
@@ -607,8 +607,8 @@ mkdir -p /opt/drone-bombard/guacamole-stack/ssl
 openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
   -keyout /opt/drone-bombard/guacamole-stack/ssl/nginx.key \
   -out    /opt/drone-bombard/guacamole-stack/ssl/nginx.crt \
-  -subj "/C=KR/ST=Seoul/L=Seoul/O=DroneBombard/OU=Research/CN=136.113.193.83" \
-  -addext "subjectAltName=IP:136.113.193.83"
+  -subj "/C=KR/ST=Seoul/L=Seoul/O=DroneBombard/OU=Research/CN=130.211.241.166" \
+  -addext "subjectAltName=IP:130.211.241.166"
 ```
 
 ### 10-3. initdb.sql 생성 (최초 1회 또는 재생성 필요 시)
@@ -633,7 +633,7 @@ docker compose logs -f guacamole   # "Guacamole is now listening on port 8080" �
 ### 10-4. 접속 확인
 
 ```bash
-curl -I http://136.113.193.83/guacamole/
+curl -I http://130.211.241.166/guacamole/
 # HTTP/1.1 200 OK 또는 302 반환 확인
 ```
 
@@ -641,7 +641,7 @@ curl -I http://136.113.193.83/guacamole/
 
 ## Step 11: Guacamole UI에서 VNC 연결 등록
 
-1. http://136.113.193.83 접속
+1. http://130.211.241.166 접속
 2. `guacadmin` / `guacadmin` 로그인 **(첫 로그인 후 즉시 비밀번호 변경)**
 3. 우상단 사용자 메뉴 → **Settings** → **Connections** → **New Connection**
 
@@ -753,7 +753,7 @@ cd /opt/drone-bombard/guacamole-stack
 docker compose ps            # 4개 서비스 모두 Up (healthy)
 
 # 5. HTTP 응답 확인
-curl -sI http://136.113.193.83/guacamole/ | head -1
+curl -sI http://130.211.241.166/guacamole/ | head -1
 # → HTTP/1.1 200 OK 또는 302 Found
 
 # 6. ROS 2 빌드 확인 (컨테이너 내부)

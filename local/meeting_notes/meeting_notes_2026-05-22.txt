@@ -1,0 +1,695 @@
+================================================================================
+ Drone-Bombard-Simulation 작업 정리 (회의용) — 2026-05-22
+ 세션 기간 : 2026-05-22 (이전 세션 2026-05-20~21 의 연속)
+ 작업 환경 : drone-bombard-harmonic Docker 컨테이너 (로컬 전용, GitHub push 안 함)
+ 직전 노트 : /home/juns/meeting_notes_2026-05-20.txt
+ 핵심 변화 : N1 안건이 D(관찰)→B 선도입으로 전환, B 가 v1(w=5,k=0.05)에서 16k 검증 후
+              v2(w=8,k=0.03)로 격상, 200k online 모드로 진행 중 (8k 시점 7 drops 확인).
+              A 도입은 Phased curriculum 으로 확정 (별도 문서 2종 작성).
+================================================================================
+
+
+********************************************************************************
+* 변경 사항 한 줄 요약 (세션 후반부 갱신)
+*   - N1=B v1 (w=5, k=0.05) → v2 (w=8, k=0.03) 격상. v1 의 16k 부분 학습에서
+*     mean_rew_impact=0.567 로 작동 확인 후 "위에서부터 줄이기" 전략 채택.
+*   - WANDB_MODE: offline → online 으로 변경 (사용자 선택).
+*   - 8k 시점 실측: 7 drops 누적 — N1=D 대비 ~9배, 200k 외삽 시 ~175 drops.
+*   - 누적 카운터 추가 (env/total_drop_count) — train_sac.py 3곳, 다음 학습부터 반영.
+*   - 새 의사결정 문서 2종 작성:
+*       /home/juns/A_phased_curriculum_도입방안.md (324 줄)
+*       /home/juns/parameter_조절_의사결정_guide.md (453 줄, v2)
+*
+* — 이전 갱신 (세션 전반부) —
+*   - N1=D 로 시작했던 200k 본 학습 (~37k) 을 중단하고 N1=B 로 fresh start.
+*   - N1=B 단독은 safety hole (loitering hack) 이 있는 게 dry-run 전 코드 점검에서
+*     드러나서, r3_impact 에 speed_gate 추가하는 안전장치를 함께 도입.
+*   - dry-run v2 의 신호 비교에서 문서 권장 k_impact=0.1 이 멀리서 reward≈0 되는
+*     문제를 확인. k_impact 는 0.05 유지로 회귀, w_impact 만 2→5 로 강화 (v1).
+*   - WandbCallback 의 rew_impact 추적 누락 발견 후 train_sac.py 에 콜백 추가.
+*   - 이전 run 의 체크포인트는 archive/n1_d_baseline_2026-05-21/ 로 보존.
+********************************************************************************
+
+
+################################################################################
+#  PART 1.  이번 세션에 한 일
+################################################################################
+
+요약 한 줄
+---------
+N1 안건을 D (관찰만) 에서 B (d_impact 강화) 로 격상 적용하면서, B 단독의 known
+loitering hack 위험을 코드 점검으로 사전 차단(speed_gate 추가)하고, dry-run 결과에
+따라 권장 hyperparameter 한 개를 보정한 뒤 200k 본 학습을 fresh start 함.
+
+
+─── 1-1. N1 도입 시점/방식 결정 (D → B 선도입) ──────────────────────────────────
+
+배경
+  - 지난 회의 노트의 N1 안건 결정은 "D 권장 (변수 추가 없이 1M 가서 봄) → 안
+    늘어나면 A 시도" 였음.
+  - 별도 작성 자료 (Downloads/N1_drop_sparse_AB방안.md, 2026-05-21 기준) 가
+    A vs B 의 trade-off 를 더 정밀하게 정리: B 는 yaml 가중치 변경만 → 저위험,
+    A 는 코드 (drone_drop_env) 변경 + 비정상성 위험.
+  - 별도 자료의 권장: "B 는 깔고 가고 (저위험·촘촘한 신호), A 는 200k 게이트로
+    예약."
+
+결정
+  ▶ 200k 본 학습은 N1=B (B 선도입) 로 시작.
+  ▶ A 는 200k 끝나도 drop_count 가 안 늘면 그때 추가 검토.
+
+선택 기록
+  ▶ [선택] N1 도입 시점        →  지금 즉시 죽이고 B 로 fresh start
+                                  (현재 진행중이던 N1=D ~37k 학습 중단)
+  ▶ [선택] A 와 B 동시 vs 순차 →  순차 (B 먼저, A 는 게이트로 예약)
+
+
+─── 1-2. B 단독의 hidden risk 발견 — potential-based 가 아님 ────────────────────
+
+별도 자료 §7 의 "B 시작 전 확인 항목":
+  "B 의 d_impact 보상이 potential-based 인지 — potential-based 면 가중치를 키워도
+   최적 정책이 안 바뀌어 안전. 아니면 단순 가중치라 키울수록 loitering·CCIP
+   게이밍 위험."
+
+코드 점검 결과 (drone_drop_env.py:822)
+  r3_impact = self._cfg_w_impact * math.exp(-self._cfg_k_impact * d_impact)
+
+  - 인접 상태 차이 (γΦ(s')−Φ(s)) 가 아닌 단일 상태 함수
+  - 같은 파일의 r3_dist 는 (d_prev − d_now) 형태로 potential-based → 안전
+  - 같은 파일의 r3_orient 는 speed_gate 가중 → loitering 차단
+  - r3_impact 만 양쪽 보호장치 없음
+
+risk
+  - hover/loiter 상태에서 d_impact 만 작으면 r3_impact 점수를 계속 받음
+  - w_impact 키울수록 이 hack 의 매력도 증가 → 안 떨어뜨리고 좋은 자세로 버티는
+    정책으로 수렴 가능
+
+선택 기록
+  ▶ [선택] B 의 안전장치        →  r3_impact 에 speed_gate 곱 (r3_orient 패턴 재사용)
+                                  + w_impact 2→5 그대로 적용
+        대안 A: 가중치만 키움 (안전장치 없이)       → 위험 그대로
+        대안 B: potential-based 로 식 재설계        → 손이 큼
+        대안 C: 가중치 보수적으로 (w_impact 2→3)    → 효과 약화
+
+
+─── 1-3. speed_gate 추가 — drone_drop_env.py 코드 변경 ──────────────────────────
+
+변경 (drone_drop_env.py:826)
+  before:  r3_impact = w_impact * exp(-k_impact * d_impact)
+  after :  r3_impact = w_impact * exp(-k_impact * d_impact) * speed_gate
+
+  주석에 명시:
+    "speed_gate (same as r3_orient): blocks hover/loiter farming — agent can't
+     sit still and collect d_impact reward without making forward progress.
+     Required when w_impact is high because r3_impact is NOT potential-based
+     (single-state function)."
+
+speed_gate 의 동작 (기존 정의 재사용)
+  speed_gate = min(speed_xy / 2.0, 1.0)
+  - 정지/저속(< 2 m/s): r3_impact = 0
+  - 2 m/s 이상: 정상 r3_impact
+
+특성
+  - 코드 1 줄 + 주석. 별도 hyperparameter 없음.
+  - r3_orient 와 동일한 anti-milking 패턴 유지 → 행동 일관성.
+
+
+─── 1-4. WandbCallback 의 rew_impact 추적 누락 발견 / 추가 ─────────────────────
+
+발견 경위
+  dry-run v2 (1k step, offline) 끝났을 때 wandb summary 에:
+    env/mean_rew_ctrl   : -0.26772
+    env/mean_rew_dist   : -0.12333
+    env/mean_rew_orient : -0.99795
+    env/mean_rew_drop   : 0
+    env/mean_rew_impact :  (없음)        ← N1=B 의 핵심 측정 지표가 빠짐
+
+원인 (train_sac.py)
+  - WandbCallback 의 self._step_rew_* 리스트와 _on_rollout_end 매핑 테이블에
+    rew_impact 만 빠져 있었음
+  - drone_drop_env 의 info dict 에는 'rew_impact' 가 정상 채워지지만, 콜백이
+    수집·평균·전송하지 않음
+
+수정 (3곳, train_sac.py)
+  L56:  self._step_rew_impact: list = []                     # 리스트 추가
+  L85:  if 'rew_impact' in info:
+            self._step_rew_impact.append(info['rew_impact']) # _on_step 수집
+  L116: ('_step_rew_impact', 'env/mean_rew_impact'),         # rollout end 매핑
+
+검증
+  dry-run v2 재실행은 안 함 (yaml 만 추가 변경 예정이라 200k 직행). 본 학습
+  rollout 끝나면 env/mean_rew_impact 가 wandb 에 표시될 예정.
+
+
+─── 1-5. dry-run 두 번 + 권장 hyperparameter 보정 ───────────────────────────────
+
+dry-run v1  (1k, ONLINE 모드로 떠버림 — WANDB_MODE 누락)
+  - 학습 자체는 정상 완료, NaN/Error 없음
+  - 하지만 rew_impact 콜백 누락이라 핵심 지표 측정 불가 (→ 1-4)
+  - WANDB_MODE 누락 사실 화면에서 확인 (wandb 폴더가 run-* 로 시작, offline-run- 아님)
+  - 가이드/명령에 export WANDB_MODE=offline 누락 → 보강
+
+dry-run v2  (1k, OFFLINE 정상)
+  - rew_impact 콜백 추가 후 재실행
+  - Run summary (1k 종료시):
+        env/mean_d_impact   :  81.54 m
+        env/mean_d_xy       :  81.54 m
+        env/mean_rew_ctrl   : -0.26772
+        env/mean_rew_dist   : -0.12333
+        env/mean_rew_orient : -0.99795
+        env/mean_rew_impact :   0.00144      ← 콜백 잡힘 ✓
+        env/safety_violation_rate : 1        ← learning_starts 까지 random 이라 정상
+        time/total_timesteps : 1000
+  - 식 검증:  5 * exp(-0.1 * 81.5) ≈ 0.00145  → 의도대로 계산됨 ✓
+  - 결론:  코드 구현은 검증 완료.
+
+발견 — 권장 k_impact 가 너무 좁음
+  d_impact (m)  →  r3_impact (k=0.1)   r3_impact (k=0.05)
+     80              0.0017                0.087
+     40              0.092                 0.677
+     20              0.677                 1.84
+     10              1.84                  3.03
+
+  학습 초반 d_impact 가 80m 안팎인 상태에서 k=0.1 이면 reward ≈ 0.0017 — 다른 항
+  (rew_orient ≈ -1, rew_ctrl ≈ -0.27) 대비 3자릿수 작아 사실상 noise.
+
+  별도 자료 §3 의 "k_impact 0.05→0.1" 권고는 "near-target sharpening" 의도 같으나,
+  본 학습 초반엔 r3_impact 가 거의 contribution 없게 됨 → B 의 "멀리서도 위치
+  개선 신호" 목적과 충돌.
+
+선택 기록
+  ▶ [선택] k_impact 값          →  0.05 유지 + w_impact 만 2→5
+       대안 A: 문서 권고대로 k_impact=0.1                → 초반 신호 약해짐
+       대안 C: 중간값 k_impact=0.07 타협                  → 채택 안 함
+
+
+─── 1-6. 200k 본 학습 fresh start + N1=D 베이스라인 보존 ────────────────────────
+
+기존 N1=D 학습 정리
+  - 35k 체크포인트에서 resume 한 run 이 ~37k 까지 진행 중이던 상태
+  - SIGINT 로 graceful kill (wandb final flush + sac_drop_preempt.zip 자동 저장)
+  - Gazebo/PX4 orphan 정리 (PPID=1 로 reparent 된 것까지 pkill -9)
+  - 마지막 데이터 wandb 에 수동 sync 완료
+
+체크포인트 보존
+  /workspace/ros2_ws/rl_checkpoints/archive/n1_d_baseline_2026-05-21/
+    ├── sac_drop_75000_steps.zip ~ sac_drop_95000_steps.zip   (이전 5/21 run)
+    ├── sac_drop_final.zip / model.zip
+    ├── sac_drop_preempt.zip        ← 마지막 graceful kill 시점
+    └── sac_drop_preempt_replay.pkl ← 함께 보존된 replay buffer (82MB)
+  /workspace/ros2_ws/rl_checkpoints/archive/dry_run_2026-05-21/
+    └── dry-run v1/v2 가 남긴 model.zip, sac_drop_final.zip
+
+이유
+  - max_checkpoints_kept = 5 rolling 으로 fresh start 진행 중 이전 체크포인트가
+    덮어쓰여 사라질 위험 → 사전 archive 로 회피
+  - N1=D 와 N1=B 비교가 필요해질 경우 출발선 보존
+
+200k 본 학습 시작 (사용자 직접 실행, tmux `train` 세션)
+  docker exec -it drone-bombard-harmonic bash
+  source /root/ros2_ws/install/setup.bash
+  source /workspace/ros2_ws/install/setup.bash
+  export WANDB_MODE=offline
+  cd /workspace/ros2_ws
+  ros2 run rl_navigation train_sac 2>&1 | tee /tmp/train_n1b_200k.log
+
+
+─── 1-7. 부수 작업 / 운영 점검 ─────────────────────────────────────────────────
+
+  - wandb_incremental_sync.sh (PID 26618) 계속 가동 — 10분 주기 sync
+  - sync 로그에서 FileNotFoundError (sac_drop_preempt.zip) 노이즈 발견
+        원인: 우리가 archive 로 옮긴 파일을 wandb 가 artifact reference 로
+              계속 찾으려 함
+        영향: 로그 노이즈만, sync 자체는 "✓ done" 으로 정상 완료됨
+        해결: 새 fresh-start run 에는 그 reference 없어 자동 사라짐
+  - tmux `drone200k`, `train` 두 세션 다 정상. 학습은 `train` 세션 안에서 진행 중.
+  - 사용자 임의 pkill 한 번 있었으나 영향 없음 (sync 스크립트/tmux/필수 프로세스
+    전부 정상 확인).
+
+
+─── 1-8. N1=B v1 → v2 격상 (w=5,k=0.05 → w=8,k=0.03) ──────────────────────────
+
+배경
+  - v1 (w=5, k=0.05) 로 200k 학습 16k step 진행 시점에 사용자 의문 제기:
+    "고작 2.5배 (w 만 키움) 로 효과 충분할까?  전엔 아예 안 떨궜는데."
+  - 분석 결과 사용자 직감이 부분적으로 맞음을 확인:
+      이전 (w=2) 도 d_impact=29m 에서 r3_impact=0.47 — 의미 있는 수준
+      drop_count=1 의 원인은 r3_impact 약함이 아닌 *마지막 27m (29m→2m) 못 좁힘*
+      즉 terminal risk aversion + threshold 2m 의 빡셈이 진짜 병목
+
+검증된 점 — v1 의 16k step 데이터
+  env/mean_rew_impact : 0.567   ← N1=B 메커니즘이 작동함을 명확히 입증
+                                    (dry-run v2 의 0.00144 대비 ~400배)
+  env/mean_rew_orient : +0.036  ← 드론이 타겟 방향 학습 (이전 -0.998 → +0.036)
+  → v2 는 *작동 확인된* 신호를 더 강하게 키우는 것
+
+후보 비교
+  d_impact   |   ① w=5,k=0.025  |   ② w=8,k=0.03    |   ③ w=10,k=0.025
+  ──────────|──────────────────|───────────────────|─────────────────
+   80m      |       0.68        |        0.73       |       1.35
+   29m      |       2.42        |        3.36       |       4.83
+   10m      |       3.89        |        5.93       |       7.79
+    2m      |       4.76        |        7.53       |       9.51
+            보수적 강화           균형형              공격적 한계선
+
+선택 기록
+  ▶ [선택] 강도 수준        →  ② 채택 (w=8, k=0.03)
+        대안 ①: 멀리서만 살림, 효과 약할 수 있음
+        대안 ③: 가까이서 9.5 → terminal jackpot(30) 의 1/3 → terminal 학습 묻힐 위험
+                "drive-through hack" 가능성 보고서 명시.
+
+전환 절차 (사용 검증된 패턴)
+  1. SIGINT graceful kill (memory feedback_train_sac_graceful_kill 활용)
+     → train_sac PID 797321 + child + Gazebo + PX4 정리
+     → preempt 자동 저장 (sac_drop_preempt.zip + replay.pkl 82MB)
+  2. v1 산출물 archive 로 이동:
+     /workspace/ros2_ws/rl_checkpoints/archive/n1_b_w5_k05_2026-05-22/
+       ├── sac_drop_5000_steps.zip ~ 15000_steps.zip
+       └── sac_drop_preempt.zip + sac_drop_preempt_replay.pkl
+  3. yaml: w_impact 5→8, k_impact 0.05→0.03 + 미러
+  4. (사용자 선택) WANDB_MODE: offline → online (deadlock 사고 사례 인지 후 진행)
+  5. 200k fresh start (model 0 부터, fresh buffer)
+
+
+─── 1-9. WandB 누적 drop_count 카운터 추가 (다음 학습부터 반영) ─────────────────
+
+발견 경위
+  현재 진행 중인 200k 학습 8k step 시점, wandb 차트의 env/drop_count 가 "계속 1"
+  로 보임 → 사용자가 의미 의문 제기 → 코드 점검 결과:
+
+  train_sac.py L127:
+    log_dict['env/drop_count'] = len(self._ep_drop_errors)
+  L128-129:
+    self._ep_drop_errors.clear()   ← rollout 마다 초기화
+
+  → drop_count 는 *rollout 단위* 카운트. drop 없는 rollout 은 로깅 자체 안 됨
+  → wandb 가 마지막 측정값을 평행선으로 표시 → "계속 1로 유지" 현상
+
+해결
+  누적 카운터 추가 (per-rollout drop_count 는 유지 — 두 지표 병행):
+
+  train_sac.py 3곳 변경:
+    L61:   self._total_drop_count: int = 0   # cumulative
+    L93:   if done and 'drop_error_actual_m' in info:
+               ...
+               self._total_drop_count += 1   # NEW
+    L134:  log_dict['env/total_drop_count'] = self._total_drop_count
+                                              # 매 rollout 마다 무조건 로깅
+                                              # stair-step 차트 가능
+
+영향 / 적용 시점
+  - 현재 진행 중인 200k run 은 *영향 없음* (Python 모듈은 시작 시 로드)
+  - 다음 학습 (e.g., A phase 1) 부터 env/total_drop_count 등장
+  - install 미러링 완료
+
+
+─── 1-10. 새 의사결정 문서 2종 작성 ────────────────────────────────────────────
+
+200k 종료 후 다음 단계를 명확하게 결정하기 위한 가이드 작성.
+
+(1) /home/juns/A_phased_curriculum_도입방안.md  (324 줄, 12.5 KB)
+  - A 도입 방식 = **Phased curriculum** 채택 (사용자 합의)
+  - Phase 1 (threshold=10) → Phase 2 (=5) → Phase 3 (=2), 각 50k step
+  - 각 phase 사이: model resume + fresh buffer + learning_starts reset
+  - 자동 curriculum 로직 *코드에 안 넣음* — 사람이 phase 마다 결과 보고 결정
+  - 4 가지 충돌 원천 (buffer 오염 / non-stationarity / attribution / policy bias) 별
+    회피 매트릭스 명시
+  - 200k 결과별 시나리오 트리: drop_count ≥ 100 / 30~100 / < 30 → A 보류 / single-step / phased
+
+(2) /home/juns/parameter_조절_의사결정_guide.md  (453 줄, v2)
+  - One-lever-at-a-time 원칙 — A 와 B 동시 조절 절대 금지
+  - 3D 진단 매트릭스: d_impact × drop_count × drop_error (정밀도, NEW)
+  - B 의 3 parameter (w_impact, k_impact, speed_gate) + A 의 1 parameter
+    (auto_drop_threshold) + terminal precision (k2_precision, w_drop_base) 의
+    역할 명시
+  - "B 추가 학습 +100k" 옵션 신설 (NEW) — 시나리오 분류 후 정밀도가 부족할 때
+  - v1 (초안) → v2 (8k 실측 데이터 반영) 업데이트 이력 표시
+
+선택 기록
+  ▶ [선택] A 도입 방식         →  Phased curriculum (계단식)
+                                  (continuous step-by-step curriculum 은 채택 안 함)
+  ▶ [선택] 자동 vs 수동 phase →  수동 (사람이 phase 마다 결정, adaptive)
+  ▶ [선택] Parameter 조절 원칙 →  One-lever-at-a-time (한 사이클엔 하나만 변경)
+
+
+─── 1-11. 200k 8k 시점 실측 데이터 ─────────────────────────────────────────────
+
+학습 시작 후 ~8k step 시점에 사용자가 wandb 차트 확인.
+
+관찰
+  env/drop_count        : 차트에 7개 점, x축 시간상 *불규칙 분포* (Pattern A 유사)
+  env/drop_error_actual : 같은 7개 점에 매핑
+  → 8k step 동안 7번 drop 발생 (어떤 episode 들이 d_impact ≤ 2m 도달 → CCIP 발사)
+
+비교
+  N1=D (이전 10k smoke)     : 1 drop / 10000 step → 0.0001 /step
+  N1=B v1 (16k partial)     : 데이터 보존 안 함 (preempt 만 archive)
+  N1=B v2 현재 (8k 시점)    : 7 drops / 8000 step → 0.000875 /step
+  → **N1=D 대비 약 8~9배 향상**, B v2 효과 명확
+
+Episode 수준 환산 (대략 추정)
+  drop episode 평균 200 step + truncate 500 step 가정
+  → 약 20 episodes 안에 7 drops → episode 성공률 ~35%
+  이전 N1=D 5% 대비 약 7배
+
+200k 외삽 (현재 비율 유지 시)
+  ~175 drops 예상 — parameter_조절_의사결정_guide.md §3 의 시나리오 1 영역
+  (drop_count ≥ 100, "A 보류 / 정밀도 보고 결정")
+
+주의
+  - Pattern A 가 유지될지는 진행 봐야 함 — back-loaded (가속) 면 더 많은 drop,
+    front-loaded (초반만) 면 외삽 무효
+  - drop_error 의 *절대 평균값* 은 미관찰 (회의 시점에 다시 확인 필요)
+  - 정밀도 차원이 새로 critical — guide v2 의 §3 매트릭스의 3번째 축
+
+
+─── 1-12. 메모리 / 가이드 파일 정리 ────────────────────────────────────────────
+
+추가된 메모리 (auto-load, 다음 세션 자동 인지)
+  ~/.claude/projects/-home-juns/memory/
+    ├── project_n1b_200k_training.md       (NEW) — 현재 N1=B v2 상태
+    └── feedback_train_sac_graceful_kill.md (NEW) — SIGINT 패턴
+
+작성된 문서 (작업 디렉터리)
+  ~/A_phased_curriculum_도입방안.md         (NEW) — A 도입 절차
+  ~/parameter_조절_의사결정_guide.md        (NEW, v2) — Parameter 조절 가이드
+  ~/meeting_notes_2026-05-22.txt           (현재 파일, 갱신 중)
+
+다음 세션 prompt 템플릿 (사용자 협의 완료)
+  "200k 가 끝났어. 다음 단계 결정하자.
+   두 문서 읽어줘: A_phased_curriculum_도입방안.md, parameter_조절_의사결정_guide.md
+   WandB 결과: mean_d_impact=__, total_drop_count=__, drop_error_actual_m=__,
+              success_rate=__, mean_rew_impact=__, safety_violation_rate=__, ep_rew_mean=__"
+
+
+
+################################################################################
+#  PART 2.  최종 설정 (확정 / 이번 세션 추가분)
+################################################################################
+
+이 파트는 이번 세션에 변경된 코드/설정 값을 회의에서 한눈에 보기 위한 것입니다.
+지난 노트 (5/20) 의 H1/H2/H3/M1/M2/L4/L6 는 이미 적용 완료 상태에서 변동 없음.
+
+
+════════════════════════════════════════════════════════════════════════════════
+ ✅ N1.  Drop Sparse Signal — B 선도입 (이전 회의: D 권장 → 격상)
+════════════════════════════════════════════════════════════════════════════════
+
+이전 결정 (5/20 회의 노트) :  D 권장 (변수 추가 없이 200k 가서 봄)
+이번 결정 (5/22 세션)      :  B 선도입 (저위험·yaml 만), A 는 200k 게이트로 예약
+
+근거
+  - Downloads/N1_drop_sparse_AB방안.md (5/21) 의 정리:
+        B 는 가중치 변경만 → 위험 거의 0, "정상성" 유지
+        A 는 코드 변경 + 비정상성 위험, 500k 버퍼 오염 가능
+        동시 적용은 attribution 상실 + A 의 비정상성 그대로
+        순차 (B 깔고, 필요 시 A) 가 효과 측정·위험 관리 둘 다 우월
+  - 별도 자료 §7 의 사전 확인 결과: B 는 potential-based 아님이라
+    그대로 가중치 키우면 loitering 위험. 안전장치 (speed_gate) 함께 도입.
+
+적용 사항 (yaml + 코드)
+  1) reward.w_impact            : 2.0 → 5.0       (yaml)
+  2) reward.k_impact            : 0.05 (유지)      (yaml) ← 별도 자료의 0.1 권고는
+                                                          dry-run 데이터로 기각
+  3) drone_drop_env.py L826    : r3_impact 에 speed_gate 곱 (anti-loitering)
+  4) train_sac.py L56/L85-86/L116 : env/mean_rew_impact 콜백 추가
+
+회의 :  본 학습 진행 OK 받기. 200k 후 drop_count 추이 보고 A 추가 여부 결정.
+
+
+════════════════════════════════════════════════════════════════════════════════
+ ✅ 본 학습 설정 — hyperparams.yaml 최종 상태
+════════════════════════════════════════════════════════════════════════════════
+
+training:
+  total_timesteps    : 200000   # 본 학습
+  checkpoint_freq    : 5000
+  max_checkpoints_kept: 5
+  eval_freq          : 10000
+  eval_episodes      : 3
+
+sac:
+  buffer_size        : 500_000  # M1 (이전 결정 유지)
+  gamma              : 0.995    # H3 (이전 결정 유지)
+  gradient_steps     : 4        # M2 (이전 결정 유지)
+
+reward (이번 세션 최종 — v2 격상 후):
+  w_impact           : 8.0      # ← v1 (5.0) → v2 (8.0).  d_impact=29m 에서 1.17 → 3.36
+  k_impact           : 0.03     # ← v1 (0.05) → v2 (0.03).  d_impact=80m 에서 0.09 → 0.73
+  speed_gate_enabled : true     # r3_orient 와 r3_impact (신규) 양쪽 적용
+  auto_drop_threshold: 2.0      # 그대로 (A 는 200k 후 결정)
+  # (참고) v1 16k step 데이터에서 mean_rew_impact=0.567 로 메커니즘 작동 확인됨
+
+wandb:
+  project            : "drone-bombard-sac"
+  entity             : "nayoonho0922-seoul-national-university"   # 이전 세션 변경
+  log_freq           : 1000
+  mode               : online   # ← v2 시작 시 사용자 선택 (이전 offline 에서 변경)
+
+train_sac.py (callback 추가):
+  rew_impact 콜백             : 3곳 (L56/L85-86/L116) — env/mean_rew_impact 로깅
+  total_drop_count 누적 카운터 : 3곳 (L61/L93/L134) — env/total_drop_count 로깅
+                                  ※ 현재 진행 중인 run 에는 영향 없음, 다음 학습부터 반영
+
+
+
+################################################################################
+#  PART 3.  본 학습 모니터링 — 회의 시점 확인 항목
+################################################################################
+
+200k 본 학습이 회의 시점에 진행 중일 것으로 가정. 회의에서 wandb 대시보드를
+함께 보면서 아래 항목 확인.
+
+대시보드 :  https://wandb.ai/nayoonho0922-seoul-national-university/drone-bombard-sac
+
+핵심 지표 (대시보드에서 보일 것)
+  - env/mean_rew_impact      ↑ 시간 따라 증가 추세  ← B 가 효과 내고 있다는 증거
+  - env/mean_d_impact        ↓ 점진 감소 추세      ← CCIP 위치 정확도 개선
+  - env/drop_count           ↑ rollout 마다 증가 (per-rollout 카운트)
+  - env/safety_violation_rate ↓ learning_starts(1k) 이후 감소
+  - train/critic_loss        안정 (5/20 10k smoke 때 폭주→안정화 확인된 패턴)
+  - rollout/ep_rew_mean      단조 또는 점진 개선
+
+회의 시점에 보일 *실측 데이터 baseline* (8k step 시점 관찰)
+  - env/drop_count          : 차트에 7개 점, 8k step 동안 누적 7 drops
+  - episode 성공률 추정     : ~35% (이전 N1=D 의 ~5% 대비 ~7배)
+  - drop 비율 (drops/step)  : 0.000875 (N1=D 대비 ~9배)
+  - 200k 외삽 시            : ~175 drops 예상 → 시나리오 1 (A 보류) 영역
+  - 분포 패턴               : Pattern A (불규칙 균등), Pattern B (front-loaded) 는 아님
+  - drop_error 절대값       : 7개 점 평균 미확인 — 회의 시점 다시 확인 필요
+
+전환 시그널 (200k 끝난 후 추가 결정 트리거 — guide v2 반영)
+  • drop_count ≥ 100, drop_error < 5m              → 완전 성공, 종료 또는 미세조정
+  • drop_count ≥ 100, drop_error 5~15m              → 정밀도 차원 (B 추가 학습 +100k 또는 k2_precision↑)
+  • drop_count 30~100                              → A single-step (threshold = 5m)
+  • drop_count < 30, d_impact 작음                  → A phased (3 phase: 10→5→2m)
+  • drop_count < 30, d_impact > 30m                 → B 강화 (k 또는 w)
+  • d_impact 작은데 drop = 0                       → drive-through hack 의심 (w_impact ↓)
+
+상세 의사결정 절차
+  → /home/juns/parameter_조절_의사결정_guide.md (§3 3D 매트릭스, §5 처방)
+  → /home/juns/A_phased_curriculum_도입방안.md (A phase 절차)
+
+
+
+################################################################################
+#  PART 4.  회의 흐름 제안 (10분 가정 — 짧음)
+################################################################################
+
+이번 세션은 N1 한 안건 집중 + v2 격상까지 진행돼서 12분 정도로 늘어남.
+
+  0:00  맥락 — 지난 회의에서 N1=D 결정 → 별도 자료로 B 선도입 검토 결과          (1분)
+  1:00  Part 1-1/1-2 — D→B 격상 + B 의 hidden risk (potential-based 아님)        (2분)
+          ・ Downloads/N1_drop_sparse_AB방안.md 의 권고 요약
+          ・ r3_impact 식 단일 상태 함수임을 코드 점검에서 확인
+  3:00  Part 1-3/1-4 — speed_gate 추가 + rew_impact 콜백 누락 수정                (1분)
+          ・ 안전장치 + 측정장치 동시 도입
+  4:00  Part 1-5 — dry-run 2 회 + k_impact 권장값 보정 (v1: w=5, k=0.05)         (1분)
+  5:00  Part 1-8 — v1 → v2 격상 (w=8, k=0.03) + online 모드 채택                 (2분)
+          ・ v1 의 16k step 에서 mean_rew_impact=0.567 로 메커니즘 작동 확인
+          ・ 후보 비교표 (① w=5 k=0.025  ② w=8 k=0.03  ③ w=10 k=0.025) → ② 선택
+          ・ "위에서부터 줄이기" 전략
+  7:00  Part 1-9 — env/total_drop_count 누적 카운터 추가                          (1분)
+          ・ wandb 차트 stair-step 으로 학습 가속 한눈에 보기 (다음 학습부터)
+  8:00  Part 1-10 — 새 가이드 문서 2종 작성 (A 도입 방식 + parameter 조절)        (1분)
+          ・ A = Phased curriculum 채택 (계단식, 사람이 phase 마다 결정)
+          ・ One-lever-at-a-time 원칙 명문화
+  9:00  Part 1-11 + Part 3 — 200k 8k 시점 실측 (7 drops) + 외삽 분석              (2분)
+          ・ N1=D 대비 ~9× 향상, 200k 외삽 ~175 drops (시나리오 1 영역 가능)
+ 11:00  마무리 — 200k 완주 시점 의사결정 흐름 합의                                (1분)
+
+
+핵심 메시지 (1줄)
+  "지난 회의의 N1=D 결정을 B 선도입으로 격상하고, v1 (w=5) 의 16k 검증 데이터로
+   효과 메커니즘을 확인한 뒤 v2 (w=8, k=0.03) 로 격상하여 200k online 진행 중.
+   8k 시점 7 drops 로 N1=D 대비 ~9배 향상 관찰. A 도입은 Phased curriculum 으로
+   확정 (별도 문서), 200k 완주 후 진단 매트릭스 기반 자동 결정 흐름 마련."
+
+
+
+================================================================================
+ 끝 — 다음 노트: 200k 본 학습 (N1=B v2) 완주 후 결과 정리, parameter_조절_의사결정_guide.md
+       §3 진단 매트릭스 기반 시나리오 분기, 필요 시 A_phased_curriculum_도입방안.md §5 절차 진입.
+================================================================================
+
+
+
+################################################################################
+#  PART 5.  200k 완주 후 사후 분석 + branch 교체 (2026-05-22 세션 후반)
+################################################################################
+
+─── 1-13. 200k v2 학습 완주 + evaluate 결과: 정책 완전 실패 ────────────────────
+
+200k step 자연 완주. `Training complete. Final model saved to sac_drop_final.zip`
+직후 컨테이너 OOM kill (137) — 학습 자체엔 영향 없음, 자원 정리.
+
+evaluate.py 로 deterministic 5 episodes 측정:
+  - 0/5 drops (drop 한 번도 안 함)
+  - mean_drop_error: N/A (drop 없으므로)
+  - mean episode reward: -6060 ± 796
+  - trajectory_top.png: target(11,10) 인데 end(-16,23) → 반대 방향 비행
+
+사용자가 Gazebo GUI 로 직접 관찰:
+  → "드론이 처음부터 바닥에 부딪히면서 튕기면서 어디론가 갔다"
+  → takeoff 도 못함, motor command 학습 실패
+
+결론: 정책 무용. 200k 학습 폐기.
+
+
+─── 1-14. branch 교체 결정 — origin/jekyun_v2 ──────────────────────────────────
+
+배경
+  - 14m offset (drop_error 17/19 회 정확히 14.8661m) 가 RL 측 문제 아닌 시뮬
+    측 구조적 결함 가능성
+  - 사용자가 다른 branch 에서 동일 코드 정상 동작 확인했다고 함
+  - branch 후보 정리 후 사용자 확인 → origin/jekyun_v2 (https://github.com/
+    Joshua-0922/Drone-Bombard-Simulation/tree/jekyun_v2)
+
+branch fetch 트랩 발견
+  - origin remote fetch refspec 이 `+refs/heads/main:refs/remotes/origin/main`
+    으로 main 만 fetch 하도록 설정됨 → 일반 `git fetch origin` 으로는 jekyun_v2
+    안 보임
+  - 해결: `git fetch origin jekyun_v2:refs/remotes/origin/jekyun_v2` (config 미변경)
+  - 또는 refspec 정상화 (config 수정) — 안 함
+
+ls-remote 로 확인된 origin branch 들
+  - main (이미 fetch)
+  - jekyun_v2 (46bdb17) ← 채택
+  - jekyun (09ea871) — local 의 옛 jekyun (22247d3) 과 다름
+  - donghyeok, legacy/gazebo-classic — 미사용
+
+stash + checkout 트랩
+  - `git stash push -u` 가 untracked rl_eval_results/ (root 소유, docker cp 부산물)
+    제거 실패 → working tree 가 stash 되지 않고 rollback
+  - 그래도 stash entry 는 만들어짐 (2개)
+  - 강제 `git checkout -f origin/jekyun_v2 -b jekyun_v2` 로 해결
+    (변경분은 stash + backup 폴더 양쪽에 보존되어 안전)
+
+
+─── 1-15. jekyun_v2 의 분석 — 결정적 발견 ───────────────────────────────────────
+
+junsang 와 jekyun_v2 의 공통 부모: 22247d3
+jekyun_v2 에 추가된 4 commits:
+  09ea871  Fix: spin thread crash + recursive reset + consecutive CRUISE timeout
+           + tiered recovery
+  8ddb82a  feat: Apply reward function v2 changes
+  c38592a  reward v2: fix orbit-milking (w_impact 0.2)
+  46bdb17  fix(reward): v3 per-step 보상 복구 — 360K 학습 실패 분석 후 조정
+
+변경 파일 (jekyun_v2 가 22247d3 에서 추가/변경한 것):
+  README.md, RL_analysis.md (431줄, 신규), notes/errors/err_20260520_*.md,
+  ign_recording.mp4, hyperparams.yaml, drone_drop_env.py (+140 줄)
+  → CCIP/world/launch 파일은 변경 없음 → 14m offset 원인은 drone_drop_env.py 안
+
+RL_analysis.md 의 결정적 데이터 (jekyun 도 학습 실패 경험)
+  - 360K run (v2): mean_d_xy=19.9m, drops=0 → 학습 정체 (우리 200K 와 같은 패턴)
+  - 334K run (v2): mean_d_xy=499.8m, 완전 발산
+  - 118K run (v1): mean_d_xy=3.1m ✓ 정상 수렴
+  - 진단: per-step reward 60-70% 감소 → "정책이 움직일 동기 상실"
+  - v3 처방: per-step 복구 (w_dist 0.5, w_heading 0.7, w_impact 0.4) + drop bonus 150
+
+drone_drop_env.py 의 +140줄 = 4가지 핵심 안정성 patch
+  1. `_spin_loop` — rclpy.spin() 예외 시 자동 재시작 (callback freeze 차단)
+  2. `_reset_depth` — CRUISE timeout 무한 재귀 가드
+  3. tiered CRUISE recovery — fast path (episode-only) vs full infra restart
+  4. `_kill_infra` 강화 — reused infra (`_infra_procs == []`) 일 때도 pkill 폴백
+
+→ **14m offset 의 진짜 원인 = 위 4가지 patch 누락 = 옛 PX4 잔재 + spin
+   thread crash → CCIP 좌표 오염** 가설 매우 유력. junsang branch 는 이 안정성
+   patch 를 못 받음 → 200k 학습 내내 silent failure 누적.
+
+
+─── 1-16. junsang_v2 셋업 — jekyun_v2 base + H3/M1/M2 + measurement callback ──
+
+방향성 합의 (사용자):
+  - jekyun_v2 의 reward design (v3) + 인프라 안정성 patch 그대로 수용
+  - 우리 측의 검증된 SAC 측 개선 (H3/M1/M2) 만 추가
+  - 우리 측의 측정 callback (mean_rew_impact, total_drop_count, eval_freq config) 추가
+  - run_name: "junsang_v2"
+  - total_timesteps: 200000 (200k 우선 검증)
+
+적용된 변경 (jekyun_v2 위에, 2 파일 +16-4줄)
+
+  hyperparams.yaml
+    training.eval_freq: 10000           (L6, 신규 키)
+    training.eval_episodes: 3            (L6, 신규 키)
+    training.total_timesteps: 1M → 200k  (검증 우선)
+    sac.buffer_size: 100k → 500k         (M1)
+    sac.gamma: 0.99 → 0.995              (H3)
+    sac.gradient_steps: 1 → 4            (M2)
+    wandb.run_name: "L4-AutoDrop-v2" → "junsang_v2"
+
+  train_sac.py
+    _step_rew_impact list 추가
+    _on_step 의 rew_impact 수집
+    _on_rollout_end 의 mean_rew_impact 매핑
+    _total_drop_count 카운터 추가
+    drop_count 증가 시 total_drop_count 도 증가
+    total_drop_count 매 rollout 마다 로깅 (stair-step 차트)
+    eval_freq 를 yaml 에서 로드 → BestModelCallback 에 전달
+
+  drone_drop_env.py
+    변경 없음 — jekyun_v2 그대로 (4가지 안정성 patch 포함)
+
+폐기된 우리 (junsang) 변경:
+  H1 (reward scale 50→20 등) — jekyun 은 반대 방향 (50→100)
+  H2 (action 5d→4d) — jekyun 는 5d 유지
+  N1=B v2 (w_impact=8 등) — orbit-milking 실패 모드, 완전 폐기
+  speed_gate 코드 — jekyun_v2 yaml 에 `speed_gate_enabled: true` 로 이미 존재
+  vision world 분리 (commit 29b1c9b) — RL 학습엔 무관 (vision 모드 사용 시 필요)
+
+
+─── 1-17. 백업 정리 + 메모리/문서 갱신 ─────────────────────────────────────────
+
+backup (/home/juns/backup_pre_pull_2026-05-22/, 총 4.7 GB)
+  - repo/ 2.7G (.git 포함 전체)
+  - wandb/ 1.8G
+  - rl_checkpoints/ 227M (N1=B v2 final + archive 3개 보존)
+  - install/, docs/, memory/, eval_results/, scripts/ 등 모두 포함
+
+change inventory: /home/juns/change_inventory_pre_pull_2026-05-22.md
+  - Phase 1-3 산출물, Phase 2 분석 결과 + Phase 3 적용 사항 반영
+
+메모리 갱신
+  - project_n1b_200k_training.md → DEPRECATED 표시 + 실패 결론 기록
+  - project_junsang_v2_setup_2026-05-22.md (NEW) — 현재 상태
+  - feedback_simulation_offset_root_cause.md (NEW) — 14m offset 진단 방법론
+  - MEMORY.md 인덱스 갱신
+
+
+─── 1-18. 다음 행동 ────────────────────────────────────────────────────────────
+
+1. dry-run 5K 권장 (yaml total_timesteps 임시 5000 → 검증 → 200000 복원)
+   목표: jekyun RL_analysis 의 "mean_d_xy ≤ 5m" 도달 확인
+2. 본학습 200K 시작
+3. WandB 모니터링: env/total_drop_count (stair-step), env/mean_rew_impact,
+   env/mean_d_xy, env/mean_d_impact, env/drop_error_actual_m
+4. 200K 결과별 시나리오:
+   - mean_d_xy ≤ 5m, drops 충분 → 추가 학습 또는 정밀화
+   - 도달 못함 → jekyun 의 Stage 1 재조정 사이클 따름
+   - 14m offset 재발 → drone_drop_env.py 의 4가지 patch 누락 의심
+
+
+
+================================================================================
+ 끝 — 다음 노트: junsang_v2 학습 결과 (dry-run + 200k) 정리
+================================================================================

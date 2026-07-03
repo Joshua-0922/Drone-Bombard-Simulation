@@ -1,0 +1,123 @@
+# =====================================================================
+# v13 — Terminal-reward redesign (fix for v12 "overshoot moat" trap)
+# =====================================================================
+# Root cause (v12 rl_yolo_v12_arm_fix): camera was flipped to straight-down
+# (commit 24135e9), so CRUISE→TRACKING handoff now happens only when the drone
+# is ~1.0 m overhead. The RL episode therefore STARTS at d_xy≈1.0 m — already
+# inside the overshoot guard's arming zone (overshoot_close_threshold=1.5) and
+# with almost no distance gradient left to earn. With an 8 m/s vx actuator it
+# overshoots the 0.5 m success circle, eats penalty_overshoot=-20, and ends.
+# Result: ep_rew_mean≈-20.5, ep_len 40→16 (learning to die fast), 0 successes.
+#   → notes/research/terminal_overshoot_trap.md  (Rule 10 in rl_rules.md)
+#
+# v13 changes (reward/episode design only — KEEP the straight-down camera):
+#   1. Disarm the overshoot moat at the handoff   (overshoot_close_threshold 1.5→0.6, margin 1.5→2.0, penalty -20→-10)
+#   2. Reachable success gate → real gradient      (success_radius 0.5→0.8)
+#   3. Terminal braking authority                  (action_vx_scale 8→4, action_vy_scale 5→3)
+#   4. Sharper dense pull in the 0–2 m terminal zone (w_proximity 0.3→0.6, proximity_radius 5.0→2.0)
+#
+# ⚠️ Reward formula changed → MANDATORY Fresh Start (no replay-buffer reuse). See rl_rules Rule 4.
+# Launch:  ros2 run rl_navigation train_sac --config .../config/hyperparams_v13.yaml --timesteps 500000
+# =====================================================================
+
+training:
+  total_timesteps: 300000   # CLI --timesteps overrides; v12 ran 500K
+  # armdiag dry-run: isolated checkpoint dir so it cannot touch v13's checkpoints/replay.
+  # ⚠️ INCIDENT 06-17: 원래 이 파일에 checkpoint_dir가 중복(여기 + 아래 main)으로 있었고
+  # YAML last-key-wins로 main이 이김 → dry-run이 v13 30K 체크포인트 삭제. 단일 키로 수정함.
+  # → [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]]
+  checkpoint_dir: "/workspace/ros2_ws/rl_checkpoints/armdiag_dryrun"
+  checkpoint_freq: 5000
+  max_checkpoints_kept: 5
+  num_envs: 1
+  env_stagger_secs: 10
+  eval_freq: 10000
+  eval_episodes: 3
+
+sac:
+  learning_rate: 3.0e-4
+  buffer_size: 500000
+  batch_size: 256
+  tau: 0.005
+  gamma: 0.995
+  learning_starts: 1000
+  gradient_steps: 1
+  net_arch: [256, 256]
+  device: "cuda"
+
+environment:
+  target_enu_x: 11.0    # MEASURED: PX4 East = +Gazebo East (no reversal). Marker Gazebo East=11 → target +11
+  target_enu_y: 10.0
+  pos_scale: 50.0
+  vel_scale: 15.0
+  ang_vel_scale: 3.14159265
+  action_vx_scale: 4.0       # v13: 8.0→4.0 — RL phase starts at ~1m overhead (straight-down cam handoff); 8 m/s overshoots the success circle. CRUISE is scripted (mission_manager), so this only affects terminal guidance.
+  action_vy_scale: 3.0       # v13: 5.0→3.0 — terminal braking authority
+  action_vz_scale: 3.0
+  action_yaw_scale: 1.0
+  action_rate_limit: 0.2
+  max_steps: 300
+  min_altitude: 3.0
+  min_altitude_start_step: 1
+  ground_contact_altitude: 0.5
+  max_distance: 100.0
+  max_altitude: 25.0
+  stagnation_window: 150
+  stagnation_min_progress: 1.0
+  stagnation_start_step: 50
+  obs_wait_timeout: 0.02
+  cruise_poll_timeout: 20.0
+  arm_bail_timeout: 25.0    # armdiag: was 10.0 — give EKF up to 25s to reconverge so we can measure whether pre_flight_checks_pass ever flips late (recoverable) or never (full-restart-only)
+  tracking_wait_timeout: 20.0
+  sim_speed_factor: 2
+  use_vision: true
+  detection_hold_frames: 10
+
+reward:
+  # --- Approach shaping ---
+  w_dist: 2.0      # v5: GPS gradient (telescopes to only 2*(handoff≈1m)=~2.0 over an episode now — see Rule 10)
+  w_heading: 0.0   # v9: removed — geometric noise at d_xy<3m
+  speed_gate_enabled: true
+
+  # --- Proximity bonus (dense positive signal for being near target) ---
+  w_proximity: 0.6              # v13: 0.3→0.6 — episode now lives entirely in the 0–2m terminal zone; need a stronger pull-in gradient
+  proximity_radius: 2.0         # v13: 5.0→2.0 — focus the dense bonus where the drone actually operates. At d=1m: 0.6*(1-1/2)=0.30/step; d=0.5m: 0.45/step; d=0: 0.60/step
+
+  # --- Vision centering ---
+  w_vision_center: 1.5
+
+  # --- Stability/efficiency ---
+  w_time: 0.05
+  w_ang_vel: 0.05
+  w_action_smooth: 0.05
+
+  # --- Layer 1 penalties ---
+  penalty_crash: -50.0
+  penalty_overspeed: -30.0
+  penalty_target_lost: 0.0
+  penalty_out_of_range: -30.0
+  penalty_max_altitude: -30.0
+  penalty_stagnation: -15.0
+  penalty_bad_attitude: -30.0
+  limit_ang_vel: 2.0
+  limit_tilt: 0.26
+
+  # --- Success termination ---
+  success_radius: 0.8           # v13: 0.5→0.8 — drone reliably reaches ~1m (handoff) and grazes 0.5-0.6m; 0.8m is a reachable gate that finally emits the +100 signal. Curriculum: tighten 0.8→0.5 once success_rate is stable.
+  reward_success: 100.0
+
+  # --- Overshoot termination ---
+  overshoot_close_threshold: 0.6  # v13: 1.5→0.6 — was arming at step 1 (handoff ~1m < 1.5). Now only arms once GENUINELY close (and below success_radius 0.8), so it no longer kills the terminal approach.
+  overshoot_margin: 2.0           # v13: 1.5→2.0 — more leash before truncating
+  penalty_overshoot: -10.0        # v13: -20.0→-10.0 — reduce the landmine severity that pinned ep_rew at ~-20
+
+  # --- Episode termination penalties ---
+  truncation_penalty: -15.0
+
+wandb:
+  project: "drone-bombard-sac"
+  entity: "nayoonho0922-seoul-national-university"
+  run_name: "v13_armdiag_dryrun"
+  tags: ["sac", "spot-vm", "l4-gpu", "v13", "terminal-reward", "overshoot-disarm", "success-0.8m", "action-scale-down", "proximity-2m", "fresh-start", "cam-pitch-down", "sim-2x"]
+  save_model_artifact: true
+  log_freq: 1000

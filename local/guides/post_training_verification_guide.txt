@@ -1,0 +1,253 @@
+================================================================================
+ Drone-Bombard-Simulation — 학습 후 검증 가이드
+================================================================================
+작성일 : 2026-05-24
+갱신일 : 2026-05-26 (replay → deterministic evaluate 방식으로 전면 교체)
+대상   : 학습 완료 후 학습된 드론의 실제 비행을 GUI로 확인
+사용법 : 각 Step의 명령어를 host 터미널에 그대로 붙여넣기
+전제   :
+  - docker ps 로 drone-bombard-harmonic 컨테이너가 실행 중인지 확인
+  - 학습이 완료되어 sac_drop_final.zip 이 존재할 것
+관련   :
+  - ../guides/drone_sim_tmux_training_guide.txt  (학습 실행 가이드)
+
+
+================================================================================
+ 이 가이드의 목적
+================================================================================
+
+학습이 끝난 뒤, 학습된 모델이 실시간으로 obs를 보고 비행하는 모습을
+Gazebo GUI에서 직접 관찰한다.
+
+방식: deterministic evaluate — 학습된 모델이 매 step 현재 상태를 보고
+action을 결정 (closed loop). 실제 배포와 동일한 동작.
+
+주의: 이전의 "drop episode replay" 방식은 open loop (저장된 action을
+순서대로 넣기)라 원래 궤적과 완전히 달라짐 → 사용하지 않음.
+
+향후 추가될 수 있는 항목:
+  [ ] 타겟(x 마커) 위치 변경 테스트
+  [ ] 바람/외란 조건 테스트
+  [ ] 다른 고도/속도 출발 테스트
+  [ ] milestone 간 비교
+
+원칙:
+  1. 명령어를 복사-붙여넣기만으로 실행
+  2. Gazebo GUI에서 드론 행동을 직접 관찰
+  3. "눈으로 봤을 때 납득이 되는가"를 판단
+
+
+================================================================================
+ 모델 파일 구조
+================================================================================
+
+학습 중 자동 저장되는 모델:
+
+  /workspace/ros2_ws/rl_checkpoints/
+    sac_drop_final.zip                           ← 학습 완료 시 최종 모델
+    model.zip                                    ← 위와 동일
+    archive/
+      sac_drop_milestone_50000_steps.zip          ← 50k 시점 모델
+      sac_drop_milestone_100000_steps.zip         ← 100k 시점 모델
+      sac_drop_milestone_150000_steps.zip         ← 150k 시점 모델
+    drop_episodes/
+      best_drops/
+        best_err4.64m_step122502.zip              ← auto drop 최고 기록 시 모델
+        best_err3.21m_step185000.zip              ← 더 좋은 기록 갱신 시 추가
+      index.csv                                  ← 전체 drop 목록
+      drop_XXXX_stepYYYYY_errZ.ZZm.npz           ← 에피소드 데이터 (분석용)
+
+best_drops/의 모델이 가장 중요:
+  - auto drop(d_impact ≤ 3m)으로 성공한 경우에만 저장
+  - best drop_error가 갱신될 때마다 새 모델 저장
+  - 이 모델을 evaluate + GUI로 돌리면 "가장 잘 했던 실력"의 드론을 볼 수 있음
+
+
+================================================================================
+ [A] Deterministic Evaluate + GUI
+================================================================================
+
+
+--------------------------------------------------------------------------------
+ Step 1. 기존 프로세스 정리
+--------------------------------------------------------------------------------
+
+그대로 붙여넣기:
+
+tmux kill-session -t eval 2>/dev/null; docker exec drone-bombard-harmonic bash -c "pkill -9 -f 'gz sim'; pkill -9 -f 'bin/px4'; pkill -9 -f 'MicroXRCEAgent'; pkill -9 -f 'parameter_bridge'; pkill -9 -f python3; sleep 2; rm -f /dev/shm/fastrtps_* /tmp/px4_lock-* /tmp/px4-sock-* /tmp/drone_env_gz_ready /tmp/x_marker_world_rl_*.sdf"
+
+
+--------------------------------------------------------------------------------
+ Step 2. evaluate 실행
+--------------------------------------------------------------------------------
+
+에피소드 수와 모델 경로를 확인한 뒤 전체를 붙여넣기.
+EPISODES=5 는 원하는 에피소드 수로 변경 가능.
+
+EPISODES=5
+cat > /tmp/run_eval.sh << EOF
+#!/bin/bash
+docker exec drone-bombard-harmonic bash -lc '
+  source /opt/ros/humble/setup.bash
+  source /root/ros2_ws/install/setup.bash
+  source /workspace/ros2_ws/install/setup.bash
+  cd /workspace/ros2_ws
+  python3 -c "
+from rl_navigation.drone_drop_env import DroneDropEnv
+from stable_baselines3 import SAC
+import numpy as np, time
+
+env = DroneDropEnv(config_path=\"/workspace/ros2_ws/install/rl_navigation/share/rl_navigation/config/hyperparams.yaml\")
+model = SAC.load(\"/workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip\")
+
+print(\"Environment ready. Open GUI now.\", flush=True)
+time.sleep(30)
+
+for ep in range($EPISODES):
+    obs, _ = env.reset()
+    done = False
+    total_reward = 0
+    steps = 0
+    while not done:
+        action, _ = model.predict(obs, deterministic=True)
+        obs, reward, term, trunc, info = env.step(action)
+        total_reward += reward
+        steps += 1
+        done = term or trunc
+    drop_err = info.get(\"drop_error_actual_m\", \"N/A\")
+    trigger = info.get(\"drop_trigger\", \"N/A\")
+    d_xy = info.get(\"d_xy\", \"N/A\")
+    trunc_reason = info.get(\"truncate_reason\", \"\")
+    print(f\"EP{ep+1}: steps={steps} trigger={trigger} drop_err={drop_err} d_xy={d_xy} reward={total_reward:.1f} {trunc_reason}\", flush=True)
+
+print(\"Evaluation complete. Sim stays alive for inspection.\", flush=True)
+time.sleep(3600)
+env.close()
+"
+'
+EOF
+tmux new-session -d -s eval "bash /tmp/run_eval.sh"
+
+
+--------------------------------------------------------------------------------
+ Step 3. 초기화 대기 (~90초)
+--------------------------------------------------------------------------------
+
+sim이 뜨는 데 약 90초 걸린다. 아래를 붙여넣어서 상태 확인:
+
+tmux capture-pane -t eval -p | tail -5
+
+"Environment ready. Open GUI now." 가 보이면 30초 안에 Step 4 진행.
+
+
+--------------------------------------------------------------------------------
+ Step 4. GUI 띄우기
+--------------------------------------------------------------------------------
+
+한 줄씩 붙여넣기:
+
+xhost +local:root
+
+docker exec drone-bombard-harmonic bash -c "DISPLAY=:1 gz sim -g" &
+
+  - GUI 창이 열리면 드론이 학습된 정책으로 비행하는 것을 관찰
+  - 드론이 타겟(빨간 X 마커)에 접근하는지 확인
+  - drop 시 payload가 분리되어 낙하하는지 확인
+  - 각 에피소드 결과가 tmux에 출력됨
+  - libEGL dri2 경고는 정상 (무시)
+
+
+--------------------------------------------------------------------------------
+ Step 5. 결과 확인
+--------------------------------------------------------------------------------
+
+tmux에서 에피소드별 결과를 확인:
+
+tmux capture-pane -t eval -p | tail -20
+
+출력 예시:
+  EP1: steps=202 trigger=random drop_err=10.6 d_xy=10.4 reward=103.6
+  EP2: steps=275 trigger=random drop_err=10.1 d_xy=10.3 reward=171.6
+  EP3: steps=500 trigger=N/A drop_err=N/A d_xy=10.7 reward=157.9 timeout
+  EP4: steps=394 trigger=auto drop_err=5.3 d_xy=5.3 reward=270.0
+
+확인 항목:
+  - d_xy가 줄어들고 있는가 (타겟 접근 학습)
+  - drop_error가 d_xy와 비슷한가 (실제 물리 drop 작동)
+  - trigger=auto가 있는가 (타겟 근처 정밀 drop)
+  - reward가 양수인가 (정상 학습)
+
+
+--------------------------------------------------------------------------------
+ Step 6. 정리
+--------------------------------------------------------------------------------
+
+관찰 끝나면 아래 전체를 붙여넣기:
+
+tmux kill-session -t eval 2>/dev/null; docker exec drone-bombard-harmonic bash -c "pkill -9 -f 'gz sim'; pkill -9 -f 'bin/px4'; pkill -9 -f 'MicroXRCEAgent'; pkill -9 -f 'parameter_bridge'; pkill -9 -f python3"; xhost -local:root
+
+
+================================================================================
+ [B] 모델 선택 테스트
+================================================================================
+
+[A]의 Step 2에서 SAC.load() 경로만 변경하면 다른 모델을 테스트할 수 있다.
+나머지 Step 3~6은 동일.
+
+
+--------------------------------------------------------------------------------
+ B-1. 학습 시기별 비교
+--------------------------------------------------------------------------------
+
+milestone 체크포인트가 50k 간격으로 자동 저장됨.
+
+  50k 시점:   /workspace/ros2_ws/rl_checkpoints/archive/sac_drop_milestone_50000_steps.zip
+  100k 시점:  /workspace/ros2_ws/rl_checkpoints/archive/sac_drop_milestone_100000_steps.zip
+  150k 최종:  /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip
+
+비교 관점:
+  - 50k: 타겟 방향으로 가는가? d_xy 변화?
+  - 100k: drop이 발생하는가? drop_error?
+  - 150k: 정밀도가 개선됐는가?
+
+
+--------------------------------------------------------------------------------
+ B-2. Best drop 모델 테스트
+--------------------------------------------------------------------------------
+
+학습 중 auto drop으로 최고 기록을 달성한 시점의 모델.
+"가장 잘 했던 드론"의 비행을 GUI로 볼 수 있다.
+
+  model = SAC.load("/workspace/ros2_ws/rl_checkpoints/drop_episodes/best_drops/best_err4.64m_step122502.zip")
+
+어떤 best 모델이 있는지 확인:
+
+docker exec drone-bombard-harmonic ls /workspace/ros2_ws/rl_checkpoints/drop_episodes/best_drops/
+
+
+================================================================================
+ [C] 타겟 위치 변경 테스트 (향후 구현 예정)
+================================================================================
+
+현재 타겟 위치 (11, 10)은 yaml + world SDF에 고정.
+학습도 이 위치에서만 진행 → 다른 위치에서는 일반화 안 될 수 있음.
+
+향후 일반화 학습 후 검증 시:
+  1. hyperparams.yaml의 target_enu_x, target_enu_y 변경
+  2. world SDF의 x_marker pose 변경 (동일 좌표로)
+  3. install 미러링
+  4. [A]의 Step 1~6 동일하게 실행
+
+또는 evaluate 스크립트에 --target-x --target-y 옵션 추가하여
+yaml 수정 없이 테스트 가능하도록 개선 예정.
+
+테스트 시나리오 (향후):
+  - 타겟 위치 소폭 변경 (11,10) → (15,12): 미세 일반화
+  - 타겟 위치 대폭 변경 (11,10) → (30,25): 원거리 일반화
+  - 타겟 위치 반대 방향 (11,10) → (-10,-5): 방향 일반화
+  - 드론 spawn 위치 변경: 다른 출발점에서도 작동하는지
+
+
+================================================================================
+ 끝
+================================================================================
