@@ -5,9 +5,14 @@ status: active
 type: research
 ---
 
-# 시스템 전체 구조
+# 시스템 전체 구조 (Gazebo/PX4/ROS2 — `jekyun` 브랜치)
 
 > **참고:** CLAUDE.md에서 이전. 아키텍처 상세 레퍼런스.
+>
+> ⚠️ **이 문서는 `jekyun` 브랜치(라이브 SAC 학습)의 아키텍처를 설명한다.**
+> `feat/isaac-env-migration` 브랜치(Isaac Lab + PPO)의 아키텍처는
+> [[research/isaac_lab_architecture]] 참조 — 별도 워크트리, 완전히 다른 스택
+> (isaaclab DirectRLEnv, 단일 프로세스, GPU-vectorized, PX4/ROS2/Gazebo 없음).
 
 ---
 

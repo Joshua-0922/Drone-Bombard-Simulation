@@ -102,6 +102,7 @@
 - [ ] **(Isaac Lab migration, 병행 트랙)** L4 Spot VM 기동(`infra/deploy.sh` 빌드+push, `infra/startup.sh` 실행) → Cartpole 스모크 → `Isaac-DroneBombard-Direct-v0` env 스모크(2-iter) → `play.py --zero-actions/--scripted` 물리 검증. → [[experiments/exp_012_isaac_migration_phase2]]
 - [ ] **(Isaac Lab migration)** PX4 속도-스텝응답 Gazebo 캡처 세션(`vel_logger_v2.py` 신규, 7-포인트) → Isaac 컨트롤러 게인 검정. 현재 미검정(구조 일치, 게인 초기값). → [[research/isaac_velocity_controller]]
 - [ ] **(Isaac Lab migration)** `yolo_eval.py --calibrate` 첫 실행 → vision 캘리브레이션 v1(현재 v0=스펙 추정).
+- [ ] **(Isaac Lab migration, 게이트 조건부)** `feat/isaac-env-migration`(이 워크트리)에서 `ros2_ws/`/`gazebo_models`/PX4 파일 정리 — **jekyun(라이브 SAC)는 대상 아님, 절대 미삭제.** 위 2개 항목(env 스모크 통과 + PX4 스텝응답 캡처) 완료 전까지 보류(사용자 확인, 2026-07-03). → [[experiments/exp_012_isaac_migration_phase2]] §8
 - [x] **Vision 기반 RL 인프라 완성** — YOLO + SAC 시각 서보잉 파이프라인 구축
 - [x] **EKF East 반전 버그 수정** — proximity target + RL env reward target 좌표 수정
 - [x] **WandB `45l8vkw5` 100+ 에피소드 분석** → target_lost=1.0, EKF drift 확인 → 폐기

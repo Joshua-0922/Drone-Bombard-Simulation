@@ -113,7 +113,8 @@ type: index
 | RL 규칙 | `notes/research/rl_rules.md` |
 | VM 완전 복구 가이드 | `notes/Environment/README.md` |
 | 보상 함수 설계 | `notes/research/reward_design.md` |
-| 전체 시스템 아키텍처 | `notes/research/system_overview.md` |
+| 전체 시스템 아키텍처 (Gazebo/PX4/ROS2, `jekyun`) | `notes/research/system_overview.md` |
+| 전체 시스템 아키텍처 (Isaac Lab, `feat/isaac-env-migration`) | `notes/research/isaac_lab_architecture.md` |
 
 ---
 
@@ -137,7 +138,8 @@ type: index
 - [[research/phase1_plan]] — Phase 1 CCIP 기반 자율 접근 연구 계획 (8주, 5/8-6/30)
 - [[research/reward_design]] — 4-layer 보상 함수 (LaTeX 수식)
 - [[research/architecture]] — Method A (1-World-4-Payload) 아키텍처
-- [[research/system_overview]] — 전체 시스템 (패키지, 토픽, 좌표계, 브리지)
+- [[research/system_overview]] — 전체 시스템 (패키지, 토픽, 좌표계, 브리지) — `jekyun`(Gazebo/PX4/ROS2) 브랜치
+- [[research/isaac_lab_architecture]] — Isaac Lab 전체 구조 (`isaac_lab/` 레이아웃, 데이터 흐름, Gazebo 대비 구조 차이) — `feat/isaac-env-migration` 브랜치
 - [[research/rl_rules]] — RL 실험 규칙, WandB 메트릭, Known Failure Modes
 - [[research/ekf_east_reversal]] — ⚠️ RETRACTED: "EKF East 반전"은 오진이었음 (실제 PX4 East=+Gazebo East). 정정: [[coordinate-frames]] / [[daily/daily_2026-06-14]]
 - [[research/rtf_fps_analysis]] — RTF vs FPS 분석. RTF=2 최적, Python 루프 병목 규명

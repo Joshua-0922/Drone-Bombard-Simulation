@@ -13,7 +13,7 @@ wandb_run: N/A (not yet run — L4 driver required, not built)
 > 자체(YOLO obs + PX4 속도명령 + drop 스코어링)를 **하나의 env 파일**로 통합 이식 + PPO(rsl_rl)
 > 학습 코드 작성.
 
-관련: [[research/isaac_velocity_controller]] · [[research/rl_rules]] · [[experiments/exp_011_wobble_lpf_reward_damping]]
+관련: [[research/isaac_lab_architecture]] · [[research/isaac_velocity_controller]] · [[research/rl_rules]] · [[experiments/exp_011_wobble_lpf_reward_damping]]
 
 ---
 
@@ -119,3 +119,10 @@ isaac_lab/
   `isaac_velocity_controller.md` 캘리브레이션 결과 채우기
 - [ ] `yolo_eval.py --calibrate` 첫 실행 → vision 캘리브레이션 v1
 - [ ] 2048-env 처리량 프로브 → 본 학습 시작
+- [ ] **(게이트 조건부, 지금 실행 안 함) `ros2_ws/`/`gazebo_models`/PX4 관련 파일 정리** —
+  `feat/isaac-env-migration` 브랜치(이 워크트리)에서만, `jekyun`(라이브 SAC 학습 중)은 절대
+  손대지 않음. **선행 조건 둘 다 충족 후 진행**: ① L4 VM에서 Isaac env 스모크(Cartpole →
+  2-iter → zero-actions/scripted) 통과, ② 위 PX4 스텝응답 캡처 세션 완료(Isaac 컨트롤러
+  게인 검정 자료 확보 — Gazebo/PX4가 사라지면 재캡처 불가). 두 조건 충족 전 삭제 시
+  검정 불가능한 컨트롤러로 영구 고정되는 리스크. 사용자 요청(2026-07-03)으로 트래킹만
+  해두고 보류.

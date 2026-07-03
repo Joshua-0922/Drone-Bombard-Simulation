@@ -12,6 +12,17 @@ parity table (every v13 constant -> Isaac cfg field) and design rationale,
 and `notes/research/isaac_velocity_controller.md` for the velocity
 controller's PX4-gain mapping and calibration status.
 
+**Repo cleanup is deferred, on purpose**: `ros2_ws/`, `gazebo_models/`, and
+the rest of the PX4/ROS2/Gazebo workspace are still present in this branch
+(this worktree only — the `jekyun` branch's live SAC training is a separate
+checkout and is never touched by this migration). They stay until (1) the
+Isaac env passes its first L4 VM smoke test and (2) the PX4 velocity
+step-response capture session (needed to calibrate the controller in
+`drone_bombard_env.py`) has been run — deleting the Gazebo/PX4 stack first
+would make that capture impossible to redo. See
+`notes/experiments/exp_012_isaac_migration_phase2.md` §8 for the tracked
+follow-up.
+
 ## Layout
 
 ```
