@@ -345,9 +345,15 @@ class DroneBombardEnv(DirectRLEnv):
         if self._payload_marker is None:
             return
         pos_w = self._robot.data.root_pos_w
-        payload_pos = pos_w.clone()
-        payload_pos[:, 2] += self.cfg.drop.payload_mount_offset_z  # ride under the drone
-        self._payload_marker.visualize(translations=payload_pos)
+        # Only auto-follow the drone while the payload is attached. Once
+        # released (_payload_attached False, e.g. by record_episode.py's
+        # drop animation), external code drives the marker directly via
+        # self._payload_marker.visualize(...) and this call is a no-op for
+        # it — we skip re-snapping it to the drone every step.
+        if bool(self._payload_attached[0]):
+            payload_pos = pos_w.clone()
+            payload_pos[:, 2] += self.cfg.drop.payload_mount_offset_z  # ride under the drone
+            self._payload_marker.visualize(translations=payload_pos)
         target_pos = torch.zeros_like(pos_w)
         target_pos[:, :2] = self._target_xy + self.scene.env_origins[:, :2]
         target_pos[:, 2] = 0.01
@@ -503,11 +509,18 @@ class DroneBombardEnv(DirectRLEnv):
     # ------------------------------------------------------------------
     def _update_vision(self):
         vc = self.cfg.vision
-        pos_w = self._robot.data.root_pos_w
+        # env-LOCAL position: _target_xy is sampled relative to each env's
+        # origin, so the projection must see the drone in the same frame.
+        # Passing root_pos_w (world) here silently killed vision for every
+        # env away from the grid center (origins span hundreds of metres at
+        # 2048 envs -> target always projected off-frame -> conf==0 for the
+        # whole run). num_envs=1 verification never caught it because there
+        # the origin is ~0 and local == world.
+        pos_local = self._robot.data.root_pos_w - self.scene.env_origins
         quat_w = self._robot.data.root_quat_w
 
         u_px, v_px, visible = project_target_pinhole(
-            pos_w, quat_w, self._target_xy,
+            pos_local, quat_w, self._target_xy,
             vc.fx, vc.fy, vc.cx, vc.cy, vc.img_w, vc.img_h, vc.near_clip, vc.far_clip,
         )
         u_px = u_px + torch.randn_like(u_px) * vc.pixel_noise_std
@@ -534,6 +547,8 @@ class DroneBombardEnv(DirectRLEnv):
     # Observations
     # ------------------------------------------------------------------
     def _get_observations(self) -> dict:
+        self._update_markers()
+
         oc = self.cfg.obs
         pos = self._robot.data.root_pos_w - self.scene.env_origins
         vel = self._robot.data.root_lin_vel_w

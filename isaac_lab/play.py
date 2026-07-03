@@ -141,7 +141,15 @@ def run_policy(env, policy_path, episodes=10):
     policy = runner.get_inference_policy(device=env.unwrapped.device)
 
     obs, _ = env.reset()
-    n_done, n_success, finals = 0, 0, []
+    causes = ("success", "crash", "overspeed", "bad_attitude", "out_of_range",
+              "max_altitude", "overshoot", "stagnation", "timeout")
+    n_done = 0
+    cause_counts = {c: 0 for c in causes}
+    # d_xy readings taken after env.step() are post-reset (DirectRLEnv resets
+    # done envs inside step), so terminal distances must come from the env's
+    # own pre-reset snapshot, surfaced via extras["log"] — weighted by the
+    # size of each reset batch.
+    dxy_min_wsum, drop_err_wsum, near_miss_wsum, log_w = 0.0, 0.0, 0.0, 0
     while n_done < episodes:
         with torch.inference_mode():
             action = policy(obs)
@@ -149,10 +157,23 @@ def run_policy(env, policy_path, episodes=10):
         done = dones.bool()
         if done.any():
             f = env.unwrapped._done_flags
-            n_done += int(done.sum().item())
-            n_success += int(f["success"][done].sum().item())
-            finals.extend(env.unwrapped._current_d_xy()[done].tolist())
-    print(f"[policy] episodes={n_done} success_rate={n_success/max(n_done,1):.2%} mean_final_d_xy={sum(finals)/max(len(finals),1):.2f}")
+            n = int(done.sum().item())
+            n_done += n
+            for c in causes:
+                cause_counts[c] += int(f[c][done].sum().item())
+            log = info.get("log", {}) if isinstance(info, dict) else {}
+            if "Episode_Metric/d_xy_min" in log:
+                dxy_min_wsum += float(log["Episode_Metric/d_xy_min"]) * n
+                drop_err_wsum += float(log.get("Episode_Metric/drop_impact_error_m", 0.0)) * n
+                near_miss_wsum += float(log.get("Episode_Termination/timeout_near_miss", 0.0)) * n
+                log_w += n
+    print(f"[policy] episodes={n_done} success_rate={cause_counts['success']/max(n_done,1):.2%}")
+    print(f"[policy] termination causes: " + ", ".join(
+        f"{c}={cause_counts[c]}" for c in causes if cause_counts[c] > 0))
+    if log_w:
+        print(f"[policy] mean d_xy_min={dxy_min_wsum/log_w:.3f} m | "
+              f"mean drop_impact_error={drop_err_wsum/log_w:.3f} m | "
+              f"timeout_near_miss_rate={near_miss_wsum/log_w:.2%}")
 
 
 def main():

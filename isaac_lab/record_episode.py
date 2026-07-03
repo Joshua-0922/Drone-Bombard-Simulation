@@ -67,8 +67,13 @@ def main():
     if args_cli.hold:
         env_cfg.reward.success_radius = 0.0        # never terminate on "success"
         env_cfg.termination.stagnation_window = 10 ** 9  # effectively disable stagnation
-    env_cfg.viewer.eye = (14.0, -14.0, 12.0)
-    env_cfg.viewer.lookat = (0.0, 0.0, 6.0)
+    # follow-camera: the Crazyflie mesh is ~10cm (we only override mass/inertia,
+    # not visual scale), invisible at a wide fixed-world framing — track the
+    # drone instead so it's always in frame regardless of randomized spawn/target.
+    env_cfg.viewer.origin_type = "asset_root"
+    env_cfg.viewer.asset_name = "robot"
+    env_cfg.viewer.eye = (2.2, -2.2, 1.1)     # offset from the drone (close — Crazyflie mesh is ~10cm)
+    env_cfg.viewer.lookat = (0.0, 0.0, -0.3)  # look slightly down/ahead of the drone
     env_cfg.viewer.resolution = (1280, 720)
 
     env = gym.make(args_cli.task, cfg=env_cfg, render_mode="rgb_array")
@@ -126,6 +131,43 @@ def main():
             causes = [k for k, v in base._done_flags.items() if bool(v.any())]
             print(f"[record] episode ended at step {step}: {causes}", flush=True)
             break
+
+    # --- drop animation: analytic free-fall from the release point to the
+    # ground (same t=sqrt(2H/g) ballistic model _predicted_impact_from_snapshot
+    # uses for CCIP scoring), purely visual — the drone/physics are not
+    # stepped further, only the payload marker is moved and re-rendered.
+    release_pos = (base._robot.data.root_pos_w[0] - base.scene.env_origins[0]).clone()
+    release_vel = base._robot.data.root_lin_vel_w[0, :2].clone()
+    t_fall = float(torch.sqrt(torch.clamp(2.0 * release_pos[2] / 9.81, min=0.0)))
+    n_drop_frames = max(int(t_fall * args_cli.fps), 1)
+    base._payload_attached[:] = False
+    print(f"[record] payload release at alt={release_pos[2].item():.2f}m, "
+          f"t_fall={t_fall:.2f}s -> {n_drop_frames} drop frames", flush=True)
+    # switch the follow-camera off asset_root (it would keep re-snapping to the
+    # now-frozen drone every tick, fighting our manual updates below) so it can
+    # track the falling payload instead.
+    cam_ctrl = base.viewport_camera_controller
+    cam_ctrl.cfg.origin_type = "world"
+    cam_ctrl.viewer_origin = torch.zeros(3, device=device)
+    cam_offset = torch.tensor([1.8, -1.8, 0.9], device=device)
+    for i in range(n_drop_frames + 3):  # a few extra frames resting on the ground
+        t = min(i / args_cli.fps, t_fall)
+        drop_xy = release_pos[:2] + release_vel * t
+        drop_z = max(release_pos[2].item() - 0.5 * 9.81 * t * t, 0.05)
+        payload_pos = torch.zeros(1, 3, device=device)
+        payload_pos[0, :2] = drop_xy + base.scene.env_origins[0, :2]
+        payload_pos[0, 2] = drop_z
+        base._payload_marker.visualize(translations=payload_pos)
+        cam_ctrl.update_view_location(
+            eye=(payload_pos[0] + cam_offset).tolist(), lookat=payload_pos[0].tolist()
+        )
+        # env.render() alone reads a stale camera pose here — outside of env.step()'s
+        # own render-product scheduling, the Replicator annotator only picks up a
+        # sim.set_camera_view() move after an explicit app tick.
+        simulation_app.update()
+        frame = base.render(recompute=True)
+        if frame is not None:
+            frames.append(np.asarray(frame))
 
     out_path = os.path.join(args_cli.out, "drone_bombard_episode.mp4")
     if frames:

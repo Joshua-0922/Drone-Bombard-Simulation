@@ -14,7 +14,7 @@ type: index
 
 ## 현재 상태 (2026-07-03)
 
-- **병행 트랙 — Isaac Lab migration (`feat/isaac-env-migration` 브랜치, `/opt/drone-bombard/isaac-worktree`):** Phase 1 인프라(Dockerfile `isaac-sim:5.1.0`+Isaac Lab v2.3.2+rsl_rl, `.dockerignore`/`requirements-deploy.txt`/`entrypoint.sh`/`startup.sh`) 완료했으나 미빌드·미실행(GPU driver 535<580 제약). **Phase 2 완료(코드):** `isaac_lab/`에 `math_utils.py`(순수 torch, isaaclab 무의존) + `drone_bombard_env.py`(DirectRLEnv) + PPO(rsl_rl) train/play/yolo_eval — YOLO obs+PX4 속도명령(LPF 포함)+drop 스코어링 통합 포팅. v13/v15 obs(14)·action(4)·리워드·터미네이션 상수 그대로 이식, CCIP residual/DR 등 Phase 2 훅은 비활성 스텁 wiring. **`pytest test_math.py` 29/29 통과**(로컬, isaaclab 미설치). L4 VM 미기동 → env 스모크/학습 미실행. 상세: [[experiments/exp_012_isaac_migration_phase2]] / [[research/isaac_velocity_controller]] / [[daily/daily_2026-05-30]].
+- **병행 트랙 — Isaac Lab migration (`feat/isaac-env-migration` 브랜치, `/opt/drone-bombard/isaac-worktree`):** **exp_013 — 첫 프로덕션 PPO 학습 완주 + 진단 완료 (2026-07-03).** 2048 envs×1000 iters(65.5M steps, 43분, wandb `wcjklw7a`) → **deterministic 200-ep eval = 36%**, d_xy_min 1.4m plateau. 시작 직후 **비전 사멸 버그**(env-origin 프레임 혼용, [[errors/err_20260703_vision_env_origin_frame]]) 발견·수정 후 재기동. 실패 원인 3종 규명: ①analytic conf 거리감쇠 누락→고도 상승 farming(max_alt 33%, Rule 17) ②farmer(+225)>finisher(+121) 보상 불균형(Rule 18a) ③noise_std 0.8→3.92 폭주(Rule 18b). **다음: exp_014 = conf 거리감쇠 + reward_success 300 + entropy_coef 0, fresh.** 온보딩 문서 3종(`isaac_lab_reward_tuning`/`wandb_guide`/`experiment_workflow`) 신설. 상세: [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] / [[research/isaac_ppo_tuning_recommendations]].
 - **메인 트랙 — SAC (jekyun 브랜치, Gazebo/PX4):**
 
 ## 현재 상태 (2026-07-01)
@@ -92,11 +92,13 @@ type: index
 | 010 (eval) | rl_yolo_v14_softreset (byxyaf4d, 195K) | 20 ep | ✅ 완료 | **195K eval = 65%(13/20)**, v13 80% 대비 회귀(실패 전부 final-approach stagnation). EKF 귀책 0. **Soft reset 장기검증 ✅**(3096 resets, soft ~91%, EKF bounded) → Rule 14 검증완료. 비디오 3/3 success 캡처. commit 결정 대기. → [[experiments/exp_010_byxyaf4d_v14_195k_eval]] |
 | 011 | wobble A/B + v15_bc_stable | eval×2 + dry-run + 0→300K | ▶️ 학습 중 | **RL wobble = smoothness-control 문제 확정.** LPF A/B: 속도명령 jerk RMS 2.92→1.61(−45%), 평균 속력 불변. 교정(B 근접 속도 댐핑 + C smoothness↑ + LPF 0.4) dry-run PASS → v15 fresh 기동(v14 백업). → [[experiments/exp_011_wobble_lpf_reward_damping]] / [[research/control_smoothness_wobble]] / Rule 15 |
 | 012 | isaac_migration_phase2 (`feat/isaac-env-migration`) | 코드만 (미학습) | ✅ 코드 완료 | **Isaac Lab env+PPO 이식.** `isaac_lab/` 신설, v13/v15 obs·action·리워드·터미네이션 상수 그대로 포팅(parity 표 포함), SAC→PPO(rsl_rl), target/spawn 랜덤화 신규, vision=analytic+YOLO-eval 이원화. `pytest test_math.py` 29/29 통과. L4 VM 미기동 → env 스모크 미실행. → [[experiments/exp_012_isaac_migration_phase2]] / [[research/isaac_velocity_controller]] |
+| 013 | exp013_v2_visionfix (wcjklw7a, Isaac PPO) | 65.5M steps (2048 envs×1000 iters) | ✅ 완료 | **Isaac 첫 완주 학습 + 200-ep deterministic eval = 36%.** v1은 비전 사멸 버그(env-origin 프레임 혼용)로 중단·수정 후 재기동. 곡선 plateau(iter ~700), d_xy_min 1.4m 정체. 실패 분해: max_altitude 33%(analytic conf 거리감쇠 누락 → 상승 farming, Rule 17) + crash 27%; farmer>finisher 보상 불균형(Rule 18a); noise_std 0.8→3.92 폭주(Rule 18b). **다음: exp_014 = conf 거리감쇠+success 300+entropy 0, fresh.** → [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] / [[research/isaac_ppo_tuning_recommendations]] / [[errors/err_20260703_vision_env_origin_frame]] |
 
 ## 에러 현황
 
 | 파일 | 상태 | 요약 |
 |------|------|------|
+| [[errors/err_20260703_vision_env_origin_frame]] | ✅ 해결 | Isaac `_update_vision` env-origin 프레임 혼용 → 벡터화 학습에서 비전 채널 완전 사멸(conf≡0). num_envs=1 검증으론 구조적으로 못 잡음 |
 | [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] | ✅ 해결 | armdiag dry-run이 YAML 중복 키로 v13 30K 체크포인트 파괴. 재발방지: startup `Checkpoints:` 로그로 격리 검증 |
 | [[errors/err_20260615_cruise-timeout-arming]] | ✅ 해결 | CRUISE 타임아웃 = teleport 후 PX4 arm 거부 (stale EKF) |
 | [[errors/err_20260320_physics_explosion]] | ✅ 해결 | ODE 물리 폭발 3중 방어 |
@@ -115,6 +117,7 @@ type: index
 | 보상 함수 설계 | `notes/research/reward_design.md` |
 | 전체 시스템 아키텍처 (Gazebo/PX4/ROS2, `jekyun`) | `notes/research/system_overview.md` |
 | 전체 시스템 아키텍처 (Isaac Lab, `feat/isaac-env-migration`) | `notes/research/isaac_lab_architecture.md` |
+| Isaac Lab 다른 연구자용 온보딩 (보상/하이퍼파라미터/WandB/실험 절차) | `notes/research/isaac_lab_reward_tuning.md` · `notes/research/isaac_lab_wandb_guide.md` · `notes/research/isaac_lab_experiment_workflow.md` |
 
 ---
 
@@ -150,6 +153,10 @@ type: index
 - [[research/reset_throughput_bottleneck]] — 리셋 병목 = teleport 후 EKF 재수렴(param으론 못 고침). soft reset(teleport 회피)으로 ~3.9× (Rule 14).
 - [[research/control_smoothness_wobble]] — RL 인수 후 wobble = smoothness-control 문제(정책, 탐험 아님). LPF+근접 속도댐핑+smoothness 가중 (Rule 15).
 - [[research/isaac_velocity_controller]] — Isaac Lab 캐스케이드 속도 컨트롤러, PX4 게인 매핑. **PX4 대비 미검정**(게인 초기값) — 7-포인트 스텝응답 검정 계획.
+- [[research/isaac_lab_reward_tuning]] — Isaac Lab 보상·하이퍼파라미터 레퍼런스 (다른 연구자용 온보딩). cfg 필드별 의미·튜닝 시 주의(overshoot moat, fresh-start 판단 등).
+- [[research/isaac_lab_wandb_guide]] — Isaac Lab WandB 메트릭 가이드. `Episode_Termination/*`·`Episode_Reward/*` 등 신규 네임스페이스, Gazebo 트랙과 대조표. 첫 실 학습 전이라 rsl_rl 표준 키(§5)는 미검증 표시.
+- [[research/isaac_lab_experiment_workflow]] — Isaac Lab 실험 실행 절차 (dry-run 사다리, fresh/resume 판단, WandB run 관리, 실험 로깅).
+- [[research/isaac_ppo_tuning_recommendations]] — exp_013 결론: 무엇을 바꿔야 하는가 (conf 거리감쇠·reward_success 300·entropy 0 우선; 스폰 고도는 유지). Rule 17·18의 근거 문서.
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
@@ -165,8 +172,10 @@ type: index
 - [[experiments/exp_010_byxyaf4d_v14_195k_eval]] — v14 195K eval 65%(13/20, v13 회귀, final-approach stagnation) + soft reset 장기검증(3096 resets, Rule 14 완료) + 비디오 산출물.
 - [[experiments/exp_011_wobble_lpf_reward_damping]] — RL wobble = smoothness-control 문제 확정. LPF A/B(jerk RMS −45%) + 보상 댐핑(B+C) → v15 fresh 기동.
 - [[experiments/exp_012_isaac_migration_phase2]] — Isaac Lab env+PPO 이식. v13/v15 상수 parity 이식, `pytest test_math.py` 29/29 통과, L4 VM 미기동.
+- [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] — Isaac 첫 완주 PPO(65.5M steps) + eval 36%. 비전 사멸 버그 수정, 상승-farming attractor·보상 불균형·noise_std 폭주 규명 → Rule 17·18.
 
 ### 에러 (errors/)
+- [[errors/err_20260703_vision_env_origin_frame]] — Isaac `_update_vision` world/env-local 프레임 혼용 → 벡터화 학습 비전 완전 사멸. "정확히 0.0000인 보상 성분 = 채널 사멸 신호" 규칙.
 - [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] — armdiag dry-run이 YAML 중복 `checkpoint_dir` 키로 v13 30K 체크포인트 파괴. fresh-start 삭제 footgun + 격리 검증 규칙.
 - [[errors/err_20260615_cruise-timeout-arming]] — CRUISE 타임아웃 = teleport 후 PX4 arm 거부 (stale EKF). arm 게이팅 + early-bail.
 - [[errors/err_20260320_physics_explosion]] — Gazebo ODE 물리 폭발 3중 방어

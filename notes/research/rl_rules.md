@@ -320,6 +320,47 @@ Gazebo→Isaac Lab처럼 다른 시뮬레이터로 보상/제어 로직을 이�
 
 ---
 
+## Rule 17 — 관측/보상용 센서 근사 모델은 "실패 특성"까지 이식하라 (성공 특성만 이식 금지)
+
+> **상세:** [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] §4a · [[research/isaac_ppo_tuning_recommendations]]
+
+analytic vision(핀홀 투영 + conf 0.73-0.95)은 YOLO의 **성공 특성**(탐지 시 픽셀/conf 분포)만
+이식하고 **실패 특성**(apparent size ∝ 1/거리 → 원거리 conf 붕괴, Rule 13)을 누락했다.
+그 결과 "고도를 올리면 centering이 기하적으로 쉬워지는데(`u_n ∝ x/z`) conf는 안 깎이는"
+보상 지형이 생겨, 정책의 33%가 25m 천장까지 **상승 farming**으로 수렴했다 — 실제 YOLO
+환경에선 존재할 수 없는 정책이다.
+
+**필수 규칙:**
+- 센서를 근사로 대체하면 그 센서가 **언제 못 보는지**(거리·각도·조명 감쇠)를 같이 모델링하라.
+  누락된 실패 모드는 곧 착취 가능한 보상 지형이다.
+- 근사 모델 기반 보상이 있으면 **그 보상을 극대화하는 퇴화 정책이 실물 센서에서도 가능한지**
+  사고실험으로 검증하라 (여기선 "무한 상승 centering" — 실물 YOLO면 conf=0이라 불가능).
+- 감쇠 커브는 추측 말고 **실측 캘리브레이션**(`yolo_eval.py --calibrate`)으로.
+- 종단 실패 분포에서 특정 guard(max_altitude 등)가 지배하면 "천장이 낮다"가 아니라
+  "**그쪽으로 가는 것이 이득인 보상 지형**"을 먼저 의심하라.
+
+---
+
+## Rule 18 — 종단 보상은 shaping 스트림을 지배해야 한다 + PPO noise_std는 감시 대상
+
+> **상세:** [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] §4b/4c
+
+**(a) Farmer-vs-finisher 수지 검산.** 보상 설계/변경 시 반드시 계산: "성공 반경 직전에서
+per-step shaping(비전+근접)을 에피소드 끝까지 farming한 리턴" vs "즉시 완주 리턴".
+exp_013: farmer +225 > finisher +121 → 정책이 마무리를 안 배우는 것이 **합리적**이었다.
+Gazebo v14의 final-approach stagnation(0.5-0.8m 정체)도 같은 병인 — SAC는 증상으로,
+PPO는 체계적 착취로 나타난다. 종단 보상은 farming 스트림 총합의 ≥1.5×로 설정
+(`reward_success` 100→300).
+
+**(b) PPO noise_std 폭주 감시.** 액션 파이프라인에 스무딩(clip→rate_limit→LPF)이 있으면
+가우시안 노이즈가 plant에서 필터링되어 **entropy bonus를 견제할 task 손실이 없다** →
+σ 단조 폭주(exp_013: 0.8→3.92, 액션이 포화-랜덤화되어 rollout 통계 전체 오염).
+- `Mean action noise std`가 중반까지 init값의 ~1.5×를 넘으면 개입 (entropy_coef ↓ 또는 0).
+- rollout 지표가 나쁠 때 **deterministic eval로 정책 평균과 노이즈를 분리**한 뒤 판단하라
+  — exp_013에선 둘 다 36%로 같았다(= 노이즈 문제가 아니라 정책 문제라는 판정 근거).
+
+---
+
 > **Phase 1 전체 계획:** [[research/phase1_plan]] — CCIP 기반 자율 접근, 8주, 14개 실험
 
 ---

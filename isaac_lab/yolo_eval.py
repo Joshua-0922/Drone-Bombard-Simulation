@@ -120,10 +120,12 @@ def run_calibrate(env, model, out_csv, range_bins, angle_bins):
             rgb = camera.data.output["rgb"]
             u_yolo, v_yolo, conf_yolo, detected = _run_yolo(model, rgb)
 
-            pos_w = env.unwrapped._robot.data.root_pos_w
+            # env-LOCAL frame: _target_xy is per-env-origin relative, so the
+            # drone position must be too (same fix as DroneBombardEnv._update_vision).
+            pos_local = env.unwrapped._robot.data.root_pos_w - env.unwrapped.scene.env_origins
             quat_w = env.unwrapped._robot.data.root_quat_w
             u_geo, v_geo, visible = project_target_pinhole(
-                pos_w, quat_w, target_xy, vc.fx, vc.fy, vc.cx, vc.cy, vc.img_w, vc.img_h, vc.near_clip, vc.far_clip,
+                pos_local, quat_w, target_xy, vc.fx, vc.fy, vc.cx, vc.cy, vc.img_w, vc.img_h, vc.near_clip, vc.far_clip,
             )
 
             for i in range(n):

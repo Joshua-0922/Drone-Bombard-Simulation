@@ -8,13 +8,20 @@
 
 **업데이트:** 2026-07-03
 
-> **🔀 병행 트랙 (2026-07-03): Isaac Lab migration Phase 2 코드 완료** — 이 로그의 SAC/Gazebo
-> 트랙과 별개로 `feat/isaac-env-migration` 브랜치(`/opt/drone-bombard/isaac-worktree`)에서
-> `isaac_lab/`(env + PPO/rsl_rl 학습 코드) 이식 완료. v13/v15 obs·action·reward·termination
-> 상수 그대로 parity 이식, `pytest test_math.py` 29/29 통과(isaaclab 미설치 로컬 검증). L4 Spot
-> VM 미기동(GPU driver 535<580) → 실제 env 스모크/학습 미실행. **이 트랙은 jekyun의 SAC 학습에
-> 영향 없음** (별도 워크트리, 별도 브랜치). → [[experiments/exp_012_isaac_migration_phase2]] /
-> [[research/isaac_velocity_controller]] / Rule 16
+> **🔀 병행 트랙 (2026-07-03 저녁): Isaac Lab exp_013 — 첫 프로덕션 PPO 학습 완주·진단 완료** —
+> `feat/isaac-env-migration` 브랜치. 2048 envs×1000 iters(65.5M steps, 43분, wandb `wcjklw7a`)
+> → **deterministic 200-ep eval = 36%**, d_xy_min 1.4m plateau(게이트 0.8 밖). 기동 직후
+> **비전 사멸 버그**(`_update_vision` env-origin 프레임 혼용 → 벡터화 시 conf≡0; `yolo_eval.py`
+> 동일) 발견·수정 후 재기동. 실패 3원인 규명: ①analytic conf 거리감쇠 누락→고도 상승
+> farming(max_alt 33%, **Rule 17**) ②farmer(+225)>finisher(+121) 보상 불균형 — Gazebo v14
+> final-approach stagnation과 동일 병인(**Rule 18a**) ③noise_std 0.8→3.92 폭주(**Rule 18b**).
+> **다음: exp_014 = conf 거리감쇠 + reward_success 300 + entropy_coef 0, fresh.** 온보딩 문서
+> 3종(reward_tuning/wandb_guide/experiment_workflow) 신설. jekyun SAC 트랙 영향 없음.
+> → [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] / [[research/isaac_ppo_tuning_recommendations]] /
+> [[errors/err_20260703_vision_env_origin_frame]]
+>
+> (이전 상태 — Phase 2 코드 이식·parity·29/29 테스트: [[experiments/exp_012_isaac_migration_phase2]] /
+> [[research/isaac_velocity_controller]] / Rule 16)
 
 > **▶️ 활성 학습 (2026-07-01): `rl_yolo_v15_bc_stable`** — Fresh 0→300K 진행 중 (tmux `rl_train`, wandb online). **RL wobble 교정** 적용: eval `deterministic=True`라 wobble=학습된 bang-bang 정책(탐험 노이즈 아님). LPF A/B로 **PX4 수신 속도명령 jerk RMS 2.92→1.61(−45%), 평균 속력 불변** → smoothness-control 문제 확정. 교정 = (B) 근접-게이팅 속도 댐핑 `w_vel=0.15/vel_damp_radius=4` + (C) `w_ang_vel 0.05→0.15`·`w_action_smooth 0.05→0.20` + 로직 LPF `velocity_lpf_alpha=0.4`(학습==배포). dry-run PASS(크래시 0). **Fresh Start가 v14 5체크포인트 삭제 → `rl_checkpoints/v14_backup/`에 백업.** → [[experiments/exp_011_wobble_lpf_reward_damping]] / [[research/control_smoothness_wobble]] / Rule 15
 
@@ -150,3 +157,5 @@
 | 2026-06-23 | rl_yolo_v14_softreset (byxyaf4d, stop @196.5K) | 196.5K/500K(~39%), reward plateau | **plateau stop + 195K eval = 65%(13/20).** v13 80% 대비 회귀(실패 전부 final-approach stagnation). EKF 귀책 0. **Soft reset 장기검증 ✅**(3096 resets, soft ~91%, EKF bounded) → Rule 14 검증완료. 비디오 3/3 success 캡처. 회귀=미성숙(39% budget). commit 결정 대기. → [[experiments/exp_010_byxyaf4d_v14_195k_eval]] |
 | 2026-07-01 | rl_yolo_v15_bc_stable | 진행 중 (fresh 0→300K) | **wobble 교정(LPF+B+C) 적용 fresh run.** jerk RMS 2.92→1.61(−45%) A/B 확정 후 기동. → [[experiments/exp_011_wobble_lpf_reward_damping]] / Rule 15 |
 | 2026-07-03 | isaac_migration_phase2 (`feat/isaac-env-migration`, 병행 트랙) | 0 (코드만) | **Isaac Lab env+PPO 이식.** v13/v15 parity, `pytest test_math.py` 29/29 통과, L4 VM 미기동. jekyun SAC 학습과 별개 브랜치/워크트리. → [[experiments/exp_012_isaac_migration_phase2]] |
+| 2026-07-03 | exp013_v1_baseline (Isaac PPO, 병행 트랙, 중단 @iter 106) | ~7M steps | **비전 사멸 버그 발견·중단.** `rew_vision`≡0.0000 → `_update_vision` env-origin 프레임 혼용(2048-env grid에서 타겟 항상 프레임 밖). 수정+수치검증(visible 0%→63%). → [[errors/err_20260703_vision_env_origin_frame]] |
+| 2026-07-03 | **exp013_v2_visionfix (wcjklw7a, Isaac PPO, 병행 트랙)** | 65.5M steps (1000 iters 완주) | **첫 완주 + deterministic 200-ep eval = 36%.** plateau @iter 700, d_xy_min 1.4m 정체. 실패: max_alt 33%(상승 farming, Rule 17)+crash 27%. farmer(+225)>finisher(+121) 불균형(Rule 18a), noise_std 0.8→3.92 폭주(Rule 18b). 다음=exp_014(conf 거리감쇠+success 300+entropy 0, fresh). → [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] / [[research/isaac_ppo_tuning_recommendations]] |

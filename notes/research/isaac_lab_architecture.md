@@ -134,6 +134,16 @@ policy action [4] (±1, ENU vx,vy,vz,yaw_rate)
 [[experiments/exp_012_isaac_migration_phase2]] §8에 추적 중. **대상은 이 워크트리
 (`feat/isaac-env-migration`)뿐 — `jekyun`(라이브 SAC 학습 체크아웃)은 절대 정리 대상 아님.**
 
+## 다른 연구자를 위한 온보딩 문서
+
+이 브랜치에서 보상 함수/하이퍼파라미터를 바꿔가며 실험할 연구자는 아래 3개 문서를
+순서대로 참고:
+
+- [[research/isaac_lab_reward_tuning]] — 어떤 cfg 필드를 바꾸면 되는지 (보상 가중치,
+  순항 고도=`spawn_alt_range`, 속도 스케일 등)
+- [[research/isaac_lab_experiment_workflow]] — dry-run → fresh/resume 판단 → 실행 절차
+- [[research/isaac_lab_wandb_guide]] — 결과를 WandB에서 어떻게 읽는지
+
 ## 관련 링크
 
 - [[experiments/exp_012_isaac_migration_phase2]] — 이식 작업 상세, parity 표, 검증 결과
