@@ -28,18 +28,36 @@ USD 에셋(Crazyflie 쉘)은 순수 시각/충돌 형상일 뿐 — 질량/관�
 실측값(2.07kg, diag(0.0217,0.0217,0.040))으로 덮어씀. x500 SDF/URDF의 실제
 USD 변환은 **의도적으로 보류** — per-rotor 액추에이션으로 전환할 때만 필요.
 
+## ⚠️ 실행 검증에서 잡힌 치명 버그 — rate loop 관성항 누락 (2026-07-03, 수정됨)
+
+첫 실제 실행(무학습 1 에피소드, isaac-sim:5.1.0)에서 zero-action인데도 드론이 step 0에
+즉시 스핀아웃(overspeed+bad_attitude). CTRL DBG 덤프로 원인 확정: rate loop이
+`torque = k_rate · rate_err`를 적용했는데, `k_rate·rate_err`는 목표 **각가속도**(단위 1/s)이지
+토크가 아님. 이 기체 관성 ~0.022 kg·m²에선 `α = τ/I`로 **~46× 과토크** → 각가속도 폭주.
+덤프 수치: 자세오차 0.088 rad(정상)인데 `torque_b=[10.28,1.31,0] N·m` → α≈474 rad/s².
+
+**수정: `torque = inertia_diag · (k_rate · rate_err)`** (τ=Iα, 자이로 커플링은 무시). 수정 후
+`torque_b≈[0.05,0.03,0] N·m`, 148스텝 안정 호버 확인. **교훈**: Isaac은 rigid-body에 직접 토크를
+가하므로 컨트롤러가 관성을 명시적으로 곱해야 한다(PX4는 mixer가 흡수하던 부분). 게인
+`k_att`(1/s)·`k_rate`(1/s)는 관성 무관 물리 단위로 유지.
+
 ## 캐스케이드 구조 (`_run_velocity_controller`, `drone_bombard_env.py`)
 
 ```
 v_filt (LPF 출력, 20Hz)
   → 속도 P: a_des = kp_vel * (v_filt - v_actual), accel clamp
   → f_des = m*(a_des + g·ẑ); tilt clamp 35°
-  → thrust_mag = f_des·thrust_dir (0..max_thrust)
-  → 자세 오차: rot_err = axis(body_z, thrust_dir)*angle + yaw_err
-  → 자세 P: rate_sp = k_att * rot_err
-  → rate P: torque = k_rate * (rate_sp - ω)
-  → set_external_force_and_torque(thrust_mag·body_z, torque)
+  → thrust_mag = f_des·body_z (world) (0..max_thrust)     ← body +Z 성분 투영
+  → 자세 오차: rot_err_w = axis(body_z, thrust_dir)*angle;  rot_err_b = R⁻¹·rot_err_w
+  → 자세 P: rate_sp = k_att · rot_err_b  (yaw_z = 직접 yaw_rate 명령)
+  → rate P: torque = inertia_diag · (k_rate · (rate_sp - ω))   ← τ=Iα (§관성항 버그 참조)
+  → nan_to_num 가드 → permanent_wrench_composer.set_forces_and_torques(
+        body_ids=find_bodies("body"), forces=[0,0,thrust_mag] (BODY), torques=torque_b (BODY))
 ```
+
+> API 주의: v2.3.2 stock quadcopter env와 동일하게 `permanent_wrench_composer.
+> set_forces_and_torques`(BODY 프레임) 사용. `set_external_force_and_torque`가 아님.
+> 추력은 body +Z로만(로터 물리), 기체가 틸트해 방향 조정.
 
 ## 초기 게인 (미검정)
 

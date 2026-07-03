@@ -42,25 +42,32 @@ isaac_lab/
   tests/test_math.py        pure-torch unit tests (no isaaclab needed)
 ```
 
-## IMPORTANT: this dev box cannot run Isaac Sim
+## Status: VERIFIED running (physics) — rendering needs driver >= 580
 
-Isaac Sim 5.1.0 requires GPU driver >= 580.65.06; this dev box has 535.309.
-All code here was written and unit-tested (`tests/test_math.py`, 29/29
-passing) without ever importing `isaaclab` — verified by running the tests
-against a plain torch install (this box's `drone-bombard-harmonic` Gazebo
-container has torch 2.4.1 and no isaaclab). Actually running the
-environment requires the L4 Spot VM (`l4-spot`, `asia-east1-a`) with the
-`isaac-lab` image built from `drone_drop_system/docker/Dockerfile`.
+**The env was executed live** on isaac-sim:5.1.0 (2026-07-03) and passed a
+one-episode, no-training verification (`verify_one_episode.py`): env
+constructs the USD scene, resets to a 14-dim obs, the drone **hovers stably
+for ~148 steps**, obs/reward/termination are all finite (no NaN), and the
+stagnation guard fires correctly. That live run also fixed the real
+env/controller bugs the pure-math unit tests can't reach (see
+`notes/experiments/exp_012_isaac_migration_phase2.md` §6b) — most notably a
+missing inertia term in the rate-loop torque.
 
-**Caveat**: because the isaaclab-dependent code in `drone_bombard_env.py`
-(scene setup, actuation, Articulation data access) could not be executed
-against a real Isaac Lab v2.3.2 install, some API call names (e.g.
-`write_root_pose_to_sim`, `write_root_velocity_to_sim`, `root_physx_view`
-mass/inertia overrides) are written from general Isaac Lab API knowledge
-and may need small name/signature fixups on first run against the actual
-v2.3.2 API surface. This is expected and should be the first thing checked
-if the env-smoke step below fails at import/reset rather than at a
-numerical/behavioral issue.
+**What still needs the L4 Spot VM**: RTX **rendering** — cameras, viewport,
+GUI. Isaac Sim 5.1.0 requires GPU driver >= 580.65.06; the current dev box
+has 535, so the RTX renderer will not initialize ("rtx driver verification
+failed"). Physics/CUDA is unaffected (that's what the verification ran on),
+but any visual output — `play.py --with_camera`, `yolo_eval.py`, a GUI
+session — requires the L4 Spot VM (`l4-spot`, `asia-east1-a`, driver >= 580)
+with the `isaac-lab` image built from `drone_drop_system/docker/Dockerfile`.
+
+To reproduce the headless verification anywhere with a working install:
+```bash
+./isaaclab.sh -p verify_one_episode.py --headless --enable_cameras --num_steps 300
+# or, unbuffered with the true exit code:
+/isaac-sim/python.sh verify_one_episode.py --headless --enable_cameras --num_steps 300
+```
+(`tests/test_math.py` still runs with just torch, no isaaclab: 29/29 passing.)
 
 ## Running on the L4 Spot VM
 
