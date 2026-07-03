@@ -298,6 +298,28 @@ throughput ~3.9×, 32연속 soft reset에서 EKF d_xy 안정(4.5–5.8m, 발산 
 
 ---
 
+## Rule 16 — 시뮬레이터 이식 시 plant/reward parity는 상수가 아니라 "타이밍+메커니즘"까지 검증
+
+Gazebo→Isaac Lab처럼 다른 시뮬레이터로 보상/제어 로직을 이식할 때, **값(상수)이 같다고 plant가
+같다는 보장이 없다.** 세 가지를 반드시 소스에서 재확인:
+
+1. **제어 주기 정합성:** 정책 스텝 Hz, 내부 필터(LPF 등) tick 주기, 이산 재귀식이 원본과
+   정확히 일치해야 한다. `decimation×sim.dt`가 원래 정책 Hz와 다르면 정책은 **다른 plant를
+   학습**하게 되고, 이후 성능 비교는 시뮬레이터 차이가 아니라 이 confound로 오염된다.
+2. **가드/게이트의 "의도된 dormancy"를 버그로 착각하지 말 것:** 새 환경에서 값이 도달 불가능해
+   보이는 종단 조건은 원본 소스에서 실제로 같은 이유로 dormant인지 먼저 확인(예: overshoot
+   guard의 arm_radius < success_radius — Rule 10의 의도된 설계, curriculum 전환 시 활성화).
+   확인 없이 "고쳐서" arm_radius를 낮추면 Rule 10이 막았던 바로 그 실패 모드(정상 접근 오탐)를
+   재도입한다.
+3. **미검정 컴포넌트는 명시적으로 라벨링:** 원본 시뮬레이터의 내부 루프(PX4 컨트롤러 등)를
+   근사하는 새 컴포넌트(캐스케이드 컨트롤러 게인 등)는 실측 대조 전까지 "구조적으로 일치,
+   미검정"으로 문서화 — 조용히 초기값을 최종값처럼 취급하면 이후 행동 비교가 이 미검정
+   컴포넌트의 오차인지 실제 정책/보상 차이인지 구분 불가능해진다.
+
+→ [[experiments/exp_012_isaac_migration_phase2]] / [[research/isaac_velocity_controller]]
+
+---
+
 > **Phase 1 전체 계획:** [[research/phase1_plan]] — CCIP 기반 자율 접근, 8주, 14개 실험
 
 ---

@@ -32,6 +32,25 @@ mkdir -p \
   "${CACHE_ROOT}/glcache" \
   "${CACHE_ROOT}/computecache"
 
+# --- Isaac Lab Phase 2 (drone_bombard): repo mount + log/checkpoint dir ---
+# Code is mounted, not baked into the image, so isaac_lab/ iterates without
+# a rebuild+push. See isaac_lab/README.md for the full run procedure.
+REPO_ROOT="/opt/drone-bombard/Drone-Bombard-Simulation"
+LOGS_ROOT="/opt/drone-bombard/rl_runs"
+mkdir -p "$LOGS_ROOT"
+DRONE_BOMBARD_MOUNT_ARGS=(
+  -v "${REPO_ROOT}:/workspace/drone-bombard"
+  -v "${LOGS_ROOT}:/workspace/logs"
+)
+WANDB_ENV=/opt/drone-bombard/.wandb.env
+WANDB_ENV_ARGS=()
+if [ -f "$WANDB_ENV" ]; then
+  WANDB_KEY=$(grep WANDB_API_KEY "$WANDB_ENV" | cut -d= -f2)
+  if [ -n "$WANDB_KEY" ]; then
+    WANDB_ENV_ARGS=(-e "WANDB_API_KEY=${WANDB_KEY}")
+  fi
+fi
+
 # --- GCP 메타데이터에서 자신의 정보 읽기 ---
 INSTANCE=$(curl -sf -H "Metadata-Flavor: Google" \
   "http://metadata.google.internal/computeMetadata/v1/instance/name")
@@ -77,7 +96,10 @@ if docker ps -a --format '{{.Names}}' | grep -q "^${CONTAINER}$"; then
   docker rm "$CONTAINER" 2>/dev/null || true
 fi
 
-# --- [4] 컨테이너 시작 (headless, GPU, Isaac Sim 캐시) ---
+# --- [4] 컨테이너 시작 (headless, GPU, Isaac Sim 캐시 + drone_bombard mount) ---
+# 두 단계 게이트: (a) Cartpole 스모크(기존 인프라 검증) 통과 후 (b) drone_bombard
+# PPO 학습 시작. Cartpole이 non-zero reward로 5 iteration 완료하지 못하면
+# drone_bombard는 시작하지 않음 (인프라 결함을 태스크 결함과 혼동 방지).
 log "컨테이너 시작: $CONTAINER"
 docker run -d \
   --name "$CONTAINER" \
@@ -86,6 +108,8 @@ docker run -d \
   -e ACCEPT_EULA=Y \
   -e PRIVACY_CONSENT=Y \
   "${ISAACSIM_CACHE_ARGS[@]}" \
+  "${DRONE_BOMBARD_MOUNT_ARGS[@]}" \
+  "${WANDB_ENV_ARGS[@]}" \
   "$IMAGE" \
   bash -c "
     cd \$ISAACLAB_PATH && \
@@ -94,24 +118,19 @@ docker run -d \
       --headless \
       --num_envs 64 \
       --max_iterations 5 \
-      >> /tmp/smoke_test.log 2>&1
+      >> /tmp/smoke_test.log 2>&1 && \
+    echo '[startup] Cartpole smoke PASS — launching drone_bombard PPO training' >> /tmp/smoke_test.log && \
+    exec ./isaaclab.sh -p /workspace/drone-bombard/isaac_lab/train.py \
+      --task Isaac-DroneBombard-Direct-v0 \
+      --headless \
+      --num_envs 2048 \
+      --resume latest \
+      --checkpoint_dir /workspace/logs/isaac_lab/drone_bombard \
+      >> /workspace/logs/isaac_lab/drone_bombard_train.log 2>&1
   "
 
 # 컨테이너 안정화 대기
 sleep 5
-
-# --- [4-1] WandB API 키 설정 ---
-WANDB_ENV=/opt/drone-bombard/.wandb.env
-if [ -f "$WANDB_ENV" ]; then
-  WANDB_KEY=$(grep WANDB_API_KEY "$WANDB_ENV" | cut -d= -f2)
-  if [ -n "$WANDB_KEY" ]; then
-    docker exec drone-bombard-harmonic bash -c "wandb login $WANDB_KEY" &>/dev/null \
-      && log "WandB 로그인 완료" \
-      || log "WARNING: WandB 로그인 실패"
-  fi
-else
-  log "WARNING: $WANDB_ENV 없음 — WandB 인증 스킵"
-fi
 
 # --- [5] GPU 접근 확인 ---
 if docker exec "$CONTAINER" nvidia-smi -L &>/dev/null; then

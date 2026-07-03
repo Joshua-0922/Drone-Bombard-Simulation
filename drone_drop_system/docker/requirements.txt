@@ -9,3 +9,8 @@ pyyaml
 pillow
 scipy
 pytest
+
+# isaac_lab/yolo_eval.py — real YOLOv8 eval + vision-calibration in the
+# training image (TiledCamera renders + drone_bombard_best.pt inference).
+# opencv-python is already pulled in transitively by ultralytics.
+ultralytics

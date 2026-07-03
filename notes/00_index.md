@@ -14,7 +14,7 @@ type: index
 
 ## 현재 상태 (2026-07-03)
 
-- **병행 트랙 — Isaac Lab migration (`feat/isaac-env-migration` 브랜치, 이 워크트리):** Phase 1 인프라(Dockerfile `isaac-sim:5.1.0`+Isaac Lab v2.3.2+rsl_rl, `.dockerignore`/`requirements-deploy.txt`/`entrypoint.sh`/`startup.sh`) 완료했으나 미빌드·미실행(GPU driver 535<580 제약). **Phase 2 진행 중:** `isaac_lab/drone_bombard_env.py` 하나로 YOLO obs+PX4 속도명령+drop 스코어링 통합 포팅 + PPO(rsl_rl) 학습 코드. v13/v15 리워드·터미네이션 상수 그대로 이식, CCIP residual/DR 등 Phase 2 훅은 비활성 스텁으로 wiring만. 상세: [[experiments/exp_012_isaac_migration_phase2]] (작성 예정) / [[daily/daily_2026-05-30]].
+- **병행 트랙 — Isaac Lab migration (`feat/isaac-env-migration` 브랜치, `/opt/drone-bombard/isaac-worktree`):** Phase 1 인프라(Dockerfile `isaac-sim:5.1.0`+Isaac Lab v2.3.2+rsl_rl, `.dockerignore`/`requirements-deploy.txt`/`entrypoint.sh`/`startup.sh`) 완료했으나 미빌드·미실행(GPU driver 535<580 제약). **Phase 2 완료(코드):** `isaac_lab/`에 `math_utils.py`(순수 torch, isaaclab 무의존) + `drone_bombard_env.py`(DirectRLEnv) + PPO(rsl_rl) train/play/yolo_eval — YOLO obs+PX4 속도명령(LPF 포함)+drop 스코어링 통합 포팅. v13/v15 obs(14)·action(4)·리워드·터미네이션 상수 그대로 이식, CCIP residual/DR 등 Phase 2 훅은 비활성 스텁 wiring. **`pytest test_math.py` 29/29 통과**(로컬, isaaclab 미설치). L4 VM 미기동 → env 스모크/학습 미실행. 상세: [[experiments/exp_012_isaac_migration_phase2]] / [[research/isaac_velocity_controller]] / [[daily/daily_2026-05-30]].
 - **메인 트랙 — SAC (jekyun 브랜치, Gazebo/PX4):**
 
 ## 현재 상태 (2026-07-01)
@@ -91,6 +91,7 @@ type: index
 | 009 | EKF A/B + softreset (byxyaf4d) | proto+full | ✅ 완료 | 리셋 처리량 ~3.9×. EKF param A/B=음성, **soft reset(teleport 회피)=성공**(0.93→3.61 handoffs/min, fps 2→9, reset 65s→11s, soft 100%, EKF 안정). → [[experiments/exp_009_softreset_throughput]] / [[research/reset_throughput_bottleneck]] / Rule 14 |
 | 010 (eval) | rl_yolo_v14_softreset (byxyaf4d, 195K) | 20 ep | ✅ 완료 | **195K eval = 65%(13/20)**, v13 80% 대비 회귀(실패 전부 final-approach stagnation). EKF 귀책 0. **Soft reset 장기검증 ✅**(3096 resets, soft ~91%, EKF bounded) → Rule 14 검증완료. 비디오 3/3 success 캡처. commit 결정 대기. → [[experiments/exp_010_byxyaf4d_v14_195k_eval]] |
 | 011 | wobble A/B + v15_bc_stable | eval×2 + dry-run + 0→300K | ▶️ 학습 중 | **RL wobble = smoothness-control 문제 확정.** LPF A/B: 속도명령 jerk RMS 2.92→1.61(−45%), 평균 속력 불변. 교정(B 근접 속도 댐핑 + C smoothness↑ + LPF 0.4) dry-run PASS → v15 fresh 기동(v14 백업). → [[experiments/exp_011_wobble_lpf_reward_damping]] / [[research/control_smoothness_wobble]] / Rule 15 |
+| 012 | isaac_migration_phase2 (`feat/isaac-env-migration`) | 코드만 (미학습) | ✅ 코드 완료 | **Isaac Lab env+PPO 이식.** `isaac_lab/` 신설, v13/v15 obs·action·리워드·터미네이션 상수 그대로 포팅(parity 표 포함), SAC→PPO(rsl_rl), target/spawn 랜덤화 신규, vision=analytic+YOLO-eval 이원화. `pytest test_math.py` 29/29 통과. L4 VM 미기동 → env 스모크 미실행. → [[experiments/exp_012_isaac_migration_phase2]] / [[research/isaac_velocity_controller]] |
 
 ## 에러 현황
 
@@ -145,6 +146,8 @@ type: index
 - [[research/eval_terminal_env_metrics]] — v13 eval EKF divergence 흡수 루프 + evaluate.py 지표 비정합 (탄도 투하 없음 → CEP 비실재). 시작 health gate 필요 (Rule 12).
 - [[research/detection_gate_vs_altitude]] — 핸드오프 윈도우의 진짜 레버 = 탐지 게이트(conf + 공간 필터), 고도 아님. 고도↑는 마커 가시성 깎아 역효과 (Rule 13).
 - [[research/reset_throughput_bottleneck]] — 리셋 병목 = teleport 후 EKF 재수렴(param으론 못 고침). soft reset(teleport 회피)으로 ~3.9× (Rule 14).
+- [[research/control_smoothness_wobble]] — RL 인수 후 wobble = smoothness-control 문제(정책, 탐험 아님). LPF+근접 속도댐핑+smoothness 가중 (Rule 15).
+- [[research/isaac_velocity_controller]] — Isaac Lab 캐스케이드 속도 컨트롤러, PX4 게인 매핑. **PX4 대비 미검정**(게인 초기값) — 7-포인트 스텝응답 검정 계획.
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
@@ -158,6 +161,8 @@ type: index
 - [[experiments/exp_008_dryrun_alt10_handoff_window]] — 핸드오프 윈도우↑ dry-run. 고도↑ 실패→탐지 게이트 수정(conf+300 px)으로 핸드오프 2.7→5.0 m. 미커밋.
 - [[experiments/exp_009_softreset_throughput]] — 리셋 처리량. EKF param A/B(음성) + soft reset 프로토(~3.9×, EKF 안정). full run 검증 중.
 - [[experiments/exp_010_byxyaf4d_v14_195k_eval]] — v14 195K eval 65%(13/20, v13 회귀, final-approach stagnation) + soft reset 장기검증(3096 resets, Rule 14 완료) + 비디오 산출물.
+- [[experiments/exp_011_wobble_lpf_reward_damping]] — RL wobble = smoothness-control 문제 확정. LPF A/B(jerk RMS −45%) + 보상 댐핑(B+C) → v15 fresh 기동.
+- [[experiments/exp_012_isaac_migration_phase2]] — Isaac Lab env+PPO 이식. v13/v15 상수 parity 이식, `pytest test_math.py` 29/29 통과, L4 VM 미기동.
 
 ### 에러 (errors/)
 - [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] — armdiag dry-run이 YAML 중복 `checkpoint_dir` 키로 v13 30K 체크포인트 파괴. fresh-start 삭제 footgun + 격리 검증 규칙.
@@ -166,6 +171,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-07-03]] — Isaac Lab migration Phase 2: env+PPO 코드 이식, 워크트리 분리, test_math.py 29/29 통과, Rule 16 신규
 - [[daily/daily_2026-06-23]] — v14 plateau stop @196.5K → 195K eval 65%(v13 회귀, final-approach stagnation) + soft reset 장기검증(Rule 14 완료) + 비디오 캡처
 - [[daily/daily_2026-06-22]] — 핸드오프 윈도우 확장: 고도↑(10 m) 실패 → 탐지 게이트(conf 0.5 + 200→300 px)로 핸드오프 2.7→5.0 m
 - [[daily/daily_2026-06-20]] — v13 정책 평가: 유효 ep 100% 성공(정책 양호) + eval EKF divergence 흡수 루프 + harness 지표 비정합
