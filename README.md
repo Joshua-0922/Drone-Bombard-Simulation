@@ -102,12 +102,21 @@ rate_err)`로 관성을 곱해야 한다(Isaac은 직접 토크 → 관성 미�
 
 ## 5. 컨테이너 시작 및 진입 방법
 
+> **⚠️ 이 브랜치의 코드는 별도 git worktree에 있다.** `feat/isaac-env-migration`은
+> `/opt/drone-bombard/isaac-worktree`에 **별도 worktree**로 체크아웃되어 있다
+> (`git worktree add /opt/drone-bombard/isaac-worktree feat/isaac-env-migration`로 생성 —
+> `notes/daily/daily_2026-07-03.md` 참조). `/opt/drone-bombard/Drone-Bombard-Simulation`은
+> **다른 worktree**(`jekyun` 브랜치, 라이브 SAC 학습 중)이며 **`isaac_lab/` 코드가 없다**.
+> 로컬(dev VM)에서 컨테이너를 띄울 때는 반드시 `/opt/drone-bombard/isaac-worktree`를
+> 마운트해야 한다 — `Drone-Bombard-Simulation`을 마운트하면 컨테이너 안에
+> `isaac_lab/`이 아예 보이지 않는다.
+
 ### 컨테이너 빌드
 
 ```bash
 # Dockerfile을 사용해 Isaac Sim 5.1.0 + Isaac Lab v2.3.2 + rsl_rl 이미지 빌드
 # (첫 빌드 시 ~20–30분 소요)
-cd drone_drop_system/docker
+cd /opt/drone-bombard/isaac-worktree/drone_drop_system/docker
 docker build -t drone-bombard-isaac:latest .
 
 # 또는 GCP Artifact Registry에서 pull (GCP 인증 필요)
@@ -115,16 +124,16 @@ gcloud auth configure-docker us-central1-docker.pkg.dev
 docker pull us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/isaac-lab:latest
 ```
 
-### 컨테이너 진입 (대화형 bash)
+### 컨테이너 진입 (대화형 bash) — 이 dev VM
 
-**원본 저장소가 `/opt/drone-bombard/Drone-Bombard-Simulation`인 경우:**
+**`isaac-worktree`를 마운트한다 (`Drone-Bombard-Simulation`이 아님):**
 ```bash
 docker run -it --rm \
   --gpus all \
   --runtime=nvidia \
   -e ACCEPT_EULA=Y \
   -e PRIVACY_CONSENT=Y \
-  -v /opt/drone-bombard/Drone-Bombard-Simulation:/workspace/drone-bombard \
+  -v /opt/drone-bombard/isaac-worktree:/workspace/drone-bombard \
   -v /opt/drone-bombard/rl_runs:/workspace/logs \
   drone-bombard-isaac:latest \
   bash
@@ -133,17 +142,17 @@ docker run -it --rm \
 cd /workspace/drone-bombard
 ```
 
-**다른 경로에서 로컬로 개발 중인 경우:**
+### 컨테이너 진입 — GCP L4 Spot VM (원격 학습 서버)
+
+L4 Spot VM은 **이 dev VM과 별개의 머신**이며, `infra/startup.sh`가 그 VM 위에서
+저장소를 `/opt/drone-bombard/Drone-Bombard-Simulation`(그 VM 기준 단일 체크아웃 경로,
+worktree 분리 없음)으로 마운트한다. 즉 위 dev VM 표의 `Drone-Bombard-Simulation` 문제는
+**dev VM에서 마운트를 혼동할 때만** 발생하며, L4 VM의 `startup.sh` 자체는 정상 동작한다
+(`infra/startup.sh` 참조). L4 VM은 `infra/deploy.sh`로 기동되며 컨테이너 진입은 자동
+(startup script)이므로 수동 `docker run`이 보통 불필요하다 — 디버깅 시:
 ```bash
-docker run -it --rm \
-  --gpus all \
-  --runtime=nvidia \
-  -e ACCEPT_EULA=Y \
-  -e PRIVACY_CONSENT=Y \
-  -v $(pwd):/workspace/drone-bombard \
-  -v /tmp/isaac-logs:/workspace/logs \
-  drone-bombard-isaac:latest \
-  bash
+# L4 VM에 SSH 접속 후
+docker exec -it drone-bombard-isaac bash
 ```
 
 ### Isaac Sim GUI 열기
@@ -176,11 +185,12 @@ docker run -it --rm \
   -e ACCEPT_EULA=Y \
   -e PRIVACY_CONSENT=Y \
   -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
-  -v $(pwd):/workspace/drone-bombard \
+  -v /opt/drone-bombard/isaac-worktree:/workspace/drone-bombard \
   drone-bombard-isaac:latest \
   bash
 
 # 컨테이너 내부:
+cd /workspace/drone-bombard
 ./isaaclab.sh -p isaac_lab/play.py --zero-actions
 ```
 
@@ -279,15 +289,16 @@ pytest isaac_lab/tests/test_math.py -v          # 30/30
 
 ## 빠른 시작 (Quick Start)
 
-### 로컬 개발 (헤드리스 학습)
+### 로컬 개발 (헤드리스 학습, 이 dev VM)
 ```bash
 # 1. 이미지 빌드
-cd drone_drop_system/docker && docker build -t drone-bombard-isaac:latest .
+cd /opt/drone-bombard/isaac-worktree/drone_drop_system/docker
+docker build -t drone-bombard-isaac:latest .
 
-# 2. 컨테이너 진입
+# 2. 컨테이너 진입 — isaac-worktree를 마운트 (Drone-Bombard-Simulation 아님, §5 참조)
 docker run -it --rm --gpus all --runtime=nvidia \
   -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y \
-  -v $(pwd):/workspace/drone-bombard \
+  -v /opt/drone-bombard/isaac-worktree:/workspace/drone-bombard \
   drone-bombard-isaac:latest bash
 
 # 3. 학습 시작 (컨테이너 내부)
