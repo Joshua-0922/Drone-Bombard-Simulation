@@ -95,7 +95,7 @@ isaac_lab/
 ## 6. 검증
 
 - `python3 -m py_compile` 전체 통과 (11개 파일).
-- `pytest isaac_lab/tests/test_math.py` — **29/29 통과** (drone-bombard-harmonic 컨테이너,
+- `pytest isaac_lab/tests/test_math.py` — **29→30/30 통과(배치 ballistic 회귀 추가)** (drone-bombard-harmonic 컨테이너,
   torch 2.4.1, isaaclab 미설치 상태로 실행 — 파일 경로 직접 로드로 `drone_bombard/__init__.py`의
   isaaclab import 체인 우회). 커버리지: rate-limit, LPF(이산 스텝응답 y_k=1-0.6^k, 정책스텝
   경계 연속성, per-env 리셋 격리+snap), pinhole 투영(축 부호, 가시성), hold-buffer 카운트다운,
@@ -134,10 +134,35 @@ dev 박스(driver 535)에 `isaac-sim:5.1.0` 이미지를 pull하고 컨테이너
 시각/GUI 산출물은 L4 Spot VM(driver ≥580) 필요. 사용자 결정(2026-07-03): headless 수치 검증을
 증거로 수용, 시각화는 L4 VM 기동 시로 연기.
 
-### 6c. 로컬 순수-math 검증 (변동 없음)
+### 6d. PPO 학습 dry-run (2026-07-03, 라이브 SAC와 동시 실행) — **학습 정상**
+
+Gazebo SAC 2개 학습 프로세스를 **멈추지 않고** 헤드리스 PPO dry-run 실행(256 envs, 20 iters,
+wandb online). rsl_rl 3.1.2, `train.py`(v2.3.2 stock API로 재작성). **결과: 학습 정상 진행.**
+
+| iter | Mean reward | Mean ep_len |
+|---|---|---|
+| 0 | −74.98 | 2.23 |
+| 3 | −24.36 | 45.66 |
+| 8 | −2.95 | 109.66 |
+| 13 | +18.63 | 108.59 |
+| 19 | **+28.65** | 96.92 |
+
+reward −75→+29, ep_len 2→~100(드론이 즉시 추락→에피소드 거의 완주). 종료 시 `Episode_Metric/
+d_xy_min=0.747`(< success_radius 0.8 → **일부 드론이 이미 타겟 도달**), reward 분해
+`rew_dist=+10.9`/`rew_proximity=+4.6`/`rew_ctrl=−19.2`(v13/v15 보상 설계대로 작동). 커스텀
+parity 메트릭(종료 원인별·reward 분해·drop_impact_error·d_xy_min) 전부 wandb 로깅 확인.
+처리량 ~2000 steps/s(공유 L4), exit 0, `model_final.pt` 저장, 연구 스택 무손상.
+wandb: `drone-bombard-isaac/runs/fa4q6ebq`(첫 시도, 아래 버그로 중단) → 재실행 성공 run.
+
+**dry-run이 잡은 버그**: `math_utils.ballistic_impact`에서 `(vel_xy+wind_xy)*(t_fall+
+release_delay)`가 `[N,2]*[N]`을 곱해 PyTorch가 2-vs-N으로 브로드캐스트 시도 → N∉{1,2}에서
+크래시. N=1(verify+유닛테스트)에선 우연히 통과. `.unsqueeze(-1)` + 배치(N=3,5,255,256) 회귀
+테스트 추가(30/30). `train.py`도 stock rsl_rl API로 재작성. 커밋 `5a6a71b`.
+
+### 6c. 로컬 순수-math 검증
 
 - `python3 -m py_compile` 전체 통과.
-- `pytest isaac_lab/tests/test_math.py` — **29/29 통과** (drone-bombard-harmonic 컨테이너,
+- `pytest isaac_lab/tests/test_math.py` — **29→30/30 통과(배치 ballistic 회귀 추가)** (drone-bombard-harmonic 컨테이너,
   torch 2.4.1, isaaclab 미설치 상태로 실행 — 파일 경로 직접 로드로 `drone_bombard/__init__.py`의
   isaaclab import 체인 우회). 커버리지: rate-limit, LPF(이산 스텝응답 y_k=1-0.6^k, 정책스텝
   경계 연속성, per-env 리셋 격리+snap), pinhole 투영(축 부호, 가시성), hold-buffer 카운트다운,
