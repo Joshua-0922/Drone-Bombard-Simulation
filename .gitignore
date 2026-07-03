@@ -71,3 +71,8 @@ ros2_ws/rl_checkpoints/
 # Local docs (tracked) — conversation backups excluded
 local/conversation_backups/
 local/backups/
+
+# Isaac Lab recordings / logs (artifacts, not source)
+isaac_lab/_recordings/
+isaac_lab/logs/
+*.mp4

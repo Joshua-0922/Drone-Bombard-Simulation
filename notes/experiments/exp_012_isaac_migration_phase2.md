@@ -159,6 +159,33 @@ release_delay)`가 `[N,2]*[N]`을 곱해 PyTorch가 2-vs-N으로 브로드캐스
 크래시. N=1(verify+유닛테스트)에선 우연히 통과. `.unsqueeze(-1)` + 배치(N=3,5,255,256) 회귀
 테스트 추가(30/30). `train.py`도 stock rsl_rl API로 재작성. 커밋 `5a6a71b`.
 
+### 6e. 드라이버 580 업그레이드 + RTX GUI 영상 녹화 (2026-07-03) — **성공**
+
+사용자 요청으로 (1) 전체 학습 중단, (2) 드라이버 업그레이드, (3) 드론+페이로드 1-에피소드 GUI
+영상 녹화, (4) README를 Isaac Sim 기준으로 재작성.
+
+- **학습 중단:** tmux `rl_train` 슈퍼바이저 + `train_sac`(SIGTERM으로 체크포인트 저장) + infra +
+  isaac 컨테이너 정지 → GPU 완전 해제. `sac_drop_preempt.zip`(+70MB replay) 보존.
+- **드라이버 535 → 580.159.03 (리부트 없이):** apt `nvidia-driver-580`(Ubuntu jammy-updates,
+  ≥580.65.06 충족). GPU 홀더(nvidia-persistenced, GCP ops collector) 정지 → 모듈 언로드 →
+  modprobe → 서비스 재시작. **리부트 회피(이 VM에서 Claude 세션이 돌아 리부트 시 세션 끊김)**.
+  이후 도커: `ldconfig` + `nvidia-ctk cdi generate`(stale 535 CDI spec 재생성) + 컨테이너를
+  `isaac-lab-local:580`(기존 컨테이너 commit)으로 재생성 → 컨테이너 내 driver 580 인식.
+- **RTX 렌더링 정상 동작 확인**(535에선 "rtx driver verification failed"였음). 첫 렌더는 셰이더
+  캐시 컴파일로 느림(~5min, 618% CPU) → 캐시 마운트 후 재실행 빠름.
+- **영상 녹화:** `record_episode.py`(신규) — 뷰포트 rgb_array + imageio, 페이로드 실린더 마커 +
+  타겟 X 플레이트(`show_markers=True`). 스크립트 등속 접근. **드론이 6.9m→타겟, step 31에서
+  SUCCESS(d_xy≤0.8)**, 720p 32프레임 mp4. `isaac_lab/_recordings/`(gitignore).
+
+**★ 녹화 중 잡은 치명 버그 — inertia override 미반영 (상세: [[research/isaac_velocity_controller]]):**
+zero-action 호버는 안정인데 수평 기동 시 step 0 즉시 스핀아웃(‖ω‖≈108). 원인: `set_masses`는
+sim에 반영되나 **`set_inertias`는 뷰 캐시만 갱신, sim body는 Crazyflie 기본 관성(~1.7e-5) 유지**.
+컨트롤러가 cfg 관성(0.0217)으로 torque 계산 → `I_ctrl/I_body≈1300×` 과토크. **수정:** override
+*전에* `get_inertias()`로 실제 관성 읽어 컨트롤러에 사용 → `I_ctrl==I_body` → `dω/dt=k_rate·
+rate_err` 안정. 수정 후 ‖ω‖≈0.08, 안정 비행 + SUCCESS. (x500 회전 관성 실제 반영은 plant-fidelity
+후속.) `verify_one_episode.py --with_camera`의 post-hoc Camera sensor attach는 별개로 실패(패턴
+문제) — 녹화는 뷰포트 경로 사용.
+
 ### 6c. 로컬 순수-math 검증
 
 - `python3 -m py_compile` 전체 통과.

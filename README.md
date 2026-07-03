@@ -1,1015 +1,160 @@
-# Vision-Based Drone System
+# Drone Bombard — Isaac Lab (Isaac Sim) 구현
 
-## 1. Project Overview
-본 프로젝트는 사전에 적의 정확한 좌표를 알지 못하는 상황에서, 드론이 지정된 경로를 **순항(Cruise)**하던 중 목표물(X Marker)을 **식별(Detection)**하면 즉시 경로를 변경하여 **정밀 추적(Terminal Guidance)** 및 **공중 투하(Air Drop)**를 수행하는 자율 비행 시스템입니다.
-
-1.  **Phase 1: 순항 (Cruise Mode)**
-    * 드론은 10m 고도를 유지하며 북동 방향으로 1 m/s 속도로 비행합니다.
-    * GPS 기반 위치 제어로 웨이포인트를 점진적으로 증가시켜 비행합니다.
-2.  **Phase 2: 요격 전환 (Intercept Transition)**
-    * 하방 카메라가 목표물('X' 표식)을 감지하는 즉시 순항 모드를 중단합니다.
-    * 제어권을 Mission Manager에서 추적 알고리즘(RL Navigation)으로 넘깁니다.
-3.  **Phase 3: 정밀 유도 (Terminal Guidance)**
-    * GPS 좌표가 아닌 카메라 영상 내 타겟 위치(Pixel Error)를 기반으로 비행합니다.
-    * 드론의 속도 벡터를 타겟 방향으로 지속적으로 수정하며 접근합니다.
-4.  **Phase 4: 동적 투하 (Dynamic Drop)**
-    * 타겟 상공 도달 및 투하 조건 만족 시 페이로드를 투하합니다.
-
-## 2. Operating Principles
-Warning: GCP VM은 사용자 계정별 홈 디렉토리가 분리되어 있다.
-
-모든 팀 공용 작업은 다음 경로에서 수행한다.
-/opt/drone-bombard
-
-개인 홈 디렉토리(/home/username)는 사용하지 않는다.
-
-### 1. Repository에는 "소스 코드만" 관리한다
-
-* ROS2 패키지는 반드시 ros2_ws/src/<package_name>에 생성
-* build/, install/, log/ 디렉토리는 Git 관리 대상이 아님
-
-### 2. 개발은 항상 Docker 컨테이너 내부에서 수행한다
-* VM에는 Docker만 설치
-* ROS2, Python 의존성, 빌드 도구는 dockerfile 수정으로 변경
-
-### 3. ros2_ws는 Host ↔ Container 볼륨으로 공유한다
-* 컨테이너 삭제 후에도 코드 유지
-* 동일 워크스페이스를 여러 컨테이너에서 재사용 가능
-
-### 4. Docker 이미지 빌드는 GitHub Actions가 담당한다
-* 로컬에서 docker build 금지
-* main 또는 feature/migration-harmonic 브랜치 push → 자동 빌드 → Artifact Registry 저장
-
-### 5. ROS2 패키지는 컨테이너 내부에서 생성한다.
-* 패키지 생성 위치
-```
-cd /workspace/ros2_ws/src
-ros2 pkg create <package_name> --build-type ament_python
-```
-
-* 빌드
-```
-cd /workspace/ros2_ws
-colcon build
-source install/setup.bash
-```
-
-*  생성 결과는 VM의 /opt/drone-bombard/ros2_ws/src 에 자동 반영됨.
-* 이후 VM에서 github repository로 push하기.
-
-### 6. 모든 package 개발은 branch로 나누어서 개발하기. 이후 합치면 된다.
-* 개발 종류마다 나누어서 branch 작성
-* 이름은 feature/migration-harmonic 등으로, 만들기 전 회의 통해 결정
-
-## 3. 기술 스택
-OS : Ubuntu 22.04 LTS
-ROS2 : Humble
-Simulation : Gazebo Harmonic
-ML Framework : Pytorch
-GPU : NVIDIA L4 & CUDA 12.6.2
-CI/CD : Github Actions & Google Cloud Platform
-
-## 4. 개발 환경 흐름
-```
-GitHub Repository
-        ↓ (git pull)
-GCP VM (Host)
-        ↓ (-v volume mount)
-Docker Container
-        ↓ (ros2 build / 개발)
-ros2_ws/src/*
-        ↓ (git add / commit / push)
-GitHub Repository
-```
-
-## 5. Repository
-```
-.
-├── LICENSE
-├── README.md                  # 개발 환경 가이드
-├── CLAUDE.md                  # Claude Code 가이드 (시스템 아키텍처 상세)
-├── drone_drop_system/         # Docker 빌드 관련
-│   └── docker/                # Dockerfile, entrypoint, requirements
-├── gazebo_models/             # Gazebo Harmonic 시뮬레이션 모델
-│   ├── x500_bombard/          # 드론 모델 (페이로드 탑재)
-│   ├── payload_cylinder/      # 투하 페이로드 모델
-│   ├── x_marker/              # X자 표식 모델
-│   └── worlds/                # 시뮬레이션 월드 (x_marker_world.sdf)
-├── ros2_ws/                   # ROS2 전용 워크스페이스 (Git으로 관리)
-│   ├── src/                   # ROS2 패키지 소스
-│   │   ├── mission_manager/   # FSM 커맨더 + 통합 launch 파일
-│   │   ├── drone_controller/  # PX4 브릿지 (ENU→NED 변환)
-│   │   ├── vision_detection/  # YOLOv8 X마커 탐지 패키지
-│   │   ├── rl_navigation/     # 추적 컨트롤러 + SAC RL 학습
-│   │   ├── drop_calculator/   # 투하 후 착탄 오차 계산
-│   │   └── px4_msgs/          # PX4 메시지 타입
-│   ├── yolo_workspace/        # YOLO 학습 관련
-│   │   ├── datasets/          # 학습 데이터셋
-│   │   ├── runs/              # 학습 결과
-│   │   └── scripts/           # 학습 스크립트
-│   └── system_tester.py       # 시뮬레이션 테스트 스크립트
-└── drone_bombard_best.pt      # 학습된 YOLO 모델 (최적 가중치)
-```
-
-디렉토리 역할 요약
-* `ros2_ws/`
-  * ROS2 Humble 기준 워크스페이스
-  * `src/` 아래에만 ROS2 패키지 생성
-  * `build/`, `install/`, `log/`는 로컬/컨테이너 빌드 산출물 (Git 관리 제외)
-
-* `gazebo_models/`
-  * Gazebo Harmonic 시뮬레이션용 3D 모델 및 월드 파일
-
-* `yolo_workspace/`
-  * YOLO 모델 학습 및 평가 관련 파일
-
-**시스템 아키텍처 및 기능에 대한 자세한 내용은 [CLAUDE.md](./CLAUDE.md)를 참고하세요.**
-
-## 6.  Repository / VM / Container 역할
-| 구분 | 역할 |
-| :-: | :-: |
-| Github Repository | 코드 관리 |
-| Github Actions | Docker 이미지 자동 빌드 |
-| Artifact Registry | 이미지 저장 |
-| VM | 실행 환경, 볼륨 유지 |
-| Docker Container | ROS2 개발 및 실행 |
-
-
-## 7. VM에서 Docker 실행 가이드
-### 7.1. 최초 컨테이너 생성
-```bash
-# 1. (필수) 호스트에서 화면 권한 허용 (실행 전 1회)
-xhost +local:docker
-
-# 2. 최신 이미지 pull
-docker pull us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest
-
-# 3. 컨테이너 실행
-docker run -itd \
-  --gpus all \
-  --net=host \
-  --privileged \
-  --ipc=host \
-  --name drone-bombard-harmonic \
-  --env="DISPLAY=$DISPLAY" \
-  --env="QT_X11_NO_MITSHM=1" \
-  --env="NVIDIA_DRIVER_CAPABILITIES=all" \
-  --env-file /opt/drone-bombard/.wandb.env \
-  --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
-  -v /opt/drone-bombard/Drone-Bombard-Simulation/ros2_ws:/workspace/ros2_ws \
-  -v /opt/drone-bombard/Drone-Bombard-Simulation/gazebo_models:/workspace/gazebo_models \
-  -v ~/.cache:/root/.cache \
-  us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest \
-  /bin/bash
-```
-* 컨테이너 이름: `drone-bombard-harmonic` (팀 공용 단일 컨테이너)
-* `ros2_ws`, `gazebo_models` 모두 VM과 컨테이너 공유 볼륨
-
-### 7.2 기존 컨테이너 재접속
-```bash
-xhost +local:docker
-docker start -ai drone-bombard-harmonic
-```
-
-### 7.3 기존 컨테이너 삭제
-```bash
-docker stop drone-bombard-harmonic
-docker rm drone-bombard-harmonic
-```
-
-## 8. Github repository와 VM
-### 8.1 Github Repository로 코드 반영(VM기준)
-```bash
-cd /opt/drone-bombard/Drone-Bombard-Simulation
-git status
-git add ros2_ws
-git commit -m "Add ROS2 package"
-git pull --rebase
-git push
-```
-### 8.2 Github Action에서 완성된 Image를 pull해서 VM에서 실행하는 방법
-1. Docker Image pull하기
-```bash
-cd /opt/drone-bombard/Drone-Bombard-Simulation
-git pull --rebase
-gcloud auth configure-docker us-central1-docker.pkg.dev  # 최초 한번만
-docker pull us-central1-docker.pkg.dev/charming-league-481306-d8/drone-bombard/drone-bombard:latest
-```
-
-2. 기존 컨테이너 삭제 후 재생성
-```bash
-docker stop drone-bombard-harmonic
-docker rm drone-bombard-harmonic
-# 이후 7.1 컨테이너 생성 명령 실행
-```
-
-## 9. 팀원 VM 접근 가이드
-### 9.1 GCP 권한 부여
-* 각 팀원의 개인 Google 계정 사용
-* GCP IAM에서 권한 부여
-  * Computer Instance Admin (v1)
-  * Service Account User
-
-## 9.2 VM 접속 방법
-
-### 9.1 GCP Console의 웹 SSH 방식으로 접근
-* 절차:
-1. https://console.cloud.google.com 접속
-2. 개인 Google 계정 로그인
-3. 프로젝트 선택
-4. Compute Engine → VM → SSH 버튼 클릭
-
-### 9.2 로컬 환경에서 접속
-#### 9.2.1 로컬 PC에서 최초 1회 설정
-```bash
-gcloud auth login
-gcloud config set project charming-league-481306-d8
-```
-* Google 계정 로그인
-
-#### 9.2.2 VM 접속 명령
-```bash
-gcloud compute ssh l4-spot \
-  --zone asia-east1-a
-```
-* `l4-spot` : 현재 VM 이름
-* `asia-east1-a` : VM이 생성된 zone
-
-#### 9.2.3 VM 접속 확인
-```bash
-hostname    # l4-spot
-nvidia-smi  # NVIDIA L4가 보이면 정상
-```
-
-
-## 10. 프로젝트 원격 데스크톱 접속 가이드
-
-프로젝트의 Ubuntu VM에 GUI로 접속
-PC, 태블릿, 휴대폰 어디서든 웹 브라우저만 있으면 접속 가능
-
-> ⚠️ **Spot VM 특성상 선점(preemption) 후 재기동 시 외부 IP가 바뀔 수 있습니다.**
-> IP 변경 시 Discord `#vm-status` 채널에서 최신 IP를 확인하세요.
-> 현재 외부 IP: `gcloud compute instances describe l4-spot --zone=asia-east1-a --format="value(networkInterfaces[0].accessConfigs[0].natIP)"`
-
-### 1. 접속 정보
-- **접속 URL:** https://130.211.241.166 (HTTP 접속 시 자동 HTTPS 리다이렉트)
-- **ID/PW:** (개별 전달받은 계정 사용) Discord / ide-server-cloud 참조
-- ⚠️ **자체 서명 SSL 인증서** 사용 — 브라우저에서 "연결이 안전하지 않음" 경고가 뜨면 **고급 → 계속 진행** 클릭 (1회만)
-
-#### 접속 전 확인 — GCP 방화벽 (포트 443)
-브라우저에서 접속이 안 될 때는 GCP VPC 방화벽에 HTTPS(443) 규칙이 없는 경우입니다.
-아래 명령으로 한 번만 추가하면 됩니다 (팀 관리자가 설정):
-```bash
-gcloud compute firewall-rules create allow-https-novnc \
-  --direction=INGRESS \
-  --action=ALLOW \
-  --rules=tcp:443 \
-  --source-ranges=0.0.0.0/0 \
-  --target-tags=l4-spot \
-  --project=charming-league-481306-d8
-```
-
-### 2. 아키텍처
-
-```
-[브라우저]
-    │ HTTPS :443
-    ▼
-[nginx container]              ← Docker Compose
-    │ proxy :8080
-    ▼
-[guacamole container]          ← Docker Compose
-    │ guacd protocol :4822
-    ▼
-[guacd container]              ← Docker Compose
-    │ VNC :5901  (host.docker.internal)
-    ▼
-[TigerVNC — VM 호스트, systemd 자동 관리]
-    │ X11 display :1
-    ▼
-[XFCE4 데스크탑 on VM]
-```
-
-### 3. 접속 방법
-
-#### 3.1 정상 접속 (VNC + Guacamole 모두 실행 중인 경우)
-1. **https://130.211.241.166** 접속 → SSL 경고 무시 후 진행
-2. Guacamole 로그인
-3. **[모든연결]** 목록에서 **"VM-XFCE4"** 클릭
-4. 잠시 기다리면 XFCE4 Ubuntu Desktop 화면 나타남
-
-#### 3.2 VM 재부팅 또는 서비스 재시작 후
-VNC는 systemd가 자동으로 재시작합니다. 아래 명령으로 상태를 확인하고 필요 시 수동 시작합니다.
-
-```bash
-# VNC 서버 상태 확인
-sudo systemctl status vncserver@1
-
-# VNC 서버 수동 시작 (자동 시작이 안 됐을 때)
-sudo systemctl start vncserver@1
-
-# VNC 실행 여부 확인
-vncserver -list      # ":1" 라인이 보이면 정상
-ss -tlnp | grep 5901 # LISTEN 상태 확인
-```
-
-```bash
-# Guacamole Docker 스택 상태 확인
-cd /opt/drone-bombard/guacamole-stack
-docker compose ps    # guacd, guacamole, postgres, nginx 4개 모두 Up (healthy) 확인
-
-# Guacamole 스택 시작 (내려가 있을 때)
-docker compose up -d
-
-# 로그 확인 (기동 완료까지 ~30–60초)
-docker compose logs -f guacamole   # "Guacamole is now listening on port 8080" 확인
-```
-
-#### 3.3 VNC를 수동으로 직접 실행해야 할 때
-```bash
-# 기존 세션 종료 후 재시작
-vncserver -kill :1
-vncserver :1 -geometry 1920x1080 -depth 24 -localhost no -SecurityTypes VncAuth
-```
-
-### 4. ⚠️ 주의사항 (필독!)
-이 원격 데스크톱은 **"하나의 모니터를 다 같이 공유하는 방식"**
-- **화면 공유:** 내가 마우스를 움직이면 다른 접속자의 화면에서도 마우스가 움직임
-- **동시 작업 불가:** 한 명이 코딩 중일 때 다른 사람이 마우스를 뺏으면 작업이 중단됨
-- **협업:** "내가 잠깐 확인할게"라고 말하고 사용하는 '페어 프로그래밍' 용도로 쓰기
-- **개별 작업:** 개별 코드 작업은 각자 local pc나 github codespace에서 작업해서 git pull하고, 그걸 VM server에서 받기.
-- **VNC 비밀번호 8자 한도:** DES 기반 암호화로 앞 8자만 유효 — 비밀번호는 8자 이하로 설정할 것
-
-### 5. 문제 해결
-| 증상 | 해결 |
-|------|------|
-| 화면이 안 나올 때 | 브라우저 새로고침(F5) → 안 되면 `sudo systemctl restart vncserver@1` |
-| SSL 인증서 경고 | 브라우저에서 **고급 → 계속 진행** 클릭 (1회) |
-| Guacamole 페이지 자체가 안 열릴 때 | `cd /opt/drone-bombard/guacamole-stack && docker compose up -d` |
-| 접속은 되는데 화면이 검정일 때 | `vncserver -kill :1` 후 `sudo systemctl start vncserver@1` |
-| 클립보드 복사/붙여넣기 | `Ctrl+Alt+Shift`로 Guacamole 사이드 메뉴 열기 → 클립보드 탭에서 텍스트 입력 |
-| 한영 전환 | Shift+Space 또는 한영키 |
-
-
-## 11. 시뮬레이션 실행 — Gazebo Harmonic
-
-### 시뮬레이션 구성
-
-| 항목 | 값 |
-|------|---|
-| 시뮬레이터 | Gazebo Harmonic (`gz sim`) |
-| 드론 모델 | `x500_bombard` (페이로드 탑재, `gazebo_models/x500_bombard/`) |
-| 월드 파일 | `gazebo_models/worlds/x_marker_world.sdf` |
-| 타겟 위치 | X마커 (11, 10) m — 월드 원점에서 북동쪽 |
+> **브랜치:** `feat/isaac-env-migration`. 이 브랜치는 기존 **Gazebo + PX4 + ROS2 + SAC**
+> 파이프라인을 **NVIDIA Isaac Sim 5.1.0 + Isaac Lab v2.3.2 + rsl_rl PPO**로 이전(migration)한
+> 것이다. Gazebo/PX4/ROS2 스택 설명은 이 브랜치의 README에서 제거되었으며, 해당 스택은
+> `main`/`jekyun` 등 다른 브랜치에서 계속 유지된다.
 
 ---
 
-### 11.1 최초 1회: PX4 빌드
+## 1. 프로젝트 개요
 
-```bash
-cd /opt/PX4-Autopilot
-DONT_RUN=1 make px4_sitl gz_x500
-```
+적의 정확한 좌표를 사전에 모르는 상황에서, 드론이 지정 경로를 순항하다 지상 목표물
+(**X-marker**)을 하방 카메라로 식별하면 정밀 추적(terminal guidance)으로 전환해 목표 상공에
+도달하고 페이로드를 투하하는 자율 비행 시스템이다.
 
-### 11.2 ROS2 빌드
+강화학습(RL)이 담당하는 구간은 **종말 유도(terminal guidance)** 한 구간이다: 순항→탐지
+핸드오프 시점(목표에서 약 3–7 m, 고도 ~10 m)에서 시작해 목표 상공(수평거리 `d_xy ≤ 0.8 m`)에
+도달할 때까지의 시각 서보잉(visual servoing)을 학습한다. 순항·투하 로직은 스크립트(비학습)로
+처리한다.
 
-```bash
-cd /workspace/ros2_ws
-colcon build
-source install/setup.bash
-```
-
----
-
-### 11.3 단일 실행 (데모·디버그용)
-
-Launch 파일 하나로 전체 스택을 기동합니다.
-
-```bash
-cd /workspace/ros2_ws && ./run_drone_mission.sh
-```
-
-자동 기동 순서:
-
-| 시간 | 컴포넌트 |
-|------|---------|
-| t=0s | MicroXRCE-DDS Agent |
-| t=0s | Gazebo Harmonic |
-| t=12s | PX4 SITL |
-| t=16s | ros_gz_bridge |
-| t=22s | vision_detection (YOLOv8) |
-| t=0s | mission_manager / drone_controller / rl_navigation / drop_calculator |
-
-옵션 인수:
-
-```bash
-ros2 launch mission_manager drone_mission.launch.py headless:=true
-ros2 launch mission_manager drone_mission.launch.py enable_vision:=false
-ros2 launch mission_manager drone_mission.launch.py rl_mode:=true
-```
-
-재실행 전 이전 프로세스 정리:
-
-```bash
-pkill -f "gz sim" ; pkill -f "px4" ; pkill -f "MicroXRCEAgent" ; pkill -f "ros2"
-```
+**태스크 스코프(SAC v15와 동일):** 4-D 속도 명령 액션, 성공 = 목표 도달. 투하(drop)는 액션이
+아니라 스크립트 CCIP(탄도) 메트릭으로 스코어링한다.
 
 ---
 
-### 11.4 RL 학습 실행 (Self-Managed Infra)
+## 2. Gazebo/PX4/ROS2 → Isaac Lab 이전 개요
 
-`DroneDropEnv`가 Gazebo, PX4, MicroXRCEAgent, ros_gz_bridge를 **모두 자동으로 관리**합니다.
-`infra.launch.py`는 **실행하지 마세요** — 별도로 띄우면 PX4 모델명 불일치로 학습이 실패합니다.
+| 항목 | 기존 (Gazebo/PX4/ROS2, SAC) | 현재 (Isaac Lab, PPO) |
+|---|---|---|
+| 시뮬레이터 | Gazebo Harmonic + PX4 SITL | Isaac Sim 5.1.0 (PhysX, GPU) |
+| 프로세스 구조 | 다중 ROS2 노드 (vision/path/drop/controller) + PX4 + MicroXRCE + gz_bridge | **단일 프로세스** `DirectRLEnv` 하나 |
+| 병렬화 | `num_envs=1` (단일 Gazebo가 PX4 lockstep 직렬화) | `num_envs=2048` (GPU-vectorized) |
+| RL 알고리즘 | SAC (Stable-Baselines3) | **PPO (rsl_rl)** |
+| Vision | 실제 카메라 렌더 + YOLOv8 항상 추론 | 학습=analytic pinhole 투영(YOLO 캘리브레이션 노이즈), 평가=실제 YOLOv8 |
+| 드론 제어 | PX4 전체 비행 스택(EKF·믹서·로터) | rigid-body wrench + 캐스케이드 속도→자세→토크 컨트롤러(PX4 모방) |
+| 리셋 | teleport+disarm / soft reset(EKF 재수렴 회피) | 즉시 텔레포트 (ground-truth state, EKF 개념 없음) |
+| 타겟/스폰 | 고정 ENU (11,10) | env마다 랜덤화(신규) |
 
-```
-┌─────────────────────────────────────────────────┐
-│  DroneDropEnv._start_infra()  (학습 시작 시 1회) │
-│  - MicroXRCEAgent  (DDS 브릿지)                 │
-│  - Gazebo Harmonic (물리 엔진)                   │
-│  - ros_gz_bridge   (토픽 포워더, 인스턴스별)     │
-│  - PX4 SITL        (gz_x500_bombard_rN 에어프레임)│
-└─────────────────────────────────────────────────┘
-             ↕  에피소드마다 재시작
-┌─────────────────────────────────────────────────┐
-│  DroneDropEnv.reset()  (에피소드 자동 관리)      │
-│  - mission_manager  (FSM 커맨더)                │
-│  - drone_controller (PX4 브릿지)                │
-│  - drop_calculator  (착탄 오차 계산)            │
-└─────────────────────────────────────────────────┘
-```
-
-**에피소드당 소요 시간 (단일 환경 기준):**
-
-| 단계 | 시간 |
-|------|-----|
-| 에피소드 프로세스 종료 | ~1.5 s |
-| 드론·페이로드 포즈 리셋 | ~0.5 s |
-| 에피소드 노드 기동 | ~2 s |
-| ARM + Offboard 진입 | ~2 s |
-| 10 m 고도 도달 후 CRUISE 진입 | ~5 s |
-| **합계** | **~11 s** |
-
-#### Step 1 — 스테일 프로세스 정리 (학습 세션 시작 전 1회)
-
-```bash
-bash /workspace/ros2_ws/start_infra_clean.sh
-```
-
-#### Step 2 — 빌드 (소스 코드 변경 후 또는 최초 세팅 시)
-
-> `build/`, `install/`은 Git에서 관리하지 않으므로, clone 또는 pull 후 반드시 빌드해야 합니다.
-
-```bash
-cd /workspace/ros2_ws
-colcon build --packages-select rl_navigation
-source install/setup.bash
-```
-
-#### Step 3 — SAC 학습 시작 (터미널 1개)
-
-```bash
-# source 순서 중요: /opt/ros → /root → /workspace 순서 필수
-# 순서 틀리면 px4_msgs import 에러로 에피소드 노드 silent crash
-source /opt/ros/humble/setup.bash
-source /root/ros2_ws/install/setup.bash
-source /workspace/ros2_ws/install/setup.bash
-export GZ_SIM_RESOURCE_PATH=/workspace/gazebo_models:/opt/PX4-Autopilot/Tools/simulation/gz/models:/opt/PX4-Autopilot/Tools/simulation/gz/worlds
-ros2 run rl_navigation train_sac
-```
-
-`DroneDropEnv.__init__()` 실행 시 자동으로:
-1. Gazebo + PX4 + MicroXRCEAgent + bridge 기동 (~90s 초기화 대기)
-2. 에피소드마다 mission_manager / drone_controller / drop_calculator 재시작
-3. CRUISE 상태까지 대기 후 학습 시작
-
-체크포인트는 `/workspace/ros2_ws/rl_checkpoints/`에 5,000 스텝마다 저장됩니다.
-
-```bash
-# 학습 재개
-ros2 run rl_navigation train_sac --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip
-
-# 학습 모니터링
-tensorboard --logdir /workspace/ros2_ws/rl_logs/sac_drop
-```
-
-#### Step 4 — 평가
-
-```bash
-ros2 run rl_navigation evaluate \
-  --model /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip \
-  --episodes 20
-```
-
-결과는 `/workspace/ros2_ws/rl_eval_results/`에 저장됩니다.
+기존 다패키지 ROS2 시스템의 모든 기능(YOLO 관측, PX4식 속도 명령 + LPF, drop 스코어링)을
+**하나의 env 파일**로 통합 이식했다. v13/v15의 관측(14-D)·액션(4-D)·3-layer 보상·종료 조건
+상수는 전부 그대로 옮겼다(전체 parity 표: `notes/experiments/exp_012_isaac_migration_phase2.md`).
 
 ---
 
-### 보상 함수 구조 및 설계 이력
+## 3. 코드 구조 (`isaac_lab/`)
 
-#### 보상 레이어 개요
+```
+isaac_lab/
+├── drone_bombard/
+│   ├── __init__.py            gym.register("Isaac-DroneBombard-Direct-v0")
+│   ├── math_utils.py          순수 torch — action rate-limit/LPF, pinhole 투영, hold-buffer,
+│   │                          ballistic/CCIP, 3-layer reward, overshoot/stagnation guard.
+│   │                          isaaclab 무의존 → GPU/Isaac 없이도 유닛테스트 가능.
+│   ├── drone_bombard_env.py   DirectRLEnv — 위 순수 math를 isaaclab lifecycle(씬·액추에이션·
+│   │                          관측·종료·보상·리셋)에 연결. 캐스케이드 속도 컨트롤러 + 마커.
+│   ├── mdp/domain_rand.py     Phase-2 도메인 랜덤화 스텁 (Phase 1은 항등)
+│   └── agents/rsl_rl_ppo_cfg.py   PPO 하이퍼파라미터
+├── train.py                   rsl_rl PPO 학습 진입점 (wandb + SIGTERM preempt save)
+├── play.py                    sanity 체크 (--zero-actions / --scripted / --step-response)
+├── verify_one_episode.py      무학습 1-에피소드 검증 하네스 (+ --with_camera 스크린샷)
+├── record_episode.py          RTX 렌더 1-에피소드 영상 녹화 (드론+페이로드+타겟 마커)
+├── yolo_eval.py               실제 YOLOv8 평가 + vision 캘리브레이션 (TiledCamera)
+├── tests/test_math.py         순수 torch 유닛테스트 (isaaclab 불필요, 30/30)
+└── README.md                  실행 절차 상세
+```
 
-드론의 투하 정책 학습을 위해 보상 함수를 4개의 레이어로 구성합니다.
+### 관측 / 액션 / 보상 (v13/v15 이식)
 
-| 레이어 | 적용 시점 | 역할 |
-|--------|-----------|------|
-| **Layer 1 — 안전** | 매 스텝 | 비정상 비행 억제 (에피소드 종료 없음) |
-| **Layer 2 — 안정/효율** | 매 스텝 | 불필요한 기동 억제, 빠른 임무 수행 유도 |
-| **Layer 3 — 접근** | 매 스텝 | 타겟 방향으로 비행하도록 유도 |
-| **Layer 4 — 투하 정확도** | 투하 시 (에피소드 종료) | 정확한 위치에서 투하하도록 유도 |
+- **관측** `Box(14)`, clip ±1: `[0-2]` pos ENU/50, `[3-5]` vel ENU/15, `[6-8]` body ang_vel/π,
+  `[9-10]` YOLO u/v 픽셀 정규화, `[11]` conf, `[12-13]` 목표 상대 오프셋(metric)/50.
+- **액션** `Box(4)` ±1: vx·4.0, vy·3.0, vz·3.0 m/s, yaw_rate·1.0 rad/s. per-step rate limit 0.2,
+  이후 EMA LPF(α=0.4, 20 Hz tick — `drone_controller` 이식, 학습==배포 플랜트).
+- **보상** 3-layer: 시간·각속도·액션 스무스니스 페널티 + 거리 그래디언트 + 근접 보너스 +
+  vision centering + 근접-게이팅 속도 댐핑. 성공 +100, 각종 종료 페널티(crash/overspeed/
+  bad_attitude/out_of_range/max_altitude/overshoot/stagnation/timeout).
 
-**에피소드 종료 조건:**
-- `d_impact ≤ auto_drop_threshold` → 자동 투하 → Layer 4 보상 후 `terminated`
-- 최대 스텝(500) 초과 → 미투하 패널티 후 `truncated`
+### 드론 액추에이션
 
-**CCIP(Continuously Computed Impact Point)**: 현재 위치·속도로 지금 투하했을 때의 착탄 예측 지점을 매 스텝 실시간 계산.
-
-$$d_{impact} = \sqrt{(x_p - x_{target})^2 + (y_p - y_{target})^2}$$
-
-$$x_p = x + v_x \cdot t_f, \quad t_f = \frac{v_z + \sqrt{v_z^2 + 2gz}}{g}$$
+Isaac은 rigid body에 직접 wrench(추력+토크)를 가한다. PX4의 로터/믹서 내부 루프는 학습된
+정책의 plant에 포함된 적이 없으므로, 단일 rigid body에 **캐스케이드 속도→자세→토크
+컨트롤러**(PX4 게인 모방)를 적용한다. 질량/관성은 x500 SDF 실측값(2.07 kg 드론 + 0.1 kg
+페이로드, `diag(0.0217,0.0217,0.040)`)으로 오버라이드한다. **주의:** 토크는 `τ = I·(k_rate·
+rate_err)`로 관성을 곱해야 한다(Isaac은 직접 토크 → 관성 미곱 시 ~46× 과토크로 스핀아웃).
+컨트롤러 게인은 PX4 실측 스텝응답 대비 **아직 미검정**(초기값) — `notes/research/isaac_velocity_controller.md`.
 
 ---
 
-#### 각 레이어 계산식
+## 4. 환경 요구사항
 
-**Layer 1 — 안전 패널티**
+- **GPU 드라이버 ≥ 580.65.06** (Isaac Sim 5.1.0 RTX 렌더러 필수). 이 프로젝트 VM은 driver
+  535 → 580.159.03으로 업그레이드해 GUI/렌더링을 활성화했다. driver 535에서도 **헤드리스
+  물리/학습은 동작**하나(CUDA), 카메라/GUI 렌더링은 불가.
+- **Isaac Sim 5.1.0** 도커 이미지(`nvcr.io/nvidia/isaac-sim:5.1.0`) + **Isaac Lab v2.3.2** +
+  **rsl_rl**. 빌드: `drone_drop_system/docker/Dockerfile`.
 
-```
-R1 = penalty_crash      if altitude < min_altitude (after step 20)
-   + penalty_overspeed  if speed > 20 m/s
-```
-
-**Layer 2 — 안정/효율 패널티**
-
-$$R_2 = -w_{time} \cdot 5 - w_{\omega} \cdot \|\omega\|^2 - w_{smooth} \cdot \|\Delta a\|^2$$
-
-- $w_{time}$: 시간 패널티 가중치 (스텝당 고정 비용)
-- $\|\omega\|^2$: 각속도 크기 제곱 (기체 불안정도)
-- $\|\Delta a\|^2$: 연속 스텝 간 액션 변화량 제곱 (급격한 조작 억제)
-
-**Layer 3 — 접근 보상**
-
-$$R_3 = w_{dist} \cdot (d_{prev} - d_{now}) + w_{heading} \cdot \cos(\theta) \cdot \text{gate}(v_{xy}) + w_{impact} \cdot e^{-k_{impact} \cdot d_{impact}}$$
-
-- $d_{prev} - d_{now}$: 타겟까지 거리 감소량 (접근할수록 양수)
-- $\cos(\theta)$: 드론 진행 방향과 타겟 방향 사이 각도의 코사인 (헤딩 정렬)
-- $\text{gate}(v_{xy}) = \min(v_{xy}/2, 1)$: 속도 게이트 (정지 상태에서 헤딩 보상 수집 방지)
-- $e^{-k_{impact} \cdot d_{impact}}$: CCIP 예측 오차 감소 보상
-
-**Layer 4 — 투하 정확도 보상 (에피소드 종료)**
-
-$$R_4 = w_{drop} \cdot e^{-k_2 \cdot d_{error}} + r_{jackpot} \cdot \mathbf{1}[d_{error} \leq 0.1m] + r_{attempt} - \text{penalty}_{instability}$$
-
-- $d_{error}$: Gazebo 물리 시뮬레이션에서 측정한 **실제** 착탄 오차 (m)
-- $e^{-k_2 \cdot d_{error}}$: 오차가 작을수록 높은 보상
-- $r_{jackpot}$: 0.1m 이내 착탄 시 추가 보너스
-- $r_{attempt}$: 투하 시도 자체에 대한 보너스 (v2 추가)
-- $\text{penalty}_{instability}$: 투하 시 각속도/기울기 초과 시 차감
-
-**미투하 패널티 (스텝 초과 시)**
-
-```
-truncation_penalty = -N   (투하 없이 500 스텝 초과)
-```
+> **Dockerfile 주의(이미지 자체 버그 대응, 우리 코드 아님):** isaac-sim:5.1.0 이미지는
+> (a) 번들 python 아카이브 전반에 dangling `packaging/_structures.py` 심링크가 있어
+> pip/torch/isaac import를 깨뜨리고, (b) `isaaclab.sh --install`이 core `isaaclab` 패키지 설치에
+> 실패한다(pkg_resources 없음). Dockerfile에 두 버그의 수정이 포함되어 있다.
 
 ---
 
-#### v1 설정 (초기)
+## 5. 실행 방법
 
-```yaml
-# Layer 3
-w_dist: 1.0
-w_heading: 1.0
-w_impact: 2.0
-k_impact: 0.05
+컨테이너(Isaac Sim 5.1.0 + Isaac Lab v2.3.2 + rsl_rl) 안에서, 이 저장소를
+`/workspace/drone-bombard`로 마운트하고 `PYTHONPATH`에 `isaac_lab/`을 추가한다.
 
-# Layer 4
-auto_drop_threshold: 2.0   # CCIP 예측 오차 ≤ 2m 시 자동 투하
-k2_precision: 5.0
-w_drop_base: 50.0
-r_success_jackpot: 100.0
-# 미투하 패널티: -50
-# drop attempt bonus: 없음
+```bash
+# 0. (헤드리스, isaaclab 불필요) 순수 로직 유닛테스트
+pytest isaac_lab/tests/test_math.py -v          # 30/30
+
+# 1. 무학습 1-에피소드 검증 (env 구성 → reset → 1 에피소드)
+./isaaclab.sh -p isaac_lab/verify_one_episode.py --headless --enable_cameras --num_steps 300
+
+# 2. PPO 학습 (헤드리스, wandb)
+./isaaclab.sh -p isaac_lab/train.py --task Isaac-DroneBombard-Direct-v0 \
+    --headless --num_envs 2048
+#   dry-run: --num_envs 256 --max_iterations 20 --run_name dryrun_256
+
+# 3. RTX 1-에피소드 영상 녹화 (드론 + 페이로드 + 타겟 마커; driver ≥580 필요)
+./isaaclab.sh -p isaac_lab/record_episode.py --headless --enable_cameras \
+    --video_length 300 --out /workspace/logs/isaac_lab/videos
+
+# 4. 컨트롤러 물리 sanity + PX4 대비 스텝응답
+./isaaclab.sh -p isaac_lab/play.py --zero-actions
+./isaaclab.sh -p isaac_lab/play.py --scripted
+./isaaclab.sh -p isaac_lab/play.py --step-response --out-csv .../step_response.csv
+
+# 5. 실제 YOLOv8 평가 + vision 캘리브레이션 (TiledCamera, num_envs ≤ 8)
+./isaaclab.sh -p isaac_lab/yolo_eval.py --calibrate --num_envs 8 --headless
+./isaaclab.sh -p isaac_lab/yolo_eval.py --eval --policy .../model_final.pt --num_envs 8 --headless
 ```
 
-#### v1 학습 결과 및 문제점 (333K steps 기준)
-
-| 지표 | 결과 |
-|------|------|
-| `success_rate` 피크 | 118K steps에서 2.56%, 이후 1.0%까지 하락 및 정체 |
-| `ep_rew_mean` | -455까지 개선 후 다시 -939로 악화 |
-| `ep_len_mean` | 430 → 442로 증가 (투하 없이 에피소드 끝까지 소모) |
-
-**근본 원인**: `k2_precision=5.0`에서 2m 오차 투하 시 Layer 4 보상:
-
-$$R_4 = 50 \cdot e^{-5 \times 2} = 50 \times 0.0000454 \approx 0$$
-
-투하해도 보상이 거의 0이어서 agent가 맴돌며 Layer 3 보상만 수집하는 전략을 선택.
-
-#### v2 변경 사항 및 이유
-
-```yaml
-# Layer 3
-w_dist: 0.3          # 1.0 → 0.3: 맴돌기 전략으로 얻는 보상 축소
-w_heading: 0.4       # 1.0 → 0.4: heading farming 억제
-w_impact: 0.2        # 2.0 → 0.2: CCIP orbit 수확 차단 (핵심)
-
-# Layer 4
-auto_drop_threshold: 4.0   # 2.0 → 4.0: 투하 경험 빈도 증가
-k2_precision: 0.3    # 5.0 → 0.3: 먼 거리 투하도 의미 있는 보상
-w_drop_base: 100.0   # 50 → 100: 투하 보상 전체 스케일 상향
-# 미투하 패널티: -50 → -120
-# drop attempt bonus: +20 → +120
-```
-
-**배경**: 이전 설정(`w_impact=2.0`, `w_heading=1.0`)에서 per-step orbit 보상이 너무 커서 drop보다 timeout이 수학적으로 이득인 구조 발생.
-```
-per-step ≈ 1.9/step → orbit 300step: +420 vs drop 200step: +450 (차이 +30 → critic 추정 불가)
-```
-→ `w_impact`, `w_heading` 축소 + `drop_attempt_bonus` 대폭 증가로 drop이 항상 orbit보다 명확히 유리하게 조정:
-```
-per-step ≈ 0.52/step → orbit: +36 vs drop: +264 (7배 차이)
-```
-
-**오차별 Layer 4 보상 비교**
-
-| 오차 | v1: $50 \cdot e^{-5d}$ | v2: $100 \cdot e^{-0.3d} + 120$ |
-|------|------------------------|----------------------------------|
-| 0.1m | 50×0.607 = **30.4** (+100 jackpot) | 100×0.970 + 120 = **217** (+100 jackpot) |
-| 0.5m | 50×0.082 = **4.1** | 100×0.861 + 120 = **206** |
-| 2.0m | 50×0.000045 ≈ **0** | 100×0.549 + 120 = **175** |
-| 5.0m | ≈ **0** | 100×0.223 + 120 = **142** |
-| 10m  | ≈ **0** | 100×0.050 + 120 = **125** |
-
-먼 거리에서 투하해도 의미 있는 보상이 주어져 agent가 투하 경험을 쌓고, 점차 더 정확한 위치에서 투하하도록 수렴하는 것을 기대합니다.
+상세 절차·주의사항은 `isaac_lab/README.md` 참조.
 
 ---
 
-### 11.5 수동 실행 (개별 컴포넌트 — 디버깅용)
+## 6. 검증 현황 (2026-07-03, 라이브)
 
-**공통 환경 변수:**
-```bash
-GZ_PATH=/workspace/gazebo_models:/opt/PX4-Autopilot/Tools/simulation/gz/models:/opt/PX4-Autopilot/Tools/simulation/gz/worlds
-```
+- **유닛테스트:** `pytest tests/test_math.py` — **30/30** (isaaclab 미설치 상태, 순수 torch).
+- **무학습 1-에피소드:** `VERIFY: PASS` — env 구성·USD 씬·질량 오버라이드·reset(obs (1,14))·
+  148스텝 안정 호버·NaN 0·stagnation guard 정상.
+- **PPO 학습 dry-run(256 envs, 20 iters):** 정상 학습 — reward **−75 → +29**, ep_len **2 → ~100**,
+  `d_xy_min 0.747`(일부 드론이 이미 0.8 m 성공반경 도달). wandb 프로젝트 `drone-bombard-isaac`.
+- **RTX 영상 녹화:** driver 580 업그레이드 후 드론+페이로드+타겟 1-에피소드 녹화(§5-3).
 
-**Terminal 1 — MicroXRCE-DDS Agent:**
-```bash
-MicroXRCEAgent udp4 -p 8888
-```
-
-**Terminal 2 — Gazebo Harmonic:**
-```bash
-GZ_SIM_RESOURCE_PATH=$GZ_PATH gz sim -r -s /workspace/gazebo_models/worlds/x_marker_world.sdf
-```
-
-**Terminal 3 — PX4 SITL (Gazebo 기동 후):**
-```bash
-cd /opt/PX4-Autopilot/build/px4_sitl_default/src/modules/simulation/gz_bridge
-PX4_GZ_STANDALONE=1 PX4_GZ_WORLD=x_marker_world PX4_SIM_MODEL=gz_x500_bombard \
-GZ_SIM_RESOURCE_PATH=$GZ_PATH \
-  /opt/PX4-Autopilot/build/px4_sitl_default/bin/px4
-```
-
-**Terminal 4 — ros_gz_bridge:**
-```bash
-cd /workspace/ros2_ws && source install/setup.bash
-ros2 run ros_gz_bridge parameter_bridge \
-  --ros-args -p "config_file:=/workspace/ros2_ws/src/mission_manager/config/ros_gz_bridge.yaml"
-```
-
-**Terminal 5 — ROS2 미션 노드:**
-```bash
-cd /workspace/ros2_ws && source install/setup.bash
-ros2 run mission_manager mission_manager_node &
-ros2 run drone_controller controller &
-ros2 run rl_navigation rl_navigation_node &
-ros2 run drop_calculator calculator
-```
+상세: `notes/experiments/exp_012_isaac_migration_phase2.md`,
+`notes/research/isaac_lab_architecture.md`, `notes/research/isaac_velocity_controller.md`.
 
 ---
 
-### 11.6 테스트 (비전 탐지 시뮬레이션)
-
-```bash
-docker exec -it drone-bombard-harmonic bash
-cd /workspace/ros2_ws && python3 system_tester.py
-```
-
-### 11.7 실시간 모니터링
-
-```bash
-# 미션 상태 + 투하 오차
-ros2 topic echo /mission/state &
-ros2 topic echo /rl/drop_error
-
-# 페이로드 위치
-ros2 topic echo /drone/payload/position
-
-# 카메라 영상 (RViz2)
-rviz2
-# Add → By topic → /vision/annotated_image
-```
-
-### 11.8 전체 미션 시퀀스
-
-```
-[DroneDropEnv] Gazebo 기동 → x_marker_world 로드
-[DroneDropEnv] t=10s ros_gz_bridge 기동
-[DroneDropEnv] t=20s PX4 SITL 기동 → x500_bombard_rN_N 스폰
-
---- 에피소드 시작 (reset() 호출) ---
-[EPISODE] Gazebo 월드 리셋 → 드론·페이로드 초기 위치 복원
-[EPISODE] PX4 SITL 재기동 → t=2s 후 드론 스폰
-
-[TAKEOFF]   drone_controller: ARM + OFFBOARD 진입, ENU (0,0,10) 상승
-[CRUISE]    고도 10m 도달 → 북동쪽 1 m/s 순항
-[TRACKING]  X마커 감지 → rl_navigation 속도 제어 인수
-[DROP]      /payload/drop_cmd → DetachableJoint 해제 → 자유낙하
-            drop_calculator → /rl/drop_error (m)
-```
-
-## Phase 5: Reinforcement Learning — Fighter Jet Fly-by Drop
-
-### Overview
-
-Phase 5 replaces the hard-coded `rl_navigation_node` with a trained **Soft Actor-Critic (SAC)**
-policy that learns to execute a high-speed fly-by drop. Instead of hovering over the target, the
-drone maintains maximum velocity through the target zone and releases the payload at the optimal
-moment so that projectile physics carry it to the X-marker.
-
-### Architecture
-
-| Component | File | Role |
-|-----------|------|------|
-| Gymnasium env | `rl_navigation/drone_drop_env.py` | 15-dim obs / 5-dim action space; manages episode.launch.py process group |
-| SAC trainer | `rl_navigation/train_sac.py` | Stable-Baselines3 SAC; TensorBoard logging; checkpoint resume |
-| Evaluator | `rl_navigation/evaluate.py` | Runs N episodes; saves report, plots, JSON summary |
-
-### Why SAC over PPO
-
-- **Off-policy** → more sample-efficient (crucial since each episode reset takes ~12 s)
-- **Entropy regularization** → naturally explores diverse drop trajectories
-- **Continuous actions** → maps directly to velocity commands
-
-### Reset Architecture
-
-`DroneDropEnv.reset()` runs this sequence on every episode boundary:
-
-```
-1. os.killpg(SIGTERM)   → kill PX4 + mission nodes (process group)  ~1.5 s
-2. gz service call       → Gazebo world reset (physics + poses)       ~0.5 s
-3. episode.launch.py     → PX4 reconnects to Gazebo, drone spawned    ~2 s
-4. _wait_for_cruise()    → blocks until TAKEOFF → CRUISE complete     ~8 s
-                                                          Total: ~12 s/episode
-```
-
-### Observation Space (15-dim)
-
-| Indices | Feature | Normalization |
-|---------|---------|---------------|
-| 0–2 | ENU position | ÷ 50 m |
-| 3–5 | ENU velocity | ÷ 15 m/s |
-| 6–8 | Angular velocity (body FRD) | ÷ π rad/s |
-| 9–10 | Pixel u, v (normalized) | (px/640)×2−1 |
-| 11 | Detection confidence | [0, 1] |
-| 12 | Payload attached flag | 0 or 1 |
-| 13–14 | Relative distance to target | ÷ 50 m |
-
-### Action Space (5-dim, all in [-1, 1])
-
-| Index | Meaning | Physical scale |
-|-------|---------|----------------|
-| 0 | vx (East) | × 15 m/s |
-| 1 | vy (North) | × 5 m/s |
-| 2 | vz (Up) | × 3 m/s |
-| 3 | yaw_rate | × 1 rad/s |
-| 4 | drop_trigger | > 0 fires drop |
-
-### Reward Design
-
-```
-per step:   time_penalty = -0.005
-            hover_penalty = (tanh(speed/5) - 1) × 0.5   # penalise hovering
-
-at drop:    speed_reward = tanh(speed/3) × 5.0           # reward high speed
-            stability_penalty = -‖ang_vel‖
-
-at impact:  accuracy_reward = -drop_error_m × 2.0        # from /rl/drop_error
-```
-
-### Hyperparameter Config
-
-All training, SAC, environment, and WandB settings live in one file:
-
-```
-ros2_ws/src/rl_navigation/config/hyperparams.yaml
-```
-
-Edit the yaml and rebuild (`colcon build --packages-select rl_navigation`) to apply changes. No code edits needed for tuning runs.
-
-### WandB Setup
-
-```bash
-# Inside container — one-time login
-wandb login
-
-# Set your entity (username or team) in hyperparams.yaml:
-#   wandb:
-#     entity: "your-wandb-username"
-```
-
-WandB run resumes automatically after Spot VM preemption (uses `resume="allow"`).
-
-### CUDA / GPU
-
-`device: "cuda"` in `hyperparams.yaml` enables the NVIDIA L4 GPU. Change to `"cpu"` if training without a GPU. SB3 runs fp32 on CUDA by default.
-
-### Spot VM Resilience
-
-The training script handles GCP Spot VM preemption automatically:
-
-- **SIGTERM handler** — when GCP sends SIGTERM (~30 s before eviction), saves `sac_drop_preempt.zip` + `sac_drop_preempt_replay.pkl` and uploads to WandB
-- **Replay buffer checkpoint** — saved every 5,000 steps alongside model checkpoints; avoids cold-start after preemption
-- **WandB resume** — same run ID continues after restart
-
-```bash
-# After preemption, resume from emergency checkpoint
-ros2 run rl_navigation train_sac \
-  --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip
-```
-
-### Training
-
-```bash
-# 스테일 프로세스 정리 (세션 시작 전 1회)
-bash /workspace/ros2_ws/start_infra_clean.sh
-
-# SAC 학습 시작 — Gazebo/PX4/bridge 모두 자동 관리됨
-# source 순서 중요: /opt/ros → /root → /workspace 순서 필수
-# 순서 틀리면 px4_msgs import 에러로 에피소드 노드 silent crash
-source /opt/ros/humble/setup.bash
-source /root/ros2_ws/install/setup.bash
-source /workspace/ros2_ws/install/setup.bash
-export GZ_SIM_RESOURCE_PATH=/workspace/gazebo_models:/opt/PX4-Autopilot/Tools/simulation/gz/models:/opt/PX4-Autopilot/Tools/simulation/gz/worlds
-ros2 run rl_navigation train_sac
-
-# With explicit config path
-ros2 run rl_navigation train_sac \
-  --config /workspace/ros2_ws/src/rl_navigation/config/hyperparams.yaml
-
-# Resume from checkpoint
-ros2 run rl_navigation train_sac \
-  --resume /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip
-
-# Monitor (TensorBoard + WandB both active)
-tensorboard --logdir /workspace/ros2_ws/rl_logs/sac_drop
-```
-
-> ⚠️ `infra.launch.py`는 실행하지 마세요. `DroneDropEnv`가 인프라를 자동 관리합니다.
-
-Checkpoints saved to `/workspace/ros2_ws/rl_checkpoints/` every 5,000 steps (model + replay buffer).
-
-### Evaluation
-
-```bash
-ros2 run rl_navigation evaluate --model /workspace/ros2_ws/rl_checkpoints/sac_drop_final.zip --episodes 20
-```
-
-Outputs written to `/workspace/ros2_ws/rl_eval_results/`:
-- `evaluation_report.md` — metrics table (mean/std/min miss distance, mean drop speed)
-- `evaluation_summary.json` — machine-readable summary
-- `drop_error_dist.png` — miss distance histogram
-- `episode_rewards.png` — per-episode reward curve
-- `trajectory_top.png` — 2D overhead trajectory of final episode
-
----
-
-## 12. VM 접속 가이드 (팀원용)
-
-### VM 정보
-
-| 항목 | 값 |
-|------|----|
-| VM 이름 | `l4-spot` |
-| Zone | `asia-east1-a` |
-| GCP 프로젝트 | `charming-league-481306-d8` |
-| GPU | NVIDIA L4 |
-| 타입 | Spot VM (선점 시 자동 재시작, IP 변경 가능) |
-| 현재 외부 IP | `130.211.241.166` (변경될 수 있음) |
-
-> **IP 확인 명령:**
-> ```bash
-> gcloud compute instances describe l4-spot \
->   --zone=asia-east1-a --project=charming-league-481306-d8 \
->   --format="value(networkInterfaces[0].accessConfigs[0].natIP)"
-> ```
-
-### 접속 방법
-
-**방법 1 — gcloud SSH (권장)**
-```bash
-gcloud compute ssh l4-spot \
-  --zone=asia-east1-a --project=charming-league-481306-d8
-```
-
-**방법 2 — Guacamole 웹 GUI (브라우저)**
-```
-https://130.211.241.166
-계정: Discord / ide-server-cloud 채널 참조
-```
-- SSL 경고 시 **고급 → 계속 진행** 클릭
-- Spot VM 선점 후 재기동 시 IP가 바뀔 수 있으니 위 IP 확인 명령으로 최신 IP 확인
-
-**방법 3 — VNC 직접 (SSH 터널)**
-```bash
-gcloud compute ssh l4-spot \
-  --zone=asia-east1-a -- -L 5901:localhost:5901
-# 이후 VNC 클라이언트로 localhost:5901 접속
-```
-
-모든 팀 공용 작업 경로: `/opt/drone-bombard/`
-
----
-
-## 13. Spot VM 무인 학습 자동화
-
-### 아키텍처 개요
-
-```
-[Spot VM — Training]
-    │
-    ├── SIGTERM handler (train_sac.py)
-    │       └── 선점 30초 전 경고 → sac_drop_preempt.zip + _replay.pkl 저장
-    │
-    └── VM TERMINATED
-            ↓
-[Cloud Scheduler, 5분 주기]
-            ↓
-[Cloud Function: drone-watchdog]
-    ├── TERMINATED + training_active=true + operation=preempted → 재시작
-    ├── TERMINATED + training_active=false → 수동 종료, 재시작 안 함
-    ├── Cooldown 15분 미만 → skip
-    └── 연속 3회 초과 → 중단 + Cloud Logging 경고
-            ↓
-[VM 재시작 → startup.sh 자동 실행]
-    └── train_managed.sh → 최신 체크포인트 탐지 → 학습 재개
-```
-
-### VM 수동 종료 (중요!)
-
-> ⚠️ **GCP 콘솔 또는 `gcloud compute instances stop` 직접 사용 금지!**
-> watchdog이 선점으로 오인하여 자동 재시작할 수 있습니다.
-
-반드시 아래 스크립트 사용:
-```bash
-bash infra/stop.sh
-```
-
-이 스크립트는:
-1. `drone_training_active=false` 메타데이터 설정 (watchdog 재시작 방지)
-2. 학습 프로세스에 SIGTERM 전송 → `sac_drop_preempt.zip` 저장
-3. VM 종료
-
-### 체크포인트 구조
-
-| 타입 | 경로 | 용도 |
-|------|------|------|
-| 선점 저장 | `rl_checkpoints/sac_drop_preempt.zip` + `_replay.pkl` | **자동 resume 1순위** |
-| 정기 저장 | `rl_checkpoints/sac_drop_*_steps.zip` | 자동 resume 2순위 (최신 기준) |
-| Best model | `rl_checkpoints/best_model/best_model.zip` | 저장 전용 — 자동 resume 대상 아님 |
-| Milestone | `rl_checkpoints/archive/sac_drop_milestone_*.zip` | 아카이브 전용 |
-
-> **best_model에서 학습 재시작하려면 수동으로:**
-> WandB 결과를 보고 판단 후 `infra/stop.sh`로 종료 → 직접 `train_managed.sh --fresh --resume best_model/best_model.zip` 실행
-
-### 학습 모니터링
-
-```bash
-# VM 로그 (부팅 및 startup.sh 실행 결과)
-sudo cat /var/log/drone-bombard-startup.log
-
-# 학습 로그 (컨테이너 내부)
-docker exec drone-bombard-harmonic tail -f /tmp/production_train.log
-
-# 컨테이너 로그
-docker logs -f drone-bombard-harmonic
-
-# WandB: https://wandb.ai/nayoonho0922-seoul-national-university/drone-bombard-sac
-```
-
-### 인프라 배포 (최초 1회)
-
-```bash
-bash infra/deploy.sh
-```
-
-포함 내용: GPU 가용성 확인 → 디스크 스냅샷 → VM 마이그레이션 → Cloud Function 배포 → Cloud Scheduler 설정
-
-### 재시작 카운터 수동 리셋 (watchdog 중단 시)
-
-연속 3회 재시작 실패로 watchdog이 멈췄을 때:
-```bash
-gcloud compute instances add-metadata l4-spot \
-  --zone=asia-east1-a --project=charming-league-481306-d8 \
-  --metadata watchdog_restart_count=0
-```
-- `speed_vs_accuracy.png` — drop speed vs miss distance scatter
+## 7. 관련 문서
+
+- `isaac_lab/README.md` — Isaac Lab 코드 실행 상세
+- `notes/research/isaac_lab_architecture.md` — 폴더 구조·데이터 흐름·Gazebo 대비 차이
+- `notes/experiments/exp_012_isaac_migration_phase2.md` — 이전 작업·parity 표·검증 결과
+- `notes/research/isaac_velocity_controller.md` — 속도 컨트롤러·PX4 게인 매핑·검정 상태
+- `notes/research/rl_rules.md` Rule 16 — 시뮬레이터 이전 시 plant/reward parity 원칙
+- `drone_drop_system/docker/Dockerfile` — Isaac Sim + Isaac Lab + rsl_rl 이미지
+- `infra/deploy.sh` / `infra/startup.sh` — GCP L4 Spot VM 빌드·기동

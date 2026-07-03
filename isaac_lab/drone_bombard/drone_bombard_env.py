@@ -239,6 +239,11 @@ class DroneBombardEnvCfg(DirectRLEnvCfg):
     drop: DroneBombardDropCfg = DroneBombardDropCfg()
     controller: DroneBombardControllerCfg = DroneBombardControllerCfg()
 
+    # Visualization markers (payload cylinder under the drone + target X on the
+    # ground). Off by default so training pays no marker cost; turn on for
+    # recording/eval to show the drone carrying a payload toward the target.
+    show_markers: bool = False
+
 
 # =====================================================================
 # Env
@@ -285,13 +290,68 @@ class DroneBombardEnv(DirectRLEnv):
         # AFTER super().__init__() — root_physx_view is only valid once the
         # sim is playing. Best-effort: if the API differs, fall back to the
         # asset's actual mass so the controller stays self-consistent.
+        # Read the body's REAL PhysX inertia BEFORE any override. get_inertias
+        # returns the cached SET value after set_inertias, and set_inertias does
+        # NOT propagate to the simulated body (unlike set_masses) — so we must
+        # read it first, and the rate loop must use this real value.
+        #
+        # Why it matters: the rate loop applies torque = I_ctrl*(k_rate*rate_err),
+        # giving closed loop dw/dt = (I_ctrl/I_body)*k_rate*rate_err — stable only
+        # when I_ctrl == I_body. Using the cfg inertia (0.0217) against the body's
+        # real ~1.7e-5 inertia was a ~1300x over-torque -> instant spin-out on any
+        # maneuver (hover was fine only because torque ~= 0 there). (Plant-fidelity
+        # follow-up: make the inertia override actually stick for true x500
+        # rotational dynamics — see notes/research/isaac_velocity_controller.md.)
+        bidx = self._body_id[0] if isinstance(self._body_id, (list, tuple)) else int(self._body_id)
+        body_I = self._robot.root_physx_view.get_inertias()[0, bidx].reshape(-1).clone()
+        self._inertia_diag = torch.stack([body_I[0], body_I[4], body_I[8]]).to(self.device)
+
         self._apply_body_mass_override()
         self._ctrl_mass = float(self._robot.root_physx_view.get_masses()[0].sum())
         self._max_thrust = self.cfg.asset.thrust_to_weight_unloaded * self._ctrl_mass * 9.81
-        self._inertia_diag = torch.tensor(self.cfg.asset.inertia_diag, device=self.device)
         self._k_rate = torch.tensor(self.cfg.controller.k_rate, device=self.device)
         print(f"[DroneBombardEnv] control mass={self._ctrl_mass:.3f}kg max_thrust={self._max_thrust:.2f}N "
-              f"body_id={self._body_id}")
+              f"inertia_diag={self._inertia_diag.detach().cpu().numpy()} body_id={self._body_id}")
+
+        self._setup_markers()
+
+    def _setup_markers(self):
+        """Optional visualization: payload cylinder (measured payload_cylinder
+        SDF dims) riding under the drone + an X-marker plate on the ground at
+        the target. Visual-only (VisualizationMarkers) — no physics, no cost
+        unless cfg.show_markers is True. Used for recording/eval."""
+        self._payload_marker = None
+        self._target_marker = None
+        if not self.cfg.show_markers:
+            return
+        from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
+
+        self._payload_marker = VisualizationMarkers(VisualizationMarkersCfg(
+            prim_path="/Visuals/Payload",
+            markers={"payload": sim_utils.CylinderCfg(
+                radius=0.05, height=0.06, axis="Z",
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.95, 0.45, 0.05)),
+            )},
+        ))
+        self._target_marker = VisualizationMarkers(VisualizationMarkersCfg(
+            prim_path="/Visuals/Target",
+            markers={"target": sim_utils.CylinderCfg(
+                radius=0.8, height=0.02, axis="Z",
+                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.1, 0.1)),
+            )},
+        ))
+
+    def _update_markers(self):
+        if self._payload_marker is None:
+            return
+        pos_w = self._robot.data.root_pos_w
+        payload_pos = pos_w.clone()
+        payload_pos[:, 2] += self.cfg.drop.payload_mount_offset_z  # ride under the drone
+        self._payload_marker.visualize(translations=payload_pos)
+        target_pos = torch.zeros_like(pos_w)
+        target_pos[:, :2] = self._target_xy + self.scene.env_origins[:, :2]
+        target_pos[:, 2] = 0.01
+        self._target_marker.visualize(translations=target_pos)
 
     def _apply_body_mass_override(self):
         try:

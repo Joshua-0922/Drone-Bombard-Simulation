@@ -41,6 +41,28 @@ USD 변환은 **의도적으로 보류** — per-rotor 액추에이션으로 전
 가하므로 컨트롤러가 관성을 명시적으로 곱해야 한다(PX4는 mixer가 흡수하던 부분). 게인
 `k_att`(1/s)·`k_rate`(1/s)는 관성 무관 물리 단위로 유지.
 
+## ⚠️ 두 번째 치명 버그 — inertia override가 sim에 미반영 (2026-07-03, 수정됨)
+
+렌더링 영상 녹화 중 발견: zero-action 호버는 안정인데 **어떤 수평 기동이든 step 0에서 즉시
+스핀아웃**(bad_attitude, ‖ω‖≈108 rad/s). CTRL 서브스텝 덤프로 원인 확정:
+- `root_physx_view.set_masses()`는 sim body에 반영됨(그래서 호버 시 질량 2.17kg로 정상).
+- **`root_physx_view.set_inertias()`는 뷰 캐시만 갱신하고 sim body에는 미반영.** `get_inertias()`는
+  내가 set한 값(0.0217)을 되돌려주지만, 실제 sim body는 Crazyflie 기본 관성 **~1.7e-5**를 유지.
+- rate loop이 `torque = I_ctrl·(k_rate·rate_err)`를 적용 → 폐루프 `dω/dt = (I_ctrl/I_body)·
+  k_rate·rate_err`. `I_ctrl(0.0217) / I_body(1.7e-5) ≈ 1300×` 과토크 → 폭주. 호버는 torque≈0이라
+  1300×라도 ≈0이라 우연히 안정이었음.
+
+**수정: 컨트롤러가 body의 실제 관성을 쓰도록 한다.** override 호출 *전에* `get_inertias()`로
+실제값(~1.7e-5)을 읽어 `self._inertia_diag`에 저장하고 rate loop이 이 값을 사용. 그러면
+`I_ctrl == I_body` → `dω/dt = k_rate·rate_err`(관성 상쇄, 안정). 수정 후 수평 기동에서
+‖ω‖≈0.08 rad/s, bad_attitude 0, 안정 비행 확인.
+
+**교훈 / 후속:** Isaac에서 body 관성 오버라이드는 `set_inertias`만으로 sim에 안 먹는다(질량과
+다름). 실제 x500 회전 관성(0.0217)으로 하려면 spawn USD/RigidBodyPropertiesCfg 단계에서
+설정하거나 다른 API 경로 필요 — **plant-fidelity 후속 과제**. 현재는 컨트롤러를 실제 body
+관성에 매칭해 안정성만 확보(질량은 2.17kg 정상, 회전 관성은 Crazyflie값 = 물리적으론 가볍게
+회전하나 컨트롤러가 매칭돼 제어 가능).
+
 ## 캐스케이드 구조 (`_run_velocity_controller`, `drone_bombard_env.py`)
 
 ```
