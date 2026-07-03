@@ -31,6 +31,8 @@ parser.add_argument("--video_length", type=int, default=250)
 parser.add_argument("--fps", type=int, default=10)
 parser.add_argument("--out", type=str, default="/tmp/isaac_rec")
 parser.add_argument("--seed", type=int, default=0)
+parser.add_argument("--spawn_dist", type=float, default=0.0,
+                    help="override spawn distance from target (m); 0 = env default 3-7 m.")
 parser.add_argument("--hold", action="store_true",
                     help="disable success/stagnation termination so the drone reaches the target and hovers "
                          "over it for the full video (nicer demo).")
@@ -60,6 +62,8 @@ def main():
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else "cuda:0"
     env_cfg.seed = args_cli.seed
     env_cfg.show_markers = True  # payload cylinder under the drone + target X plate
+    if args_cli.spawn_dist > 0:
+        env_cfg.reset.handoff_dist_range = (args_cli.spawn_dist, args_cli.spawn_dist)
     if args_cli.hold:
         env_cfg.reward.success_radius = 0.0        # never terminate on "success"
         env_cfg.termination.stagnation_window = 10 ** 9  # effectively disable stagnation
