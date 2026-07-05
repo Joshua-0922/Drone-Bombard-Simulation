@@ -179,6 +179,16 @@ class DroneBombardAssetCfg:
     drone_mass: float = 2.07  # base 2.0 + 4x0.016076923 rotors
     payload_mass: float = 0.1  # payload_cylinder SDF
     inertia_diag: tuple[float, float, float] = (0.02166666666666667, 0.02166666666666667, 0.04000000000000001)
+    # The cf2x body link's REAL PhysX inertia (read via get_inertias() before
+    # any override — see notes/experiments/exp_013 §4d). Authored at spawn to
+    # pin the rotational plant every policy so far has actually flown: the old
+    # runtime set_inertias() never reached the solver, so the effective plant
+    # was always x500 mass + THIS inertia. Switching to the true x500
+    # `inertia_diag` above is a deliberate, separate plant change — do not
+    # conflate it with the mass fix (rate loop is self-consistent either way
+    # because the controller reads the real inertia, but don't change two
+    # things at once).
+    native_body_inertia_diag: tuple[float, float, float] = (1.6572e-05, 1.6656e-05, 2.9262e-05)
     thrust_to_weight_unloaded: float = 2.0  # fixed airframe/motor property, defined unloaded
     tilt_clamp_deg: float = 35.0
 
@@ -227,7 +237,16 @@ class DroneBombardEnvCfg(DirectRLEnvCfg):
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2048, env_spacing=16.0, replicate_physics=True)
 
-    robot_cfg: ArticulationCfg = CRAZYFLIE_CFG.replace(prim_path="/World/envs/env_.*/Robot")
+    # init_state override: CRAZYFLIE_CFG ships joint_vel = +-200 rad/s on the
+    # four prop joints (cosmetic spinning rotors in the stock quadcopter demo).
+    # With enable_gyroscopic_forces=True those spins are real dynamics, and
+    # _reset_idx writes default_joint_vel back on EVERY reset — re-injecting
+    # the spin each episode despite the "reset rotor joints" intent. Zeroing
+    # at the source fixes both the initial spawn and every reset.
+    robot_cfg: ArticulationCfg = CRAZYFLIE_CFG.replace(
+        prim_path="/World/envs/env_.*/Robot",
+        init_state=CRAZYFLIE_CFG.init_state.replace(joint_vel={".*": 0.0}),
+    )
 
     obs: DroneBombardObsCfg = DroneBombardObsCfg()
     action: DroneBombardActionCfg = DroneBombardActionCfg()
@@ -359,29 +378,39 @@ class DroneBombardEnv(DirectRLEnv):
         target_pos[:, 2] = 0.01
         self._target_marker.visualize(translations=target_pos)
 
-    def _apply_body_mass_override(self):
-        try:
-            asset = self.cfg.asset
-            view = self._robot.root_physx_view
-            masses = view.get_masses().clone()
-            inertias = view.get_inertias().clone()
-            bidx = self._body_id[0] if isinstance(self._body_id, (list, tuple)) else int(self._body_id)
-            masses[:, bidx] = asset.loaded_mass
-            ixx, iyy, izz = asset.inertia_diag
-            inertias[:, bidx, :] = torch.tensor(
-                [ixx, 0.0, 0.0, 0.0, iyy, 0.0, 0.0, 0.0, izz], dtype=inertias.dtype
+    def _author_body_mass_props(self):
+        """Author the x500 mass + the measured native inertia on the body link
+        at SPAWN time via UsdPhysics.MassAPI — the replacement for the former
+        runtime ``root_physx_view.set_masses()`` override. PhysX parses
+        USD-authored values before the first substep, so there is no window in
+        which the solver integrates a wrench sized for 2.17 kg against the
+        native 25 g shell (the once-per-process +8.4 m/s kick, exp_013 §4d).
+        Runs in ``_setup_scene`` on the source env's prim, before
+        ``clone_environments`` — physics replication propagates the authored
+        values to every env. Inertia is deliberately the native cf2x value,
+        NOT the x500 ``inertia_diag`` — see ``native_body_inertia_diag``."""
+        from pxr import Gf, UsdPhysics
+
+        from isaaclab.sim.utils import find_matching_prims
+
+        asset = self.cfg.asset
+        body_prims = find_matching_prims(self.cfg.robot_cfg.prim_path + "/body")
+        if not body_prims:
+            raise RuntimeError(
+                f"spawn-time mass authoring: no 'body' prim matched "
+                f"{self.cfg.robot_cfg.prim_path}/body"
             )
-            idx = torch.arange(self.num_envs)
-            view.set_masses(masses, idx)
-            view.set_inertias(inertias, idx)
-        except Exception as e:  # noqa: BLE001
-            print(f"[DroneBombardEnv][warn] body mass/inertia override failed ({e!r}); "
-                  f"using asset default mass — controller will self-size to it.")
+        for prim in body_prims:
+            mass_api = UsdPhysics.MassAPI.Apply(prim)
+            mass_api.CreateMassAttr().Set(asset.loaded_mass)
+            mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(*asset.native_body_inertia_diag))
+            mass_api.CreatePrincipalAxesAttr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
 
     # ------------------------------------------------------------------
     def _setup_scene(self):
         self._robot = Articulation(self.cfg.robot_cfg)
         self.scene.articulations["robot"] = self._robot
+        self._author_body_mass_props()
 
         spawn_ground = sim_utils.GroundPlaneCfg()
         spawn_ground.func("/World/ground", spawn_ground)
@@ -725,7 +754,11 @@ class DroneBombardEnv(DirectRLEnv):
 
         self._robot.write_root_pose_to_sim(default_root[:, :7], env_ids)
         self._robot.write_root_velocity_to_sim(default_root[:, 7:13], env_ids)
-        # reset rotor joints (Crazyflie articulation has 4 prop joints)
+        # reset rotor joints (Crazyflie articulation has 4 prop joints).
+        # default_joint_vel is all-zero via the init_state override in
+        # DroneBombardEnvCfg.robot_cfg — the stock CRAZYFLIE_CFG defaults are
+        # +-200 rad/s prop spin, which this write used to re-inject every
+        # reset with gyroscopic forces enabled.
         joint_pos = self._robot.data.default_joint_pos[env_ids]
         joint_vel = self._robot.data.default_joint_vel[env_ids]
         self._robot.write_joint_state_to_sim(joint_pos, joint_vel, None, env_ids)

@@ -1,5 +1,13 @@
 """_diag_kick.py — LIVE isolation of the reset velocity-kick mechanism.
 
+HISTORICAL (2026-07-04 forensics): this script diagnosed the runtime
+``set_masses()`` override that ``DroneBombardEnv.__init__`` used to call via
+``_apply_body_mass_override``. That override was replaced by spawn-time USD
+authoring (``_author_body_mass_props``), so the monkeypatch modes (t3/t4m/t4i)
+now patch a method nobody calls and are inert. Running ``--mode combo``
+against the fixed env is still meaningful as a regression check: every phase
+should show dvz ~= 0 at ssr=1. Full findings: notes/experiments/exp_013 §4d.
+
 Hypothesis H1: during the reset-flush physics substep(s) the PhysX solver
 integrates our applied body wrench against the NATIVE body mass (~0.027 kg)
 instead of the overridden 2.173 kg, while hover-sized thrust (~21.3 N,
