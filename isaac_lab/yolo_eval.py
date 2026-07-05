@@ -32,9 +32,12 @@ parser.add_argument("--eval", action="store_true")
 parser.add_argument("--policy", type=str, default=None)
 parser.add_argument("--yolo-weights", type=str, default="/workspace/drone-bombard/drone_bombard_best.pt")
 parser.add_argument("--marker-texture", type=str,
-                     default="/workspace/drone-bombard/gazebo_models/worlds/x_marker_world.sdf")
+                     default="/workspace/drone-bombard/gazebo_models/x_marker/materials/textures/x_marker.png")
 parser.add_argument("--out-csv", type=str, default="/workspace/logs/isaac_lab/yolo_calibration.csv")
-parser.add_argument("--range-bins", type=int, default=5, help="slant range 3-15m sweep bins")
+parser.add_argument("--range-bins", type=int, default=5, help="slant range sweep bins")
+parser.add_argument("--range-max", type=float, default=15.0,
+                    help="slant range sweep maximum (m); 27 covers the full "
+                         "climb-attractor envelope up to the 25 m altitude ceiling")
 parser.add_argument("--angle-bins", type=int, default=5, help="off-nadir 0-40deg sweep bins")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -57,14 +60,85 @@ from drone_bombard.drone_bombard_env import project_target_pinhole
 
 
 def _build_camera_cfg(vc):
+    import isaaclab.sim as sim_utils
+
+    # spawn=None would require a down_camera prim in the robot USD — the
+    # cf2x asset has none, so the sensor prim must be spawned here. Focal
+    # length chosen so the USD camera's h_fov matches the analytic pinhole:
+    # h_fov = 2*atan(h_aperture / (2*f)), aperture 20.955 mm (USD default).
+    import math as _math
+    focal = 20.955 / (2.0 * _math.tan(vc.h_fov / 2.0))
     return TiledCameraCfg(
         prim_path="/World/envs/env_.*/Robot/down_camera",
         offset=TiledCameraCfg.OffsetCfg(pos=(0.0, 0.0, -0.02), rot=(0.7071, 0.0, 0.7071, 0.0), convention="ros"),
         data_types=["rgb"],
         width=vc.img_w,
         height=vc.img_h,
-        spawn=None,
+        spawn=sim_utils.PinholeCameraCfg(
+            focal_length=focal,
+            horizontal_aperture=20.955,
+            clipping_range=(vc.near_clip, vc.far_clip),
+        ),
     )
+
+
+def _spawn_target_markers(env, texture_path):
+    """One 1.5 x 1.5 m ground quad per env, textured with the Gazebo
+    x_marker.png (same physical size as the Gazebo x_marker model.sdf) —
+    the visual YOLO was trained on. Pure visuals, no physics. Returns the
+    per-env translate ops for _sync_target_markers. Without this the scene
+    has NO visible target and --calibrate measures YOLO against a bare
+    ground plane (all-miss)."""
+    import omni.usd
+    from pxr import Gf, Sdf, UsdGeom, UsdShade
+
+    stage = omni.usd.get_context().get_stage()
+
+    mat_path = "/World/Looks/XMarkerMat"
+    material = UsdShade.Material.Define(stage, mat_path)
+    shader = UsdShade.Shader.Define(stage, mat_path + "/Shader")
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.8)
+    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
+    st_reader = UsdShade.Shader.Define(stage, mat_path + "/stReader")
+    st_reader.CreateIdAttr("UsdPrimvarReader_float2")
+    st_reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("st")
+    tex = UsdShade.Shader.Define(stage, mat_path + "/Tex")
+    tex.CreateIdAttr("UsdUVTexture")
+    tex.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(texture_path)
+    tex.CreateInput("st", Sdf.ValueTypeNames.Float2).ConnectToSource(
+        st_reader.ConnectableAPI(), "result")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(
+        tex.ConnectableAPI(), "rgb")
+    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+
+    half = 0.75  # 1.5 m marker, matches gazebo_models/x_marker/model.sdf
+    ops = []
+    for i in range(env.unwrapped.num_envs):
+        mesh = UsdGeom.Mesh.Define(stage, f"/World/XMarkers/marker_{i}")
+        mesh.CreatePointsAttr([(-half, -half, 0), (half, -half, 0),
+                               (half, half, 0), (-half, half, 0)])
+        mesh.CreateFaceVertexCountsAttr([4])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+        mesh.CreateExtentAttr([(-half, -half, 0), (half, half, 0)])
+        st = UsdGeom.PrimvarsAPI(mesh.GetPrim()).CreatePrimvar(
+            "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.varying)
+        st.Set([(0, 0), (1, 0), (1, 1), (0, 1)])
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+        ops.append(UsdGeom.Xformable(mesh).AddTranslateOp())
+    return ops
+
+
+def _sync_target_markers(env, marker_ops):
+    """Move each env's marker quad to its CURRENT target position. Call after
+    every reset (targets are resampled per episode)."""
+    from pxr import Gf
+
+    origins = env.unwrapped.scene.env_origins[:, :2].cpu()
+    targets = env.unwrapped._target_xy.cpu()
+    for i, op in enumerate(marker_ops):
+        op.Set(Gf.Vec3d(float(origins[i, 0] + targets[i, 0]),
+                        float(origins[i, 1] + targets[i, 1]), 0.02))
 
 
 def _run_yolo(model, rgb_batch):
@@ -90,15 +164,16 @@ def _run_yolo(model, rgb_batch):
     return u, v, conf, detected
 
 
-def run_calibrate(env, model, out_csv, range_bins, angle_bins):
+def run_calibrate(env, model, marker_ops, out_csv, range_bins, range_max, angle_bins):
     vc = env.unwrapped.cfg.vision
     rows = []
-    ranges = torch.linspace(3.0, 15.0, range_bins)
+    ranges = torch.linspace(3.0, range_max, range_bins)
     angles = torch.linspace(0.0, math.radians(40.0), angle_bins)
 
     for r in ranges.tolist():
         for a in angles.tolist():
             obs, _ = env.reset()
+            _sync_target_markers(env, marker_ops)
             n = env.unwrapped.num_envs
             device = env.unwrapped.device
 
@@ -113,7 +188,13 @@ def run_calibrate(env, model, out_csv, range_bins, angle_bins):
             root[:, 2] = spawn_alt
             env.unwrapped._robot.write_root_pose_to_sim(root[:, :7])
 
+            # re-pin pose+velocity every settle step: the bin pose must not
+            # drift (hover transients) — terminations are disabled for the
+            # calibrate task in main(), so no mid-bin resets either.
+            zero_vel = torch.zeros(n, 6, device=device)
             for _ in range(5):
+                env.unwrapped._robot.write_root_pose_to_sim(root[:, :7])
+                env.unwrapped._robot.write_root_velocity_to_sim(zero_vel)
                 env.step(torch.zeros(n, 4, device=device))
 
             camera: TiledCamera = env.unwrapped.scene["down_camera"]
@@ -140,7 +221,7 @@ def run_calibrate(env, model, out_csv, range_bins, angle_bins):
     print(f"[calibrate] wrote {len(rows)} rows to {out_csv}")
 
 
-def run_eval(env, model, policy_path, episodes=20):
+def run_eval(env, model, marker_ops, policy_path, episodes=20):
     from rsl_rl.runners import OnPolicyRunner
     from drone_bombard.agents.rsl_rl_ppo_cfg import DroneBombardPPORunnerCfg
 
@@ -150,6 +231,7 @@ def run_eval(env, model, policy_path, episodes=20):
     policy = runner.get_inference_policy(device=env.unwrapped.device)
 
     obs, _ = env.reset()
+    _sync_target_markers(env, marker_ops)
     n_done, n_success = 0, 0
     backproj_errors = []
     while n_done < episodes:
@@ -173,6 +255,7 @@ def run_eval(env, model, policy_path, episodes=20):
             f = env.unwrapped._done_flags
             n_done += int(done.sum().item())
             n_success += int(f["success"][done].sum().item())
+            _sync_target_markers(env, marker_ops)  # done envs got fresh targets
 
     print(f"[eval] episodes={n_done} success_rate={n_success/max(n_done,1):.2%}")
 
@@ -182,17 +265,44 @@ def main():
 
     env_cfg = parse_env_cfg(args_cli.task, num_envs=args_cli.num_envs)
     vc = env_cfg.vision
-    env_cfg.scene.down_camera = _build_camera_cfg(vc)
+
+    # DirectRLEnv creates the robot in _setup_scene, AFTER the scene cfg's
+    # entities are spawned — a camera injected via env_cfg.scene can never
+    # anchor to the robot prim ("Unable to find source prim path" crash).
+    # Follow the official direct-env pattern (cartpole_camera_env) instead:
+    # create the TiledCamera inside _setup_scene and register it as a sensor.
+    cam_cfg = _build_camera_cfg(vc)
+    from drone_bombard.drone_bombard_env import DroneBombardEnv
+
+    _orig_setup_scene = DroneBombardEnv._setup_scene
+
+    def _setup_scene_with_camera(self):
+        _orig_setup_scene(self)
+        self.scene.sensors["down_camera"] = TiledCamera(cam_cfg)
+
+    DroneBombardEnv._setup_scene = _setup_scene_with_camera
+
+    if args_cli.calibrate:
+        # teleport sweep: the drone is PLACED at each (range, angle) bin, so
+        # the flight-envelope terminations must not fire and reset envs
+        # mid-bin (low bins sit below min_altitude, far bins above
+        # max_altitude, nadir bins inside success_radius).
+        env_cfg.termination.min_altitude = 0.0
+        env_cfg.termination.ground_contact_altitude = 0.0
+        env_cfg.termination.max_altitude = 1000.0
+        env_cfg.reward.success_radius = -1.0
 
     env = gym.make(args_cli.task, cfg=env_cfg)
     model = YOLO(args_cli.yolo_weights)
+    marker_ops = _spawn_target_markers(env, args_cli.marker_texture)
 
     if args_cli.calibrate:
-        run_calibrate(env, model, args_cli.out_csv, args_cli.range_bins, args_cli.angle_bins)
+        run_calibrate(env, model, marker_ops, args_cli.out_csv,
+                      args_cli.range_bins, args_cli.range_max, args_cli.angle_bins)
     elif args_cli.eval:
         if not args_cli.policy:
             raise SystemExit("--eval requires --policy CKPT")
-        run_eval(env, model, args_cli.policy)
+        run_eval(env, model, marker_ops, args_cli.policy)
     else:
         print("Specify --calibrate or --eval --policy CKPT")
 

@@ -152,6 +152,24 @@ class DroneBombardVisionCfg:
     dropout_prob: float = 0.05
     hold_frames: int = 10  # @10Hz policy rate = 1s, matches xmarker_detector
 
+    # slant-range conf falloff (exp_014 A2). Real YOLO sees the 1.5 m marker
+    # at apparent size ~ 1/slant (Rule 13); the analytic model had NO range
+    # dependence — the geometric root of the exp_013 climb-and-farm attractor
+    # (offline counterfactual: this curve removes 84-88% of climb-phase
+    # vision income while costing finishers ~x0.27). Multiplier:
+    #   g(slant) = clamp(1 - (slant - range_conf_full)*range_conf_slope,
+    #                    range_conf_floor, 1)
+    # i.e. full conf inside 5 m, 0.5 at 10 m, floor 0.1 beyond 14 m.
+    # NOTE: real-YOLO calibration (yolo_eval.py --calibrate) must replace
+    # these numbers before any sim-to-real conf claim — blocked 2026-07-05 by
+    # a container-level TiledCamera/annotator bug (the STOCK camera example
+    # crashes identically); the calibrate harness itself is ready (X-marker
+    # quads, camera spawn, teleport-sweep hardening, 3-27 m range).
+    range_falloff_enabled: bool = True
+    range_conf_full: float = 5.0
+    range_conf_slope: float = 0.1
+    range_conf_floor: float = 0.1
+
     fx: float = 0.0  # computed in __post_init__
     fy: float = 0.0
     cx: float = 0.0
@@ -576,6 +594,16 @@ class DroneBombardEnv(DirectRLEnv):
         edge_factor = torch.clamp(1.0 - (center_dist - vc.edge_falloff_start).clamp(min=0.0), min=0.1, max=1.0)
         conf_base = vc.conf_lo + (vc.conf_hi - vc.conf_lo) * torch.rand_like(center_dist)
         conf = conf_base * edge_factor
+
+        if vc.range_falloff_enabled:
+            # slant range drone -> target (target on the ground, z=0)
+            rel_xy = self._target_xy - pos_local[:, :2]
+            slant = torch.sqrt((rel_xy * rel_xy).sum(dim=-1) + pos_local[:, 2] ** 2)
+            range_factor = torch.clamp(
+                1.0 - (slant - vc.range_conf_full).clamp(min=0.0) * vc.range_conf_slope,
+                min=vc.range_conf_floor, max=1.0,
+            )
+            conf = conf * range_factor
 
         dropout = torch.rand_like(conf) < (vc.dropout_prob / edge_factor.clamp(min=0.1))
         detected = visible & ~dropout
