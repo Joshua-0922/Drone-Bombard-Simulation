@@ -7,11 +7,22 @@
 
 ## 빠른 시작 — 지금 무엇을 보면 되나?
 
-**🔥 RAD v1 Phase 1 v1~v6 종합 (2026-07-05)**: [design/design_review_2026-07-05.md](design/design_review_2026-07-05.md) — 6번 시행 종합, **진짜 원인 확정 (Issue #029: curriculum stage 설계 결함)**, stage 재설계 안 (v7 계획).
+### 두 트랙 병행
 
-**🆕 RAD v1 design (2026-06-30, 새 framework)**: [design/rad_v1_design.md](design/rad_v1_design.md) — Relative + Approach + Drop. 2 정책 hierarchical, obs 14d 상대좌표, spawn yaw 랜덤, z Hann reward, 7 final state 조건 jackpot. v8/v9a 와 완전 다른 framework.
+**🥇 V8 = 검증된 baseline (Phase 1 redux v8, 96bokgae, 303k)**
+- **결과**: 80.6% success, best drop 0.07m (13 jackpot), 10 ep dgui 50%
+- **평가 모델**: [../ros2_ws/eval_models/](../ros2_ws/eval_models/) 의 `v8_peak_step217040_err0.87m.zip` 등 3종
+- **백업**: [backups/phase1_redux_v8_2026-06-21/](backups/phase1_redux_v8_2026-06-21/) (8.6 GB 완성 자산)
+- **관련 문서**: [design/design_review_2026-06-27.md](design/design_review_2026-06-27.md), [design/model_history.md](design/model_history.md) (v8 narrative)
+- **상태**: 검증 완료. 실사용 baseline.
 
-**처음 보는 사람**: 이 README → [design/design_review_2026-07-05.md](design/design_review_2026-07-05.md) (최신 종합) → [design/rad_v1_design.md](design/rad_v1_design.md) (framework) → [issues/master.txt](issues/master.txt)
+**🟡 RAD v1 = 진행 중 실험 (Phase 1 v6, 2026-07-05)**
+- **framework**: [design/rad_v1_design.md](design/rad_v1_design.md) — Relative + Approach + Drop. 2 정책 hierarchical, obs 14d 상대좌표, spawn yaw 랜덤. v8/v9a 와 완전 다른 framework
+- **주간 종합**: [design/design_review_2026-07-05.md](design/design_review_2026-07-05.md) — v1~v6 6번 시행, **진짜 원인 확정 (Issue #029: curriculum stage 설계 결함)**
+- **회의 자료**: [presentations/rad_v1_phase1_weekly_2026-07-05.md](presentations/rad_v1_phase1_weekly_2026-07-05.md)
+- **상태**: 실패 중, v7 stage 재설계 대기. Phase 1 완주도 아직 못 함.
+
+**처음 보는 사람**: 이 README → v8 baseline ([design/design_review_2026-06-27.md](design/design_review_2026-06-27.md)) + RAD 실험 ([design/design_review_2026-07-05.md](design/design_review_2026-07-05.md)) 둘 다 → [design/rad_v1_design.md](design/rad_v1_design.md) → [issues/master.txt](issues/master.txt)
 **안건(문제점) 확인**: [issues/master.txt](issues/master.txt) → 개별 issue 파일
 **훈련을 돌리려면**: [guides/drone_sim_tmux_training_guide.txt](guides/drone_sim_tmux_training_guide.txt)
 **학습된 모델을 GUI 로 검증**: [guides/dgui_usage_guide.md](guides/dgui_usage_guide.md) ★ 신규 (dgui 도구)
@@ -20,7 +31,7 @@
 **parameter 가 언제/왜 바뀌었는지**: [parameter_log.md](parameter_log.md) §3~4 (최신 = #42 RAD v1)
 **지난 세션 내용**: [meeting_notes/](meeting_notes/) — 최신 = `meeting_notes_2026-07-05.txt` (RAD v1 Phase 1 v1~v6 종합)
 **회의 발표 자료 (2026-07-05)**: [presentations/rad_v1_phase1_weekly_2026-07-05.md](presentations/rad_v1_phase1_weekly_2026-07-05.md) — RAD v1 Phase 1 주간 종합 (팀 회의용)
-**Phase 2 계획 (구)**: [design/phase2_plan.md](design/phase2_plan.md) — v8 phase 2 검토 (보류, RAD 가 대체)
+**Phase 2 계획 (v8 기준, 구)**: [design/phase2_plan.md](design/phase2_plan.md) — v8 phase 2 검토 (보류, RAD 가 대체 시도)
 **RAD 사용자 thoughts 원안**: [design/two_stage_learning_plan.md](design/two_stage_learning_plan.md)
 **Phase 1 백업**: [backups/phase1_final_round7_v3/](backups/phase1_final_round7_v3/) — Round 7 v3 종료 상태
 **Phase 1 redux v8 백업**: [backups/phase1_redux_v8_2026-06-21/](backups/phase1_redux_v8_2026-06-21/) — v8 완성 자산 8.6 GB
@@ -162,6 +173,17 @@ ros2_ws/eval_models/                  ← [신규] dgui 평가용 모델 (host =
 ---
 
 ## 현재 상태 (2026-07-05)
+
+### 두 트랙 병행 상태
+
+**Track 1 — V8 baseline** (검증 완료, 실사용 대상)
+- Phase 1 redux v8 (96bokgae, 303k): **80.6% success, best 0.07m, 13 jackpot, 10 ep dgui 50%**
+- 완성 자산 백업: `backups/phase1_redux_v8_2026-06-21/` (8.6 GB)
+- 평가 모델 3종: `ros2_ws/eval_models/v8_{peak,best,final}_*.zip`
+- 사용자 결정 (2026-06-27): v8 = best baseline 확정
+- 향후: v8 baseline 유지, Phase 2 (drop 정밀도) 확장 검토
+
+**Track 2 — RAD v1 새 framework** (진행 중, 아직 실패)
 
 ### RAD v1 Phase 1 학습 v1~v6 (2026-06-30 ~ 2026-07-05)
 

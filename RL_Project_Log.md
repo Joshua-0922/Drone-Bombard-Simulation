@@ -8,17 +8,28 @@
 
 **업데이트:** 2026-07-05
 
-### 현재 활성 framework
-**RAD v1 (Relative Approach Drop)** — Phase 1 학습 진행 중 (v6).
+### 두 트랙 병행
+
+**🥇 Track 1 — V8 baseline (검증 완료, 실사용 대상)**
+- Phase 1 redux v8 (96bokgae, 303k): 80.6% success, best drop 0.07m (13 jackpot)
+- 10 ep dgui 재평가: 50% success, mean 2.002m
+- 백업: `local/backups/phase1_redux_v8_2026-06-21/` (8.6 GB 완성 자산)
+- 평가 모델: `ros2_ws/eval_models/v8_{peak,best,final}_*.zip` (3종)
+- 상태: 검증 완료. 사용자 결정 (2026-06-27) = v8 = best baseline 확정.
+- 관련 문서: [local/design/design_review_2026-06-27.md](local/design/design_review_2026-06-27.md), [local/design/model_history.md](local/design/model_history.md)
+
+**🟡 Track 2 — RAD v1 (Relative Approach Drop, 진행 중 실험)**
 - v8/v9a 와 완전 다른 framework (Round/redux 시리즈 patch 아님, 새 framework 의 v1)
 - Phase 1: Approach (sphere entry) → Phase 2: Drop (정밀 투하)
+- Phase 1 학습 진행 중 (v6, 62k+ step)
 - 관련 문서: [local/design/rad_v1_design.md](local/design/rad_v1_design.md), [local/design/design_review_2026-07-05.md](local/design/design_review_2026-07-05.md)
 
-### v6 진행 상태
+### RAD v6 진행 상태 (Track 2)
 - 62k+ step (2026-07-05 시점, 중단 결정 대기)
 - Stage3 진입 후 완전 실패 → 자동 재도전 cycle 반복
 - **진짜 원인 확정 (Issue #029)**: curriculum stage 조건이 spawn 위치 (target 거리 5m) 반영 안 함
 - 개입 결정: Stage 재설계 (v7 계획)
+- **V8 baseline 은 별개 트랙으로 계속 유효** (실사용 시 v8 사용)
 
 ### 학습 환경 (RAD v1)
 | 파라미터 | 값 |
