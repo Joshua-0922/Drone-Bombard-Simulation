@@ -179,15 +179,14 @@ class DroneBombardAssetCfg:
     drone_mass: float = 2.07  # base 2.0 + 4x0.016076923 rotors
     payload_mass: float = 0.1  # payload_cylinder SDF
     inertia_diag: tuple[float, float, float] = (0.02166666666666667, 0.02166666666666667, 0.04000000000000001)
-    # The cf2x body link's REAL PhysX inertia (read via get_inertias() before
-    # any override — see notes/experiments/exp_013 §4d). Authored at spawn to
-    # pin the rotational plant every policy so far has actually flown: the old
-    # runtime set_inertias() never reached the solver, so the effective plant
-    # was always x500 mass + THIS inertia. Switching to the true x500
-    # `inertia_diag` above is a deliberate, separate plant change — do not
-    # conflate it with the mass fix (rate loop is self-consistent either way
-    # because the controller reads the real inertia, but don't change two
-    # things at once).
+    # The cf2x body link's parse-time PhysX inertia, kept as a reference
+    # number only (it is what get_inertias() returned BEFORE any override).
+    # History note (07-05 _diag_inertia measurement): the old runtime
+    # set_inertias() DID propagate to the solver — the earlier "never reaches
+    # the sim" claim was wrong — so exp_013 actually flew with solver inertia
+    # = inertia_diag (0.0217) while the controller sized torques with THIS
+    # value, i.e. a ~1300x under-torqued rate loop. Both spawn authoring and
+    # the controller now use inertia_diag consistently.
     native_body_inertia_diag: tuple[float, float, float] = (1.6572e-05, 1.6656e-05, 2.9262e-05)
     thrust_to_weight_unloaded: float = 2.0  # fixed airframe/motor property, defined unloaded
     tilt_clamp_deg: float = 35.0
@@ -319,10 +318,13 @@ class DroneBombardEnv(DirectRLEnv):
         # controller and the solver agree from substep 0.
         #
         # Rate-loop invariant: torque = I_ctrl*(k_rate*rate_err), closed loop
-        # dw/dt = (I_ctrl/I_body)*k_rate*rate_err — stable only when
-        # I_ctrl == I_body, hence I_ctrl must always be the REAL plant inertia.
-        # Using the cfg x500 inertia (0.0217) against the body's real ~1.7e-5
-        # was a ~1300x over-torque -> instant spin-out on any maneuver.
+        # dw/dt = (I_ctrl/I_body)*k_rate*rate_err — design behavior only when
+        # I_ctrl == I_body, hence I_ctrl is READ from the sim, not taken from
+        # cfg. History (07-05 _diag_inertia): exp_013's runtime set_inertias
+        # DID reach the solver (I_body=0.0217) while this read — taken BEFORE
+        # the override — returned the parse-time 1.66e-5, so the rate loop ran
+        # ~1300x under-torqued (sluggish attitude, wobble). With spawn
+        # authoring the read is deferred-consumption-free and always matches.
         bidx = self._body_id[0] if isinstance(self._body_id, (list, tuple)) else int(self._body_id)
         body_I = self._robot.root_physx_view.get_inertias()[0, bidx].reshape(-1).clone()
         self._inertia_diag = torch.stack([body_I[0], body_I[4], body_I[8]]).to(self.device)
@@ -394,8 +396,12 @@ class DroneBombardEnv(DirectRLEnv):
         native 25 g shell (the once-per-process +8.4 m/s kick, exp_013 §4d).
         Runs in ``_setup_scene`` on the source env's prim, before
         ``clone_environments`` — physics replication propagates the authored
-        values to every env. Inertia is deliberately the native cf2x value,
-        NOT the x500 ``inertia_diag`` — see ``native_body_inertia_diag``."""
+        values to every env. Inertia is the measured x500 ``inertia_diag`` —
+        the SAME solver inertia exp_013 flew (its runtime set_inertias DID
+        propagate, per the 07-05 ``_diag_inertia`` measurement); what changes
+        vs exp_013 is that the controller's ``get_inertias`` read now returns
+        this value too, so the rate loop applies design torque instead of
+        being ~1300x under-torqued."""
         from pxr import Gf, UsdPhysics
 
         from isaaclab.sim.utils import find_matching_prims
@@ -410,7 +416,7 @@ class DroneBombardEnv(DirectRLEnv):
         for prim in body_prims:
             mass_api = UsdPhysics.MassAPI.Apply(prim)
             mass_api.CreateMassAttr().Set(asset.loaded_mass)
-            mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(*asset.native_body_inertia_diag))
+            mass_api.CreateDiagonalInertiaAttr().Set(Gf.Vec3f(*asset.inertia_diag))
             mass_api.CreatePrincipalAxesAttr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
 
     # ------------------------------------------------------------------
