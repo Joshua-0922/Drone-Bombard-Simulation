@@ -328,8 +328,9 @@ analytic vision(핀홀 투영 + conf 0.73-0.95)은 YOLO의 **성공 특성**(탐
 이식하고 **실패 특성**(apparent size ∝ 1/거리 → 원거리 conf 붕괴, Rule 13)을 누락했다.
 그 결과 "고도를 올리면 centering이 기하적으로 쉬워지는데(`u_n ∝ x/z`) conf는 안 깎이는"
 보상 지형이 생긴다 — 상승 farming은 실제 YOLO 환경에선 존재할 수 없는 정책이다.
-(exp_013에서 eval의 33%가 25m 천장 종단이었으나, 사후 발견된 리셋 속도킥(§exp_013 4d)과
-귀속이 겹쳐 이 attractor의 단독 기여도는 미분리 — 기하 논증 자체는 킥과 무관하게 성립.)
+(07-04 forensics로 귀속 확정 수순: 경합 가설이던 리셋 속도킥은 프로세스당 1회로 실증되어
+기각 — max_alt 27-43%는 **iter ~200에서 창발**한 학습된 행동이고 같은 구간 rew_vision이
+고유지, 이 attractor가 1차 가설. 인과 확증 실험 설계: [[research/exp014_ablation_protocol]].)
 
 **필수 규칙:**
 - 센서를 근사로 대체하면 그 센서가 **언제 못 보는지**(거리·각도·조명 감쇠)를 같이 모델링하라.
@@ -355,10 +356,19 @@ PPO는 체계적 착취로 나타난다. 종단 보상은 farming 스트림 총�
 
 **(b) PPO noise_std 폭주 감시.** 액션 파이프라인에 스무딩(clip→rate_limit→LPF)이 있으면
 가우시안 노이즈가 plant에서 필터링되어 **entropy bonus를 견제할 task 손실이 없다** →
-σ 단조 폭주(exp_013: 0.8→3.92, 액션이 포화-랜덤화되어 rollout 통계 전체 오염).
+σ 단조 폭주(exp_013: 0.8→3.92). **07-04 계측(`_diag_noise.py`)으로 메커니즘 확정:**
+- 노이즈는 액션 레벨에선 살아남는다(σ=3.9에서 executed Δaction 3.66× vs deterministic,
+  rate-limiter 68% 포화, 액션 부호의 29%가 정책 평균과 반대) — "완전 흡수"가 아니다.
+- 그러나 **실행 속도 궤적은 σ-불변**(velocity-Δ 비율: σ3.9/σ0.8=1.11×, σ3.9/det=1.01×) —
+  LPF+accel clamp가 plant 레벨에서 균질화. σ를 키워도 task 리턴이 거의 안 변하니 entropy가
+  공짜로 자란다. 폐해는 "rollout 오염"이 아니라(행동은 거의 동일) ① log-prob gradient 노이즈
+  (부호 반전 29%) ② 목적함수 왜곡 ③ 탐험 이득 없는 σ 성장.
+- **부수 발견:** 정책 평균 자체가 포화(σ=0에서 raw|a|=2.6, 성분 77%가 |a|>1) — rsl_rl
+  가우시안 정책(무-squash)이 스무딩 파이프라인 아래서 클립-레일 위 bang-bang 평균을 학습.
+  Rule 15의 wobble 병인과 동족 — 이식 시 재발 감시 대상.
 - `Mean action noise std`가 중반까지 init값의 ~1.5×를 넘으면 개입 (entropy_coef ↓ 또는 0).
 - rollout 지표가 나쁠 때 **deterministic eval로 정책 평균과 노이즈를 분리**한 뒤 판단하라
-  — exp_013에선 둘 다 36%로 같았다(= 노이즈 문제가 아니라 정책 문제라는 판정 근거).
+  — exp_013에선 둘 다 36%로 같았다(σ-불변 계측과 정합).
 
 ---
 

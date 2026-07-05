@@ -19,8 +19,8 @@ type: research
 
 | # | 대상 | 현재 | 권고 | 근거 | fresh start |
 |---|---|---|---|---|---|
-| **0** | **★리셋 속도킥 수정** (`_apply_body_mass_override` → 스폰타임 USD 질량 설정) | 런타임 `set_masses()` → 매 리셋 ~7-9 m/s 수직킥 ([[isaac_mass_override_reset_bug]], **미해결**) | `CRAZYFLIE_CFG.replace(...)`의 spawn/mass_props 단계에서 질량·관성 설정(articulation 생성 전) — PhysX 내부 표현 전부에 일관 반영. 수정 후 `play.py --zero-actions` **PASS(<1m) 확인이 이후 모든 실험의 게이트** | exp_013 사후 검증 FAIL(드리프트 11.9m). 킥이 스폰 9-11m를 ~18-22m(천장 25m 직하)로 밀어올림 → **max_alt 33%·crash 27%의 1차 용의자.** 이거 안 고치면 1-3번 효과 측정 불가 | ✅ 필수 (plant 변경) |
-| 1 | **analytic conf 거리 감쇠** (`DroneBombardVisionCfg` / `_update_vision`) | conf 0.73-0.95, 거리 무관 | slant range에 비례해 conf·탐지확률 감쇠 (예: `conf *= clamp(1.5 - slant/10, 0.1, 1)` 계열 — YOLO 캘리브레이션(`yolo_eval.py --calibrate`)으로 커브 확정이 정도) | 거리-무관 conf + 고도↑=centering 기하 유리 → **고도 상승 farming attractor**(기하적으로 실증; 단 exp_013의 max_alt 33% 귀속은 0번 킥과 분리 불가 — 0번 수정 후 재측정). 실제 YOLO는 apparent size ∝ 1/거리(Rule 13) — parity 회복이 목적이므로 buff가 아니라 버그 수정에 가깝다 | ✅ 필수 |
+| **0** | **리셋 속도킥 위생 수정** (`_apply_body_mass_override` → 스폰타임 mass_props, 또는 init 직후 zero-wrench sim step 1회) | 런타임 `set_masses()` → **프로세스당 1회**, init 후 첫 물리 substep에 +8.4 m/s 킥 (07-04 계측 재정정: 매 리셋 아님 — [[isaac_mass_override_reset_bug]] 참조) | (원칙) `CRAZYFLIE_CFG.replace(...)` spawn cfg의 `mass_props`(UsdPhysics.MassAPI)로 질량 설정 — 단 **inertia는 native 유지**(x500 inertia까지 baking하면 회전 plant가 바뀌는 confound); (최소 diff) init 직후 zero-wrench step 1회로 질량 flush — `_diag_kick.py` t2first가 킥 전무를 실증 | 학습 오염은 env당 첫 에피소드뿐(~0.3%) → **max_alt 33%의 원인 아님**(그 rate는 iter ~200 창발 = 학습된 행동). 수정 가치: `--zero-actions` 게이트 복원 + 첫-에피소드 아티팩트 제거. **더 이상 1-3번의 선행 게이트가 아님** | plant 정상화라 fresh 권장 (1-3과 묶어서) |
+| 1 | **analytic conf 거리 감쇠** (`DroneBombardVisionCfg` / `_update_vision`) | conf 0.73-0.95, 거리 무관 | slant range에 비례해 conf·탐지확률 감쇠 (예: `conf *= clamp(1.5 - slant/10, 0.1, 1)` 계열 — YOLO 캘리브레이션(`yolo_eval.py --calibrate`)으로 커브 확정이 정도) | 거리-무관 conf + 고도↑=centering 기하 유리 → **고도 상승 farming attractor. 07-04 재정정으로 max_alt 27-43%의 1차 가설로 복권**(킥 배제: 그 rate는 iter ~200 창발·지속 = 학습된 행동이고, 같은 구간 rew_vision 고유지). 실제 YOLO는 apparent size ∝ 1/거리(Rule 13) — parity 회복이 목적이므로 buff가 아니라 버그 수정에 가깝다 | ✅ 필수 |
 | 2 | **`reward_success`** (`DroneBombardRewardCfg`) | 100 | **300** | farmer(+225) > finisher(+121) 수지 역전용. 300이면 finisher ≈ +321로 지배 전략 복원. Gazebo v14 final-approach stagnation과 동일 병인 | ✅ 필수 |
 | 3 | **`entropy_coef`** (`agents/rsl_rl_ppo_cfg.py`) | 0.005 | **0.0** (또는 0.001 + noise_std 모니터링) | noise_std 0.8→3.92 폭주. 스무딩 액션 파이프라인(clip→rate_limit→LPF)이 노이즈를 필터링해 entropy 압력을 견제할 task 손실이 없음 | PPO라 buffer 오염은 없으나 위 1·2와 묶어 fresh 권장 |
 | 4 | `num_steps_per_env` | 32 | 64 (선택) | 종단 보상 300 도입 시 GAE horizon(3.2s)이 평균 에피소드(~6s)의 절반 — credit assignment 여유 확보. 2차 실험에서 A/B | — |
@@ -29,10 +29,10 @@ type: research
 | 7 | `success_radius` | 0.8 | 유지 → success ≥70% 안정 후 0.5 커리큘럼 (`--resume`) | 기존 계획대로. 지금 조이면 4b 불균형이 악화만 됨 | 커리큘럼은 resume |
 | 8 | `max_altitude` / `min_altitude` | 25 / 3 m | 유지 | max_alt 33%는 천장이 낮아서가 아니라 상승이 이득이라서다. 1번이 원인 제거. crash 27%(다이브)도 1-3 적용 후 재측정 — 원인 미확정 항목으로 이월 | — |
 
-**적용 순서/묶음:** **0을 단독 선행하고 `--zero-actions` PASS를 게이트로** — 그 다음
-1+2+3을 한 번에 fresh로 (exp_014 제안: `exp014_massfix_visionrange_succ300_ent0`).
-0만 고친 짧은 대조 run(200-300 iters)을 사이에 끼우면 "킥 제거만으로 얼마나 회복되는지"가
-분리 측정되어 1-3의 효과 크기를 정직하게 잴 수 있다 — 시간 여유 있으면 권장.
+**적용 순서/묶음 (07-04 재정정 반영):** 0+1+2+3을 한 번에 fresh로
+(exp_014 제안: `exp014_massfix_visionrange_succ300_ent0`) — 0은 더 이상 분리 측정이
+필요한 후보가 아니라 위생 수정이므로(학습 오염 ~0.3% 실증) 묶어도 attribution이 안 깨진다.
+원인별 분리 측정을 원하면 [[research/exp014_ablation_protocol]]의 arm 설계(1 단독 A/B)를 따를 것.
 4는 exp_014 결과 보고 A/B. 5-8은 관찰 대기.
 
 ---

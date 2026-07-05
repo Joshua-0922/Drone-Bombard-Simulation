@@ -63,12 +63,13 @@ mean drop_impact_error = 24.0 m (실패 지배 구간이라 무의미)
 > post-reset `_current_d_xy()`를 "final d_xy"로 읽는 버그(리셋 후 새 스폰 거리를 보고)가
 > 있어 종단 원인 분포+`extras["log"]` 스냅샷 기반으로 교체함.
 
-## 4. 진단 — 세 겹의 문제 + 사후 발견된 지배 교란(§4d)
+## 4. 진단 — 세 겹의 문제 + 속도킥의 정확한 정체(§4d, 07-04 forensics로 재정정)
 
-> ⚠️ **§4d를 먼저 읽을 것.** 아래 4a-4c는 로그·수식 수준에서 모두 실재하지만, 학습 후
-> `play.py --zero-actions` 재검증(FAIL, 고도 드리프트 11.9m)으로 **리셋 속도킥 버그**
-> ([[isaac_mass_override_reset_bug]] 메모리, 미해결로 알려져 있었음)가 이 run에도 활성이었음이
-> 확인됐다. 4a의 max_altitude 귀속은 이 교란과 분리 불가.
+> **§4d 판정 이력:** 07-03 사후 검증(`--zero-actions` FAIL 11.9m)에서 "리셋 속도킥이 run
+> 전체를 오염, max_alt 1차 용의자"로 판정했으나, **07-04 계측 forensics(`_diag_kick.py`
+> 매트릭스)가 이를 재정정**: 킥은 매 리셋이 아니라 **프로세스당 1회**(첫 물리 substep)라
+> 학습 오염이 사실상 없고, max_alt 27-43%는 iter ~200에서 창발한 **학습된 행동**이다.
+> 4a(비전 farming attractor)가 1차 가설로 복권됨. 상세는 §4d.
 
 ### 4a. Analytic vision 보상의 고도-상승 attractor (max_alt 33%의 원인)
 
@@ -91,43 +92,69 @@ stagnation(0.5-0.8m)" 실패 7건과 같은 서명 — SAC에서는 증상으로
 
 entropy bonus(0.005)는 σ를 키우는 압력인데, 이 태스크의 액션 파이프라인(clip →
 rate_limit ±0.2 → LPF 0.4)이 **의도적으로**(v15 smoothness 이식) 고주파 노이즈를
-필터링하므로 σ가 커져도 task 손실이 작다 → entropy 이득이 이겨 σ 무한 성장. 결과:
-학습 후반 rollout이 포화-랜덤 액션으로 수집되어 advantage 신호가 묻히고(§2의 rew_dist
-−14, crash 39%가 그 산물), 학습이 plateau 위에서 진동만 한다. Gazebo SAC(ent_coef
-자동조정)에는 없던 **PPO×스무딩-파이프라인 조합의 신규 실패 모드.**
+필터링하므로 σ가 커져도 task 손실이 작다 → entropy 이득이 이겨 σ 무한 성장.
+**07-04 계측(`_diag_noise.py`, σ∈{0,0.8,2.0,3.9} × 300 policy steps)으로 정밀화:** 노이즈는
+액션 레벨에선 살아남지만(executed Δaction 3.66× vs det, rate-limiter 68% 포화, 부호 반전
+29%) **실행 속도 궤적은 σ-불변**(velocity-Δ σ3.9/det = 1.01×) — LPF+accel clamp가 plant
+레벨에서 균질화. 따라서 폐해는 "rollout이 랜덤 액션으로 오염"이 아니라(행동은 거의 동일;
+det eval==rollout 36%가 그 증거) **log-prob gradient 노이즈 + 탐험 이득 없는 목적함수
+왜곡**이다. 부수 발견: 정책 평균 자체가 클립 포화(σ=0에서 raw|a|=2.6, 77% 성분 |a|>1) —
+가우시안 무-squash 정책이 레일-라이딩 평균을 학습(Rule 15 동족). Gazebo SAC(ent_coef
+자동조정)에는 없던 **PPO×스무딩-파이프라인 조합의 신규 실패 모드.** → Rule 18b 갱신.
 
-### 4d. 리셋 속도킥 교란 — 사후 검증에서 확인 (지배적 가능성)
+### 4d. 속도킥의 정확한 정체 — 07-04 계측 forensics (`_diag_kick.py` 매트릭스)
 
-학습·eval 완료 후 `play.py --zero-actions --num_envs 8` 재실행: **FAIL, 고도 드리프트
-11.9m** (통과 기준 <1m). 즉 [[isaac_mass_override_reset_bug]] 메모리에 기록된 **미해결
-버그** — `_apply_body_mass_override()`(set_masses)가 있으면 매 리셋 2번째 physics substep에
-~7-9 m/s 수직 속도킥 주입 — 이 이 학습 run 전체에 활성이었다. 물리 검산: 8 m/s 상승킥은
-accel_z_clamp 4 m/s² 회수 기준 ~8-12m 상승 = 스폰 9-11m에서 **~18-22m 도달, 25m 천장
-바로 밑**. 따라서:
+07-03의 `--zero-actions` FAIL(11.9m)로 "매 리셋 킥 → run 전체 오염"으로 판정했었으나,
+per-substep 계측 매트릭스(모드별 로그 `/workspace/logs/_diag_*.log`)가 정정했다:
 
-- **max_altitude 33%의 1차 설명은 4a(비전 farming)가 아니라 이 킥일 가능성이 높다**
-  (킥 후 약간의 +vz만으로 천장 도달). 4a는 실재하는 parity 결함이지만 이 run에서의
-  기여도는 킥과 분리 측정 불가.
-- crash 27%도 부분 설명 가능: 매 에피소드 킥을 상쇄하는 강한 −vz 반응을 학습 → 회수
-  이후 과하강.
-- 정책은 **오염된 plant를 상대로** 36%를 달성한 것 — 보상 지형 결론(4b)과 noise_std
-  결론(4c)은 로그·수식 기반이라 유효하나, 종단 분포 기반 귀속은 전부 재실험 필요.
+**확정된 메커니즘:** PhysX solver는 `__init__`의 `root_physx_view.set_masses()`(0.028→2.173kg)를
+**첫 sim step까지 소비하지 않는다.** 그 한 substep 동안 컨트롤러의 hover-사이즈 wrench
+(21.319N, 2.173kg 기준 중력보상)가 **stale native 질량에 적분**된다:
+관측 dvz=+8.417 m/s → `m_eff = F·dt/(dvz+g·dt) = 21.319×0.01/(8.417+0.0981) = 0.02504 kg`
+= **native body link 질량 0.025와 정확 일치.** 다음 substep부터 질량 영구 동기화
+(킥 직후 회복률 dvz=−0.040/substep = 2.173kg 기준 −4 m/s² accel clamp와 정확 일치).
 
-**교훈(뼈아픔):** 이 버그는 **학습 시작 전에 이미 메모리에 "미해결"로 기록되어 있었다.**
-[[research/isaac_lab_experiment_workflow]] §1의 사다리(--zero-actions 포함)를 "이전에
-통과했다"고 건너뛰지 말 것 — 알려진 미해결 물리 이슈가 있으면 그 검증부터. 사다리 3)이
-이번에 실행됐다면 43분짜리 오염 run을 통째로 막았다.
+**격리 실험 결과:**
+| 모드 | 결과 |
+|---|---|
+| combo t1m/t1a (manual 리셋 ×2 + auto 리셋 ×2) | **킥은 프로세스 첫 substep 1회뿐** — 이후 모든 리셋 dvz≡0 (clean) |
+| t2 (리셋 시 wrench 제로) | 무력 자유낙하 dvz=−0.0981=−g·dt 정확 (중력은 가속도 적용 = 질량 무관 → **우리 힘이 있어야만 킥**) |
+| t2first (첫 substep을 zero-wrench로 통과) | **킥 전무** + ssr=10에 추력 재개해도 무점프 (zero-force step이 질량 flush → 최소 수정 경로 실증) |
+| t4m (set_masses만) | 킥 동일 재현 (dvz=+8.417, m_eff=0.02504) — **set_masses 단독 충분** |
+| t4i (set_inertias만) | 무점프 — inertia 콜은 킥과 무관 (전파 자체를 안 함, 기존 문서화대로) |
+| t6 (리셋 직후 속도 재기록) | 무점프 |
+| noreset | 스크립트 한계로 크래시(reset 없이 step → `_last_vision` 미설정) — 질문 자체는 combo+t2first가 대체 답변 |
 
-## 5. 결론
+**07-03 판정의 오류 원인:** 메모리의 "매 리셋" 관찰은 매 관측이 fresh 프로세스였던 탓
+("첫 리셋"과 "프로세스 시작"이 항상 겹침). `--zero-actions`가 항상 FAIL한 것도 같은 이유
+— 단일 킥(+8.4 m/s, −0.04/substep 감쇠, ~11-12m 상승)이 드리프트 11.9m를 정량 완전 설명.
+
+**exp_013 재귀속:**
+- **학습 오염 = 사실상 없음.** 킥은 2048 envs의 첫 에피소드(전체 ~60만 에피소드 중
+  ~0.3%)에만 영향. **max_alt 27-43%는 킥일 수 없다** — 결정적으로, 학습 커브에서
+  max_altitude 종단은 **iter 0-199에 ~0%였다가 iter ~200에서 창발**(0.33→0.43)해 이후
+  지속된다. 프로세스 시작 1회성 transient는 창발-지속 패턴을 만들 수 없다 → **학습된
+  행동** = 4a(비전 farming attractor) 1차 가설 복권. (같은 구간 `rew_vision`이 높게 유지되는
+  것도 정합적.)
+- eval(200ep)에서는 프로세스 첫 substep 킥이 32 envs의 첫 에피소드에만 영향(≤32/200) —
+  max_alt 66 중 최소 34는 킥과 무관.
+- 36%는 "오염 plant 수치"가 아니라 **유효한 수치**로 복권 (첫-에피소드 아티팩트 소폭 제외).
+
+**교훈 (07-03 교훈의 교정판):** 알려진 이슈의 재검증은 여전히 필수지만, **증상 재현
+(--zero-actions FAIL)과 원인 귀속(training 오염)은 별개다** — 귀속은 메커니즘 계측
+(per-substep 로깅, m_eff 검산, 창발 타이밍)까지 가서야 확정된다. 07-03의 "run 전체 오염"
+판정은 재현만 보고 귀속을 성급히 넘겨짚은 사례.
+
+## 5. 결론 (07-04 재정정 반영)
 
 - **수렴 판정: plateau 수렴(iter ~700), 목표 미달.** success 36%(deterministic 동일) —
-  단, **리셋 속도킥(§4d)이 활성인 오염된 plant에서의 수치**라 정책/보상 능력의 상한으로
-  해석하면 안 된다. Gazebo v13 80%/v14 65%와의 비교도 동일 이유로 보류.
+  §4d 재정정으로 이 수치는 **유효**하다(킥 오염은 첫 에피소드 ~0.3%뿐). 실패 분해도 유효:
+  max_alt ~33%는 학습된 attractor(4a 1차 가설), crash 27%는 원인 미확정 이월.
 - **d_xy 추세: 초중반 건강, 종반 정체.** `Episode_Metric/d_xy_min` 4.1→1.18(iter 700)
   이후 1.4m 정체 — 게이트(0.8m) 밖. 접근 학습은 확실히 일어났다(비전 수정 유효 포함).
-- **다음 실험 전 필수 게이트: 리셋 킥 수정**(스폰타임 USD 질량 설정으로 전환) →
-  `--zero-actions` PASS 확인 → 그 다음에야 보상/하이퍼 변경(4a-4c 교정)의 효과를 깨끗하게
-  측정 가능. 상세 우선순위: [[research/isaac_ppo_tuning_recommendations]].
+- **다음 실험(exp_014):** 4a-4c 교정(conf 거리감쇠 + reward_success 300 + entropy 0)이
+  본체. 리셋 킥은 **위생 수정으로 동반**(스폰타임 mass_props 또는 init 직후 zero-wrench
+  step 1회 — t2first 실증) — 더 이상 게이트가 아님. 상세: [[research/isaac_ppo_tuning_recommendations]].
 
 ## 관련
 
