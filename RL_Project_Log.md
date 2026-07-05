@@ -8,7 +8,23 @@
 
 **업데이트:** 2026-07-05
 
-> **🔀 병행 트랙 (2026-07-05): Isaac Lab exp_014 — plant 수정 + 비전 거리감쇠 → eval 100.0% (202/202)** —
+> **🔀 병행 트랙 (2026-07-05): Isaac Lab exp_015 — Phase별 순차 커리큘럼 코드 완료 (미학습)** —
+> `feat/isaac-env-migration`. 이미지의 3단계 커리큘럼(접근/nominal → CCIP+Residual/정지타겟 →
+> 이동타겟)을 env + `train.py`로 **완전 구현**. ① **action 4→6** (`[0:4]` 속도 setpoint +
+> `[4:6]` CCIP 착탄점 residual δx/δy) — 전 페이즈 6-dim 고정으로 `runner.load()` warm-start
+> 무손실. ② **`phase`(1/2/3) 단일 노브** + 파생 플래그(residual/dr/moving_target/release)로
+> 페이즈 동작 유도. ③ **릴리스 이벤트**: 온보드 nominal CCIP + 정책 residual 예측이 (lead)타겟
+> tol 내면 투하 래치 → 실제 DR 물리(drag `U[0,0.15]`·wind `N(0,1.5)`) 낙하로 **진짜 착탄오차**
+> 산출 → `w_impact·exp(-err/scale)` 터미널 보상. ④ **Gauss-Markov 이동타겟**(OU) + lead 보상
+> (Phase 3). ⑤ **`train.py --phases 1,2,3`** 서브프로세스 오케스트레이터(각 페이즈 `model_final.pt`
+> → 다음 `--resume` 체이닝; Isaac Sim 프로세스당 1 sim 제약). Phase 1은 미사용 dim zero-out으로
+> **exp_014 접근 태스크와 동작 동일**(baseline 유효). **검증: 로컬 `py_compile` 12파일 통과;
+> `pytest test_math.py`(+8 신규 = 38) 및 본 학습은 dev 박스 torch 부재로 L4/컨테이너 대기.**
+> reward/DR/GM/lead 하이퍼파라미터는 초기 추정 → L4 dry-run 신호로 튜닝. 후속: 진짜 정책-학습
+> lead 위해 obs에 타겟 속도 2채널(14→16) 추가 검토.
+> → [[experiments/exp_015_phased_curriculum]] / [[research/phased_curriculum]] / Rule 20
+
+> **(이전 2026-07-05): Isaac Lab exp_014 — plant 수정 + 비전 거리감쇠 → eval 100.0% (202/202)** —
 > `feat/isaac-env-migration`. 확정 버그 2건 수정(속도킥→스폰타임 `UsdPhysics.MassAPI` authoring,
 > 로터 ±200 rad/s 리셋 재주입 제거) + `--zero-actions` 게이트 PASS(11.9m→0.2m). 수정 검증 중
 > **inertia 대반전 계측**: `set_inertias`는 solver에 전파되고 있었음 → **exp_013은 rate loop
@@ -124,6 +140,8 @@
 
 # 3. Remaining Tasks (Next Steps)
 
+- [x] **(Isaac Lab, exp_015)** Phase별 순차 커리큘럼 **코드 구현 완료** — action 4→6 residual, phase 노브+파생 플래그, 릴리스 이벤트+DR 착탄오차 터미널 보상, Gauss-Markov 이동타겟+lead, `train.py --phases` 오케스트레이터. `py_compile` 12파일 통과. → [[experiments/exp_015_phased_curriculum]] / [[research/phased_curriculum]] / Rule 20
+- [ ] **(Isaac Lab, exp_015)** L4/컨테이너에서 `pytest test_math.py`(+8 신규=38) 실행 → 페이즈별 2-iter 스모크(phase 1/2/3) → `--phases 1,2,3` dry-run(256 envs, 5,5,5) → 본 학습(2048 envs, 3000/2000/2000). PhaseCfg 하이퍼파라미터 dry-run 신호로 튜닝. → [[experiments/exp_015_phased_curriculum]] §5
 - [ ] **(Isaac Lab migration, 병행 트랙)** L4 Spot VM 기동(`infra/deploy.sh` 빌드+push, `infra/startup.sh` 실행) → Cartpole 스모크 → `Isaac-DroneBombard-Direct-v0` env 스모크(2-iter) → `play.py --zero-actions/--scripted` 물리 검증. → [[experiments/exp_012_isaac_migration_phase2]]
 - [ ] **(Isaac Lab migration)** PX4 속도-스텝응답 Gazebo 캡처 세션(`vel_logger_v2.py` 신규, 7-포인트) → Isaac 컨트롤러 게인 검정. 현재 미검정(구조 일치, 게인 초기값). → [[research/isaac_velocity_controller]]
 - [ ] **(Isaac Lab migration)** `yolo_eval.py --calibrate` 첫 실행 → vision 캘리브레이션 v1(현재 v0=스펙 추정).
@@ -176,3 +194,4 @@
 | 2026-07-03 | exp013_v1_baseline (Isaac PPO, 병행 트랙, 중단 @iter 106) | ~7M steps | **비전 사멸 버그 발견·중단.** `rew_vision`≡0.0000 → `_update_vision` env-origin 프레임 혼용(2048-env grid에서 타겟 항상 프레임 밖). 수정+수치검증(visible 0%→63%). → [[errors/err_20260703_vision_env_origin_frame]] |
 | 2026-07-03 | **exp013_v2_visionfix (wcjklw7a, Isaac PPO, 병행 트랙)** | 65.5M steps (1000 iters 완주) | **첫 완주 + deterministic 200-ep eval = 36%.** plateau @iter 700, d_xy_min 1.4m 정체. 실패: max_alt 33%(상승 farming, Rule 17)+crash 27%. farmer(+225)>finisher(+121) 불균형(Rule 18a), noise_std 0.8→3.92 폭주(Rule 18b). **사후 --zero-actions FAIL(11.9m): 리셋 속도킥 활성 — run 오염, max_alt 1차 용의자.** 다음=exp_014(0순위 킥 수정 → conf 거리감쇠+success 300+entropy 0, fresh). → [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] / [[research/isaac_ppo_tuning_recommendations]] |
 | 2026-07-05 | **exp014 A2 (v3qk07pg) + A0′ (azoc1xp0), Isaac PPO, 병행 트랙** | 각 26.2M steps (400 iters) | **plant 수정 + 비전 거리감쇠 → deterministic 200-ep eval = 100.0% (202/202), d_xy_min 0.665m.** 수정: ①킥→스폰타임 MassAPI authoring(게이트 11.9m FAIL→0.2m PASS) ②로터 스핀 리셋 재주입 제거 ③**inertia 대반전**: `set_inertias`는 전파되고 있었음 — exp_013은 rate loop ~1300× 저토크 plant(Rule 19, 구 정책 plant-overfit로 무효). A2: R_alt=0.0000(climb 창발→기각 시그니처), noise_std 0.80 안정(폭주 없음). A0′ 대조: R_alt 0.0365 → 지배 요인=plant 일관성, 감쇠=꼬리 제거+YOLO parity(유지). 실 YOLO 캘리브레이션은 이미지 annotator 버그로 차단(하네스 수리 완료). reward_success·entropy 불변(다음 페이즈). → [[experiments/exp_014_A2_visionrange]] / [[research/isaac_inertia_ctrl_mismatch]] |
+| 2026-07-05 | isaac_phased_curriculum (`feat/isaac-env-migration`, 병행 트랙) | 0 (코드만, 미학습) | **Phase별 순차 커리큘럼 구현.** 이미지 3단계(접근/nominal → CCIP+Residual/정지 → 이동타겟) 완전 구현: action 4→6(δ residual), phase 노브+파생 플래그, 릴리스 이벤트(nominal CCIP+δ 트리거 → 실제 DR 낙하 착탄오차 터미널 보상), drag/wind DR, Gauss-Markov 이동타겟+lead, `train.py --phases 1,2,3` 서브프로세스 오케스트레이터(6-dim 고정 → warm-start 무손실). Phase 1=exp_014 baseline 동작 동일. **`py_compile` 12파일 통과; `pytest`(+8 신규)·본 학습은 L4/컨테이너 대기.** → [[experiments/exp_015_phased_curriculum]] / [[research/phased_curriculum]] / Rule 20 |

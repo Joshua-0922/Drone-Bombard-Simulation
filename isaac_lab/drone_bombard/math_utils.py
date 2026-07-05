@@ -15,6 +15,8 @@ drone_drop_env.py`` (``_compute_reward``, ``_get_obs``, ``step``) and
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 
@@ -140,16 +142,108 @@ def ballistic_impact(
 
 
 def ccip_residual(obs: torch.Tensor) -> torch.Tensor:
-    """Phase-2 learned-residual hook for the CCIP impact prediction.
+    """Legacy Phase-2 zero-stub for the CCIP impact prediction residual.
 
     Pure function, no parameters, no network — returns zeros of the correct
-    shape/dtype/device. Phase 1 never calls this (``DropCfg.residual_enabled
-    = False`` skips the call site entirely — see
-    ``DroneBombardEnv._predicted_impact``), so this stub exists purely so
-    Phase 2 can wire in a learned residual without touching the CCIP or
-    reward code paths.
+    shape/dtype/device. Superseded in the phased-curriculum implementation by
+    ``apply_ccip_residual`` (which applies a policy-produced delta from the
+    extended 6-dim action space); kept here so the Phase-1 bit-parity contract
+    and its unit test remain valid.
     """
     return torch.zeros((obs.shape[0], 2), dtype=obs.dtype, device=obs.device)
+
+
+def time_to_fall(altitude: torch.Tensor, gravity: float) -> torch.Tensor:
+    """Free-fall time from ``altitude`` to the ground: ``sqrt(2H/g)``.
+
+    Specialised to release-from-rest-vertically (vz~=0 at release), matching
+    the Gazebo ``drop_calculator_node`` referee. Clamped at 0 so a
+    below-ground altitude never yields a NaN.
+    """
+    return torch.sqrt(torch.clamp(2.0 * altitude / gravity, min=0.0))
+
+
+def predict_impact_nominal(
+    pos_xy: torch.Tensor,
+    vel_xy: torch.Tensor,
+    altitude: torch.Tensor,
+    release_delay: float,
+    gravity: float,
+) -> torch.Tensor:
+    """CCIP impact prediction under the NOMINAL model (no drag, no wind).
+
+    This is what the on-board CCIP predictor "believes" the impact point is.
+    In Phase 2+ the real drop uses domain-randomized drag/wind
+    (``ballistic_impact`` with nonzero ``drag_coef``/``wind_xy``), so the gap
+    between this nominal prediction and the real impact is exactly the
+    model-mismatch the learned residual must close. Reduces algebraically to
+    ``ballistic_impact`` with zero drag/wind.
+    """
+    zero_drag = torch.zeros(pos_xy.shape[0], device=pos_xy.device, dtype=pos_xy.dtype)
+    zero_wind = torch.zeros(pos_xy.shape[0], 2, device=pos_xy.device, dtype=pos_xy.dtype)
+    return ballistic_impact(pos_xy, vel_xy, altitude, release_delay, gravity, zero_drag, zero_wind)
+
+
+def apply_ccip_residual(pred_impact: torch.Tensor, residual_action: torch.Tensor, scale: float) -> torch.Tensor:
+    """Apply the policy-produced CCIP residual (Phase 2+).
+
+    ``residual_action`` is the [N,2] slice of the extended action space
+    (``action[:, 4:6]``, already clamped to [-1,1] by the env), scaled by
+    ``scale`` (metres) and ADDED to the nominal CCIP impact prediction. The
+    policy learns to bias the predicted impact so that, despite the nominal
+    predictor ignoring drag/wind (and, in Phase 3, target motion), the real
+    drop lands on target — i.e. it learns the model-uncertainty correction.
+    """
+    return pred_impact + residual_action * scale
+
+
+def step_target_velocity(
+    vel_xy: torch.Tensor,
+    theta: float,
+    sigma: float,
+    dt: float,
+    noise: torch.Tensor,
+) -> torch.Tensor:
+    """One Ornstein-Uhlenbeck / Gauss-Markov step for the moving-target
+    velocity (Phase 3): ``v <- (1 - theta*dt) * v + sigma * sqrt(dt) * noise``.
+
+    ``theta`` is the mean-reversion rate (pulls the velocity back toward zero
+    so the target wanders rather than drifting away unbounded), ``sigma`` the
+    volatility, ``noise`` a standard-normal [N,2] draw supplied by the caller
+    (kept as an argument so this stays a pure, deterministically-testable
+    function). Phase 1/2 never call this (target is stationary).
+    """
+    return (1.0 - theta * dt) * vel_xy + sigma * math.sqrt(dt) * noise
+
+
+def impact_terminal_reward(real_err: torch.Tensor, w_impact: float, reward_scale: float) -> torch.Tensor:
+    """Terminal reward for the real (domain-randomized physics) impact error
+    at payload release (Phase 2+): ``w_impact * exp(-real_err / reward_scale)``.
+
+    Monotonically decreasing in the true miss distance ``real_err`` (metres),
+    saturating to ``w_impact`` at a perfect hit and decaying smoothly — a
+    dense terminal shaping that rewards closing the sim-model gap rather than
+    a hard pass/fail (the success bonus is applied separately in the env).
+    """
+    return w_impact * torch.exp(-real_err / reward_scale)
+
+
+def lead_prediction_reward(
+    pred_target_xy: torch.Tensor,
+    actual_target_xy: torch.Tensor,
+    w_lead: float,
+    reward_scale: float,
+) -> torch.Tensor:
+    """Reward for correctly predicting the moving target's future (lead)
+    position at impact time (Phase 3): ``w_lead * exp(-lead_err / reward_scale)``
+    where ``lead_err = |pred_target_xy - actual_target_xy|``.
+
+    ``pred_target_xy`` is where the policy/CCIP aimed (the lead point it
+    released against); ``actual_target_xy`` is where the target actually was at
+    impact. Encourages learning the intercept geometry / lead computation.
+    """
+    lead_err = torch.linalg.norm(pred_target_xy - actual_target_xy, dim=-1)
+    return w_lead * torch.exp(-lead_err / reward_scale)
 
 
 def compute_reward(

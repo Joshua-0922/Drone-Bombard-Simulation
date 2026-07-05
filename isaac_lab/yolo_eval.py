@@ -192,10 +192,11 @@ def run_calibrate(env, model, marker_ops, out_csv, range_bins, range_max, angle_
             # drift (hover transients) — terminations are disabled for the
             # calibrate task in main(), so no mid-bin resets either.
             zero_vel = torch.zeros(n, 6, device=device)
+            action_dim = env.unwrapped.cfg.action_space  # 6 (vel[0:4] + CCIP residual[4:6])
             for _ in range(5):
                 env.unwrapped._robot.write_root_pose_to_sim(root[:, :7])
                 env.unwrapped._robot.write_root_velocity_to_sim(zero_vel)
-                env.step(torch.zeros(n, 4, device=device))
+                env.step(torch.zeros(n, action_dim, device=device))
 
             camera: TiledCamera = env.unwrapped.scene["down_camera"]
             rgb = camera.data.output["rgb"]

@@ -245,7 +245,7 @@ def main():
     env._apply_action = _apply_wrapper
 
     # -- drivers -------------------------------------------------------------
-    zero_action = torch.zeros(env.num_envs, 4, device=device)
+    zero_action = torch.zeros(env.num_envs, env.cfg.action_space, device=device)
 
     def run_steps(n, label):
         for i in range(n):

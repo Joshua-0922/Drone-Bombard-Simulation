@@ -86,6 +86,7 @@ def run_scripted(env, episodes=5):
     obs, _ = env.reset()
     device = env.unwrapped.device
     n = env.unwrapped.num_envs
+    action_dim = env.unwrapped.single_action_space.shape[0]  # 6 (vel[0:4] + CCIP residual[4:6])
     successes, finals = 0, []
     for ep in range(episodes):
         done = torch.zeros(n, dtype=torch.bool, device=device)
@@ -95,7 +96,7 @@ def run_scripted(env, episodes=5):
             to_target = env.unwrapped._target_xy - pos[:, :2]
             dist = torch.linalg.norm(to_target, dim=-1, keepdim=True).clamp(min=1e-6)
             dir_xy = to_target / dist
-            action = torch.zeros(n, 4, device=device)
+            action = torch.zeros(n, action_dim, device=device)  # residual dims stay 0
             action[:, 0] = dir_xy[:, 0] * 0.5
             action[:, 1] = dir_xy[:, 1] * 0.5
             obs, rew, dones, info = env.step(action)
@@ -119,7 +120,10 @@ def run_step_response(env, out_csv):
         env.reset()
         for _ in range(30):  # settle to hover first
             env.step(torch.zeros(n, action_dim, device=device))
-        act = torch.tensor(act_vals, device=device).unsqueeze(0).repeat(n, 1)
+        # _STEP_MATRIX entries are 4-tuples (vel dims); pad the CCIP residual
+        # dims with zeros to match the 6-dim action space.
+        act = torch.zeros(n, action_dim, device=device)
+        act[:, :len(act_vals)] = torch.tensor(act_vals, device=device).unsqueeze(0).repeat(n, 1)
         for t in range(_HOLD_STEPS):
             env.step(act)
             vel = env.unwrapped._robot.data.root_lin_vel_w[0].tolist()

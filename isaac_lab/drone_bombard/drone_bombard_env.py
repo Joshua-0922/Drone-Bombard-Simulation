@@ -49,13 +49,19 @@ from isaaclab.utils import configclass
 
 from isaaclab_assets import CRAZYFLIE_CFG
 
-from .mdp.domain_rand import sample_drag_coefficient, sample_wind
+from .mdp.domain_rand import sample_drag_coefficient, sample_wind, sample_target_velocity
 from .math_utils import (
     rate_limit_action,
     lpf_step,
     project_target_pinhole,
     ballistic_impact,
     ccip_residual,
+    predict_impact_nominal,
+    apply_ccip_residual,
+    time_to_fall,
+    step_target_velocity,
+    impact_terminal_reward,
+    lead_prediction_reward,
     compute_reward,
     overshoot_guard,
     stagnation_guard,
@@ -243,12 +249,68 @@ class DroneBombardControllerCfg:
 
 
 @configclass
+class DroneBombardPhaseCfg:
+    """Curriculum-phase parameters for the CCIP-residual / domain-randomization
+    / moving-target stages (see the image's 3-stage table). Which of these are
+    actually *active* is decided by the derived flags on ``DroneBombardEnvCfg``
+    (set from ``phase`` in ``__post_init__``); this block only holds the
+    magnitudes. All values are initial estimates — calibrate on the L4 VM
+    (see the exp_015 note's TODO)."""
+
+    # --- CCIP learned residual (action[4:6]) — Phase 2+ ---
+    residual_scale: float = 3.0  # metres; action in [-1,1] -> +/- 3 m impact-point correction
+
+    # --- domain randomization (model mismatch) — Phase 2+ ---
+    drag_max: float = 0.15  # U[0, drag_max] first-order drag coefficient
+    wind_std: float = 1.5   # m/s, N(0, wind_std) per horizontal axis
+
+    # --- payload release trigger ---
+    release_tolerance: float = 0.5   # m; release when |predicted_impact - aim| <= tol
+    min_release_altitude: float = 1.0  # m; do not release below this altitude
+    # RESERVED (not yet wired): a Phase-3 time-to-intercept gate. The current
+    # release trigger fires on aim-error alone (see _evaluate_release); this
+    # knob is kept for a future tau-based gate and documented in the exp_015
+    # note's tuning TODO.
+    intercept_tau: float = 0.5  # s
+
+    # --- terminal impact reward (Phase 2+) ---
+    w_impact: float = 100.0
+    impact_reward_scale: float = 2.0  # m; exp(-real_err/scale)
+    success_impact_radius: float = 0.8  # m; release with real_err <= this counts as success
+    no_release_penalty: float = -20.0  # applied if the episode times out without releasing
+
+    # --- moving target (Phase 3) ---
+    target_init_speed: float = 2.0   # m/s, initial |target velocity| ~ U[0, this]
+    target_vel_theta: float = 0.3    # Gauss-Markov mean-reversion rate (1/s)
+    target_vel_sigma: float = 0.5    # Gauss-Markov volatility
+
+    # --- lead-prediction reward (Phase 3) ---
+    w_lead: float = 10.0
+    lead_reward_scale: float = 3.0  # m
+
+
+@configclass
 class DroneBombardEnvCfg(DirectRLEnvCfg):
     decimation = 10
     episode_length_s = 30.0  # -> 300 policy steps @ 10 Hz, matches max_steps=300
-    action_space = 4
+    # Action is 6-dim across ALL phases so the rsl_rl network architecture is
+    # identical phase-to-phase and ``runner.load()`` warm-start is lossless:
+    #   action[0:4] = ENU velocity setpoint (vx, vy, vz, yaw) — always active
+    #   action[4:6] = CCIP impact-point residual (delta_x, delta_y) — Phase 2+
+    # In Phase 1 the env ignores action[4:6] entirely (residual_enabled=False),
+    # so behavior is identical to the validated exp_014 4-dim approach task.
+    action_space = 6
     observation_space = 14
     state_space = 0
+
+    # Curriculum phase (1=approach/nominal, 2=CCIP+residual/stationary,
+    # 3=moving target). The derived flags below are set from this in
+    # __post_init__; do not set them directly.
+    phase: int = 1
+    residual_enabled: bool = False
+    dr_enabled: bool = False
+    moving_target_enabled: bool = False
+    release_enabled: bool = False
 
     sim: SimulationCfg = SimulationCfg(dt=1.0 / 100.0, render_interval=decimation)
 
@@ -274,11 +336,26 @@ class DroneBombardEnvCfg(DirectRLEnvCfg):
     asset: DroneBombardAssetCfg = DroneBombardAssetCfg()
     drop: DroneBombardDropCfg = DroneBombardDropCfg()
     controller: DroneBombardControllerCfg = DroneBombardControllerCfg()
+    phase_cfg: DroneBombardPhaseCfg = DroneBombardPhaseCfg()
 
     # Visualization markers (payload cylinder under the drone + target X on the
     # ground). Off by default so training pays no marker cost; turn on for
     # recording/eval to show the drone carrying a payload toward the target.
     show_markers: bool = False
+
+    def __post_init__(self):
+        # DirectRLEnvCfg (via its own __post_init__ chain) has no required
+        # post-init on this version, but call super defensively in case a
+        # future isaaclab version adds one.
+        parent_post = getattr(super(), "__post_init__", None)
+        if callable(parent_post):
+            parent_post()
+        # Derive the per-phase feature flags from the single ``phase`` knob so
+        # every call site (env + train.py) toggles behavior consistently.
+        self.residual_enabled = self.phase >= 2
+        self.dr_enabled = self.phase >= 2
+        self.release_enabled = self.phase >= 2
+        self.moving_target_enabled = self.phase >= 3
 
 
 # =====================================================================
@@ -292,13 +369,25 @@ class DroneBombardEnv(DirectRLEnv):
     def __init__(self, cfg: DroneBombardEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
+        # Re-derive the per-phase flags from cfg.phase here too: train.py sets
+        # ``env_cfg.phase`` AFTER the cfg is constructed (so cfg.__post_init__
+        # already ran with the default phase=1). Recomputing on the stored cfg
+        # makes every ``self.cfg.<flag>`` read below authoritative.
+        self.cfg.residual_enabled = self.cfg.phase >= 2
+        self.cfg.dr_enabled = self.cfg.phase >= 2
+        self.cfg.release_enabled = self.cfg.phase >= 2
+        self.cfg.moving_target_enabled = self.cfg.phase >= 3
+
         N, device = self.num_envs, self.device
-        self._prev_action = torch.zeros(N, 4, device=device)
-        self._v_filt = torch.zeros(N, 4, device=device)
+        # 6-dim action pipeline: [0:4] velocity setpoint, [4:6] CCIP residual.
+        self._prev_action = torch.zeros(N, 6, device=device)
+        self._v_filt = torch.zeros(N, 4, device=device)  # velocity LPF only tracks the 4 vel dims
         self._lpf_snap = torch.ones(N, dtype=torch.bool, device=device)
         self._physics_tick = 0
+        self._residual_action = torch.zeros(N, 2, device=device)  # latest action[4:6]
 
         self._target_xy = torch.zeros(N, 2, device=device)
+        self._target_vel_xy = torch.zeros(N, 2, device=device)  # Phase 3 moving target
         self._d_xy_prev = torch.zeros(N, device=device)
         self._d_xy_min = torch.full((N,), float("inf"), device=device)
         self._d_xy_history = torch.zeros(N, self.max_episode_length, device=device)
@@ -309,6 +398,17 @@ class DroneBombardEnv(DirectRLEnv):
         self._payload_attached = torch.ones(N, dtype=torch.bool, device=device)
         self._drag_coef = torch.zeros(N, device=device)
         self._wind_xy = torch.zeros(N, 2, device=device)
+
+        # Payload-release state (Phase 2+). ``_released`` latches True once the
+        # drop is triggered; ``_release_impact_err`` holds the real (DR-physics)
+        # miss distance and ``_release_aim_xy`` the point the policy aimed at
+        # (for the Phase-3 lead-prediction reward). ``_just_released`` flags the
+        # single step the release fires on (for the terminal reward).
+        self._released = torch.zeros(N, dtype=torch.bool, device=device)
+        self._just_released = torch.zeros(N, dtype=torch.bool, device=device)
+        self._release_impact_err = torch.zeros(N, device=device)
+        self._release_aim_xy = torch.zeros(N, 2, device=device)
+        self._release_target_xy = torch.zeros(N, 2, device=device)
 
         self._episode_sums = {
             k: torch.zeros(N, device=device)
@@ -458,17 +558,31 @@ class DroneBombardEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         self._action_sat_sum += (actions.abs() > 1.0).float().mean(dim=-1)
         clipped = torch.clamp(actions, -1.0, 1.0)
-        limited = rate_limit_action(clipped, self._prev_action, self.cfg.action.rate_limit)
 
-        self._delta_action = limited - self._prev_action  # for the smoothness penalty, post-rate-limit
-        self._prev_action = limited
+        # Split the 6-dim action: [0:4] velocity setpoint, [4:6] CCIP residual.
+        vel_clipped = clipped[:, :4]
+        residual_clipped = clipped[:, 4:6]
+
+        # Velocity dims: rate-limit against the previous velocity action.
+        prev_vel = self._prev_action[:, :4]
+        limited_vel = rate_limit_action(vel_clipped, prev_vel, self.cfg.action.rate_limit)
+
+        # Smoothness penalty stays on the 4 velocity dims (v13/v15 parity — the
+        # residual is an instantaneous aim correction, not rate-limited).
+        self._delta_action = limited_vel - prev_vel
+
+        # Residual is used only in Phase 2+; zero it out otherwise so a Phase-1
+        # policy's spurious [4:6] outputs never touch the impact prediction.
+        self._residual_action = residual_clipped if self.cfg.residual_enabled else torch.zeros_like(residual_clipped)
+
+        self._prev_action = torch.cat([limited_vel, self._residual_action], dim=-1)
 
         a = self.cfg.action
         self._vel_cmd = torch.stack([
-            limited[:, 0] * a.vx_scale,
-            limited[:, 1] * a.vy_scale,
-            limited[:, 2] * a.vz_scale,
-            limited[:, 3] * a.yaw_scale,
+            limited_vel[:, 0] * a.vx_scale,
+            limited_vel[:, 1] * a.vy_scale,
+            limited_vel[:, 2] * a.vz_scale,
+            limited_vel[:, 3] * a.yaw_scale,
         ], dim=-1)
         self._physics_tick = 0
 
@@ -653,9 +767,85 @@ class DroneBombardEnv(DirectRLEnv):
         return torch.linalg.norm(pos[:, :2] - self._target_xy, dim=-1)
 
     # ------------------------------------------------------------------
+    # Phase 2/3 dynamics: moving target + payload release (once per policy step)
+    # ------------------------------------------------------------------
+    def _advance_phase_dynamics(self):
+        """Run once per policy step, at the top of ``_get_dones`` (which the
+        DirectRLEnv contract guarantees fires before ``_get_rewards``). Moves
+        the target (Phase 3) and evaluates the payload-release trigger
+        (Phase 2+). No-op in Phase 1."""
+        self._just_released = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+        if self.cfg.moving_target_enabled:
+            dt = self.cfg.sim.dt * self.cfg.decimation  # policy-step period (0.1 s @ 10 Hz)
+            pc = self.cfg.phase_cfg
+            noise = torch.randn_like(self._target_vel_xy)
+            self._target_vel_xy = step_target_velocity(
+                self._target_vel_xy, pc.target_vel_theta, pc.target_vel_sigma, dt, noise
+            )
+            self._target_xy = self._target_xy + self._target_vel_xy * dt
+
+        if self.cfg.release_enabled:
+            self._evaluate_release()
+
+    def _evaluate_release(self):
+        """Evaluate the scripted CCIP release trigger for the envs that have
+        not yet dropped. The on-board predictor uses the NOMINAL ballistic
+        model (no drag/wind) plus the policy's learned residual; the real drop
+        uses the domain-randomized physics, so ``_release_impact_err`` is the
+        true miss the terminal reward is shaped on.
+
+        Phase 2 (stationary): aim at the target; the residual must offset the
+        DR drag/wind so the real payload lands on it. Phase 3 (moving): aim at
+        the analytic lead point (target position at predicted impact time); the
+        residual + lead reward drive prediction accuracy. See the exp_015 note
+        for the documented follow-up (adding target velocity to the obs so an
+        MLP policy can learn lead itself)."""
+        pc = self.cfg.phase_cfg
+        dc = self.cfg.drop
+        pos = self._robot.data.root_pos_w - self.scene.env_origins
+        vel = self._robot.data.root_lin_vel_w
+        pos_xy = pos[:, :2]
+        vel_xy = vel[:, :2]
+        altitude = pos[:, 2]
+
+        # On-board prediction: nominal CCIP + learned residual (metres).
+        pred_impact = predict_impact_nominal(pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity)
+        pred_impact = apply_ccip_residual(pred_impact, self._residual_action, pc.residual_scale)
+
+        # Aim point = target position at the predicted impact time (lead).
+        t_impact = time_to_fall(altitude, dc.gravity) + dc.release_delay
+        target_at_impact = self._target_xy + self._target_vel_xy * t_impact.unsqueeze(-1)
+
+        aim_err = torch.linalg.norm(pred_impact - target_at_impact, dim=-1)
+        fire = (
+            (~self._released)
+            & (altitude > pc.min_release_altitude)
+            & (aim_err <= pc.release_tolerance)
+        )
+        if not bool(torch.any(fire)):
+            return
+
+        # Real drop under domain-randomized physics -> true impact error.
+        real_impact = ballistic_impact(
+            pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity, self._drag_coef, self._wind_xy
+        )
+        real_err = torch.linalg.norm(real_impact - target_at_impact, dim=-1)
+
+        self._just_released = fire
+        self._released = self._released | fire
+        self._release_impact_err = torch.where(fire, real_err, self._release_impact_err)
+        self._release_aim_xy = torch.where(fire.unsqueeze(-1), pred_impact, self._release_aim_xy)
+        self._release_target_xy = torch.where(fire.unsqueeze(-1), target_at_impact, self._release_target_xy)
+
+    # ------------------------------------------------------------------
     # Dones (computed + cached BEFORE rewards, per DirectRLEnv contract)
     # ------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        # Phase 2/3: move the target and evaluate the release trigger first, so
+        # the release outcome is available to both dones and rewards this step.
+        self._advance_phase_dynamics()
+
         tc = self.cfg.termination
         rc = self.cfg.reward
 
@@ -698,16 +888,29 @@ class DroneBombardEnv(DirectRLEnv):
         past_d_xy = self._d_xy_history.gather(1, past_idx.unsqueeze(-1)).squeeze(-1)
         stagnation = stagnation_guard(d_xy, past_d_xy, step_in_ep, tc.stagnation_window, tc.stagnation_min_progress)
 
-        success = d_xy <= rc.success_radius
+        pc = self.cfg.phase_cfg
+        if self.cfg.release_enabled:
+            # Phase 2/3: success is a payload release with a small true impact
+            # error. ANY release ends the episode (the payload is spent);
+            # proximity alone no longer terminates (the drone must linger and
+            # drop, not just fly close).
+            success = self._just_released & (self._release_impact_err <= pc.success_impact_radius)
+            released_this_step = self._just_released
+        else:
+            # Phase 1: proximity success (validated exp_014 approach task).
+            success = d_xy <= rc.success_radius
+            released_this_step = torch.zeros_like(success)
 
         failure = crash | overspeed | bad_attitude | out_of_range | max_alt | overshoot | stagnation
-        terminated = success | failure
+        terminated = success | failure | released_this_step
         time_out = step_in_ep >= (self.max_episode_length - 1)
 
         self._done_flags = {
             "success": success, "crash": crash, "overspeed": overspeed,
             "bad_attitude": bad_attitude, "out_of_range": out_of_range,
             "max_altitude": max_alt, "overshoot": overshoot, "stagnation": stagnation,
+            "released": released_this_step,
+            "release_miss": released_this_step & ~success,
             "timeout": time_out & ~terminated,
         }
         return terminated, time_out & ~terminated
@@ -729,7 +932,6 @@ class DroneBombardEnv(DirectRLEnv):
         )
 
         f = self._done_flags
-        reward = reward + f["success"].float() * rc.reward_success
         reward = reward + f["crash"].float() * rc.penalty_crash
         reward = reward + f["overspeed"].float() * rc.penalty_overspeed
         reward = reward + f["bad_attitude"].float() * rc.penalty_bad_attitude
@@ -738,6 +940,27 @@ class DroneBombardEnv(DirectRLEnv):
         reward = reward + f["overshoot"].float() * rc.penalty_overshoot
         reward = reward + f["stagnation"].float() * rc.penalty_stagnation
         reward = reward + f["timeout"].float() * rc.truncation_penalty
+
+        pc = self.cfg.phase_cfg
+        if self.cfg.release_enabled:
+            # Phase 2/3 terminal reward is the true (DR-physics) impact error at
+            # release, NOT the proximity success bonus. exp(-real_err/scale)
+            # saturates to w_impact for a perfect hit and decays smoothly.
+            released = f["released"].float()
+            reward = reward + released * impact_terminal_reward(
+                self._release_impact_err, pc.w_impact, pc.impact_reward_scale
+            )
+            if self.cfg.moving_target_enabled:
+                # Phase 3: also reward correctly predicting the target's future
+                # (lead) position at impact time.
+                reward = reward + released * lead_prediction_reward(
+                    self._release_aim_xy, self._release_target_xy, pc.w_lead, pc.lead_reward_scale
+                )
+            # Penalize timing out without ever dropping the payload.
+            reward = reward + f["timeout"].float() * pc.no_release_penalty
+        else:
+            # Phase 1: proximity success bonus (validated exp_014 approach task).
+            reward = reward + f["success"].float() * rc.reward_success
 
         conf_zero = conf <= 0.0
         reward = reward + conf_zero.float() * rc.penalty_target_lost  # 0.0 in v13/v15, kept for parity
@@ -808,16 +1031,29 @@ class DroneBombardEnv(DirectRLEnv):
         self._prev_action[env_ids] = 0.0
         self._v_filt[env_ids] = 0.0
         self._lpf_snap[env_ids] = True
+        self._residual_action[env_ids] = 0.0
         self._d_xy_min[env_ids] = float("inf")
         self._d_xy_history[env_ids] = 0.0
         self._held_uv_conf[env_ids] = 0.0
         self._hold_remaining[env_ids] = 0
         self._payload_attached[env_ids] = True
 
+        # Payload-release state (Phase 2+).
+        self._released[env_ids] = False
+        self._just_released[env_ids] = False
+        self._release_impact_err[env_ids] = 0.0
+        self._release_aim_xy[env_ids] = 0.0
+        self._release_target_xy[env_ids] = 0.0
+
         self._action_sat_sum[env_ids] = 0.0
 
-        self._drag_coef[env_ids] = sample_drag_coefficient(self.cfg.drop, n, device)
-        self._wind_xy[env_ids] = sample_wind(self.cfg.drop, n, device)
+        # Domain randomization (model mismatch) is active only in Phase 2+;
+        # the moving-target velocity only in Phase 3. Off -> identity (zero),
+        # so Phase 1 reduces to the drag-free/wind-free stationary-target task.
+        pc = self.cfg.phase_cfg
+        self._drag_coef[env_ids] = sample_drag_coefficient(pc, n, device, self.cfg.dr_enabled)
+        self._wind_xy[env_ids] = sample_wind(pc, n, device, self.cfg.dr_enabled)
+        self._target_vel_xy[env_ids] = sample_target_velocity(pc, n, device, self.cfg.moving_target_enabled)
 
         d_xy0 = torch.linalg.norm(spawn_xy - target_xy, dim=-1)
         self._d_xy_prev[env_ids] = d_xy0
@@ -852,6 +1088,10 @@ class DroneBombardEnv(DirectRLEnv):
             "target_xy": self._target_xy[env_ids].clone(),
             "drag_coef": self._drag_coef[env_ids].clone(),
             "wind_xy": self._wind_xy[env_ids].clone(),
+            "released": self._released[env_ids].clone(),
+            "release_impact_err": self._release_impact_err[env_ids].clone(),
+            "release_aim_xy": self._release_aim_xy[env_ids].clone(),
+            "release_target_xy": self._release_target_xy[env_ids].clone(),
         }
 
     def _predicted_impact_from_snapshot(self, snap: dict) -> torch.Tensor:
@@ -889,9 +1129,26 @@ class DroneBombardEnv(DirectRLEnv):
 
         log["Episode_Metric/action_sat_frac"] = snap["action_sat_frac"].mean().item()
 
-        impact = self._predicted_impact_from_snapshot(snap)
-        impact_error = torch.linalg.norm(impact - snap["target_xy"], dim=-1)
-        log["Episode_Metric/drop_impact_error_m"] = impact_error.mean().item()
+        if self.cfg.release_enabled:
+            # Phase 2/3: report the REAL (DR-physics) impact error measured at
+            # the actual release event, plus how often the payload was dropped.
+            released = snap["released"]
+            log["Episode_Metric/release_rate"] = released.float().mean().item()
+            if bool(released.any()):
+                err_released = snap["release_impact_err"][released]
+                log["Episode_Metric/drop_impact_error_m"] = err_released.mean().item()
+                if self.cfg.moving_target_enabled:
+                    lead_err = torch.linalg.norm(
+                        snap["release_aim_xy"][released] - snap["release_target_xy"][released], dim=-1
+                    )
+                    log["Episode_Metric/lead_error_m"] = lead_err.mean().item()
+        else:
+            # Phase 1: the analytic CCIP prediction from the terminal state
+            # (no real release event in the approach task).
+            impact = self._predicted_impact_from_snapshot(snap)
+            impact_error = torch.linalg.norm(impact - snap["target_xy"], dim=-1)
+            log["Episode_Metric/drop_impact_error_m"] = impact_error.mean().item()
+
         d_xy_min = snap["d_xy_min"]
         log["Episode_Metric/d_xy_min"] = d_xy_min[torch.isfinite(d_xy_min)].mean().item() if torch.isfinite(d_xy_min).any() else 0.0
         for k, v in snap["episode_sums"].items():

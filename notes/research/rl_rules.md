@@ -392,6 +392,28 @@ solver가 새 값을 첫 sim step까지 안 받아 stale 값에 wrench가 적분
 (프롭스핀 A/B로 로터 무관 실증). "교정된 plant에서 구 정책 성능 하락"은 회귀가 아니라
 **정상** — 판단 기준은 fresh 학습 커브다.
 
+## Rule 20 — 커리큘럼 warm-start는 아키텍처 고정으로, 페이즈 전환은 태스크 재정의로 취급하라
+
+> **상세:** [[research/phased_curriculum]] / [[experiments/exp_015_phased_curriculum]] (2026-07-05)
+
+**(a) 페이즈 간 weight 인계를 하려면 네트워크 아키텍처를 고정하라.** rsl_rl `OnPolicyRunner`는
+env action/obs space에서 MLP를 만들므로, 페이즈마다 차원이 바뀌면 `runner.load()`가 shape
+불일치로 실패한다. 커리큘럼(접근→CCIP+residual→이동타겟)에서 action을 4→6으로 늘려야 할 때는
+**전 페이즈 6-dim 고정**하고, 초기 페이즈에선 env가 미사용 dim을 zero-out(무해). 부분 로딩
+surgery보다 견고. obs 확장도 동일 — index 0-13 불변 + append만(exp_012 superset 규약).
+
+**(b) 릴리스/터미널 보상 도입은 보상 공식 변경 = 태스크 재정의.** warm-start를 해도 2·3단계는
+새 보상 지형이므로 **첫 롤아웃 후 재검증 필수**: `release_rate`(드론이 실제로 투하하는가) +
+릴리스 실제 `drop_impact_error_m`(맞히는가)를 먼저 보라. proximity success가 아니라 릴리스가
+종단을 지배하므로, 접근만 잘하고 안 던지면 timeout `no_release_penalty`로 신호가 뜬다.
+
+**(c) MLP 정책은 단일 obs로 시간미분(타겟 속도)을 추론 못 한다.** 이동 타겟 lead를 "정책이
+학습"하게 하려면 타겟 속도를 obs에 넣어야 한다(14→16). 넣기 전에는 env가 lead를 해석적으로
+계산하고 residual만 모델오차를 보정하는 설계로 둘 것 — "정책이 리드를 배웠다"고 오독 금지.
+
+**(d) 순차 학습은 서브프로세스로.** Isaac Sim은 프로세스당 1 sim만 안전 → 한 프로세스에서
+env를 만들고 부수고 다시 만들지 말고, 페이즈마다 새 프로세스(`--resume`으로 체인).
+
 ---
 
 > **Phase 1 전체 계획:** [[research/phase1_plan]] — CCIP 기반 자율 접근, 8주, 14개 실험

@@ -298,6 +298,83 @@ def test_ccip_residual_is_zero_stub_no_params():
 
 
 # =====================================================================
+# Phased-curriculum helpers: nominal CCIP, residual, GM target, rewards
+# =====================================================================
+
+def test_time_to_fall_closed_form_and_clamp():
+    alt = torch.tensor([10.0, 0.0, -3.0])
+    t = mu.time_to_fall(alt, 9.81)
+    assert t[0].item() == pytest.approx(math.sqrt(2.0 * 10.0 / 9.81), abs=1e-6)
+    assert t[1].item() == pytest.approx(0.0, abs=1e-9)
+    assert t[2].item() == pytest.approx(0.0, abs=1e-9), "below-ground altitude clamps, no NaN"
+
+
+def test_predict_impact_nominal_matches_drag_free_ballistic():
+    pos_xy = torch.tensor([[5.0, -2.0], [0.0, 0.0]])
+    vel_xy = torch.tensor([[2.0, 1.0], [-1.0, 3.0]])
+    altitude = torch.tensor([10.0, 6.0])
+    pred = mu.predict_impact_nominal(pos_xy, vel_xy, altitude, 0.1, 9.81)
+    ref = mu.ballistic_impact(pos_xy, vel_xy, altitude, 0.1, 9.81, torch.zeros(2), torch.zeros(2, 2))
+    torch.testing.assert_close(pred, ref, atol=1e-6, rtol=1e-6)
+
+
+def test_apply_ccip_residual_adds_scaled_delta():
+    pred = torch.tensor([[5.0, 5.0], [0.0, 0.0]])
+    residual = torch.tensor([[1.0, -0.5], [0.0, 1.0]])
+    out = mu.apply_ccip_residual(pred, residual, scale=2.0)
+    torch.testing.assert_close(out, torch.tensor([[7.0, 4.0], [0.0, 2.0]]), atol=1e-6, rtol=1e-6)
+    # zero residual is a true no-op
+    out0 = mu.apply_ccip_residual(pred, torch.zeros_like(residual), scale=2.0)
+    torch.testing.assert_close(out0, pred, atol=1e-6, rtol=1e-6)
+
+
+def test_step_target_velocity_mean_reversion_and_noise():
+    vel = torch.tensor([[1.0, -2.0]])
+    theta, sigma, dt = 0.5, 0.0, 0.1
+    # zero noise -> pure mean reversion: v <- (1 - theta*dt)*v
+    out = mu.step_target_velocity(vel, theta, sigma, dt, torch.zeros_like(vel))
+    torch.testing.assert_close(out, (1.0 - theta * dt) * vel, atol=1e-6, rtol=1e-6)
+    # nonzero noise adds sigma*sqrt(dt)*noise
+    noise = torch.tensor([[1.0, 1.0]])
+    out2 = mu.step_target_velocity(vel, theta, 2.0, dt, noise)
+    expected = (1.0 - theta * dt) * vel + 2.0 * math.sqrt(dt) * noise
+    torch.testing.assert_close(out2, expected, atol=1e-6, rtol=1e-6)
+
+
+def test_step_target_velocity_zero_theta_zero_sigma_is_constant():
+    vel = torch.tensor([[3.0, -1.0], [0.0, 2.0]])
+    out = mu.step_target_velocity(vel, 0.0, 0.0, 0.1, torch.randn_like(vel))
+    torch.testing.assert_close(out, vel, atol=1e-6, rtol=1e-6)
+
+
+def test_impact_terminal_reward_monotone_decreasing_and_saturation():
+    err = torch.tensor([0.0, 1.0, 5.0])
+    r = mu.impact_terminal_reward(err, w_impact=100.0, reward_scale=1.0)
+    assert r[0].item() == pytest.approx(100.0, abs=1e-6), "perfect hit saturates to w_impact"
+    assert r[1].item() == pytest.approx(100.0 * math.exp(-1.0), abs=1e-5)
+    assert r[0].item() > r[1].item() > r[2].item(), "monotonically decreasing in miss distance"
+
+
+def test_lead_prediction_reward_perfect_and_decay():
+    pred = torch.tensor([[10.0, 0.0], [10.0, 0.0]])
+    actual = torch.tensor([[10.0, 0.0], [13.0, 4.0]])  # second: 5m off
+    r = mu.lead_prediction_reward(pred, actual, w_lead=10.0, reward_scale=5.0)
+    assert r[0].item() == pytest.approx(10.0, abs=1e-6), "perfect lead saturates to w_lead"
+    assert r[1].item() == pytest.approx(10.0 * math.exp(-5.0 / 5.0), abs=1e-5)
+
+
+def test_ballistic_impact_drag_branch_changes_result_when_nonzero():
+    """Phase-2 model mismatch: nonzero drag must move the impact vs the
+    drag-free nominal prediction (the gap the residual learns to close)."""
+    pos_xy = torch.tensor([[0.0, 0.0]])
+    vel_xy = torch.tensor([[3.0, 0.0]])
+    altitude = torch.tensor([10.0])
+    nominal = mu.predict_impact_nominal(pos_xy, vel_xy, altitude, 0.1, 9.81)
+    with_drag = mu.ballistic_impact(pos_xy, vel_xy, altitude, 0.1, 9.81, torch.tensor([0.2]), torch.zeros(1, 2))
+    assert not torch.allclose(nominal, with_drag), "nonzero drag must change the impact point"
+
+
+# =====================================================================
 # Guards: overshoot dormancy/reachability, stagnation
 # =====================================================================
 

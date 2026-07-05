@@ -112,7 +112,7 @@ def main():
             vx_scale = base.cfg.action.vx_scale
             speed = torch.clamp(0.5 * dist, max=1.2)  # m/s, tapers to 0 at target
             act_mag = (speed / vx_scale) * args_cli.approach_speed / 0.12  # scale by CLI knob
-            action = torch.zeros(base.num_envs, 4, device=device)
+            action = torch.zeros(base.num_envs, base.cfg.action_space, device=device)  # residual dims stay 0
             action[:, 0] = (dir_xy[:, 0:1] * act_mag).squeeze(-1)
             action[:, 1] = (dir_xy[:, 1:2] * act_mag).squeeze(-1)
             # active altitude hold (the velocity controller has no integral term,

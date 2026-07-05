@@ -14,7 +14,8 @@ type: index
 
 ## 현재 상태 (2026-07-05)
 
-- **병행 트랙 — Isaac Lab (`feat/isaac-env-migration`): exp_014 완료 — plant 수정 + 비전 거리감쇠 → deterministic 200-ep eval 100.0% (202/202), d_xy_min 0.665 m (exp_013: 36%/1.4 m).**
+- **병행 트랙 — Isaac Lab (`feat/isaac-env-migration`): exp_015 — Phase별 순차 커리큘럼 코드 완료(미학습).** 이미지 3단계(접근/nominal → CCIP+Residual/정지타겟 → 이동타겟)를 완전 구현. action 4→6(δx/δy CCIP residual), `phase` 단일 노브+파생 플래그, 릴리스 이벤트(nominal CCIP+δ 예측 트리거 → 실제 DR 낙하 착탄오차 터미널 보상), drag/wind 도메인랜덤화, Gauss-Markov 이동타겟+lead 보상, `train.py --phases 1,2,3` 서브프로세스 오케스트레이터(6-dim 고정 → `runner.load()` warm-start 무손실). **로컬 `py_compile` 12파일 통과**, `pytest`(+8 신규)·본 학습은 L4/컨테이너 대기(dev 박스 torch 없음). Phase 1 = exp_014 baseline과 동작 동일. → [[experiments/exp_015_phased_curriculum]] / [[research/phased_curriculum]] / Rule 20
+- **(이전) exp_014 완료 — plant 수정 + 비전 거리감쇠 → deterministic 200-ep eval 100.0% (202/202), d_xy_min 0.665 m (exp_013: 36%/1.4 m).**
   - **plant 수정 3종** (커밋 `cd0c617`/`7d0e9b6`): ①속도킥 → 스폰타임 `UsdPhysics.MassAPI` authoring (`--zero-actions` 11.9 m FAIL→0.2 m PASS) ②로터 ±200 rad/s 리셋 재주입 제거 ③**inertia 대반전** — `set_inertias`는 solver에 전파되고 있었음(`_diag_inertia.py` 계측): **exp_013은 rate loop ~1300× 저토크 plant에서 학습**, 구 정책은 plant-overfit(재평가 bad_att 68%) → [[research/isaac_inertia_ctrl_mismatch]] / Rule 19 신설.
   - **exp_014 A2** (감쇠 ON, `v3qk07pg`): R_alt(300-400)=**0.0000**, success 99.85%, noise_std 0.80 안정(폭주 없음 — Rule 18b 재해석: σ 폭주도 plant 아티팩트). climb 창발(iter 150-199, 27.8%) 후 50 iter 내 완전 기각. **A0′** (감쇠 OFF 대조, `azoc1xp0`): R_alt 0.0365, success 96.5% → **지배 요인 = plant 일관성, 감쇠 = 잔여 꼬리 제거 + YOLO parity(유지)**. 상세: [[experiments/exp_014_A2_visionrange]].
   - 실 YOLO 캘리브레이션은 컨테이너 annotator 버그로 차단(하네스는 수리 완료, 커브는 분석값 — calibration-pending). reward_success·entropy_coef 불변(다음 페이즈, [[research/isaac_ppo_tuning_recommendations]]).
@@ -97,6 +98,8 @@ type: index
 | 011 | wobble A/B + v15_bc_stable | eval×2 + dry-run + 0→300K | ▶️ 학습 중 | **RL wobble = smoothness-control 문제 확정.** LPF A/B: 속도명령 jerk RMS 2.92→1.61(−45%), 평균 속력 불변. 교정(B 근접 속도 댐핑 + C smoothness↑ + LPF 0.4) dry-run PASS → v15 fresh 기동(v14 백업). → [[experiments/exp_011_wobble_lpf_reward_damping]] / [[research/control_smoothness_wobble]] / Rule 15 |
 | 012 | isaac_migration_phase2 (`feat/isaac-env-migration`) | 코드만 (미학습) | ✅ 코드 완료 | **Isaac Lab env+PPO 이식.** `isaac_lab/` 신설, v13/v15 obs·action·리워드·터미네이션 상수 그대로 포팅(parity 표 포함), SAC→PPO(rsl_rl), target/spawn 랜덤화 신규, vision=analytic+YOLO-eval 이원화. `pytest test_math.py` 29/29 통과. L4 VM 미기동 → env 스모크 미실행. → [[experiments/exp_012_isaac_migration_phase2]] / [[research/isaac_velocity_controller]] |
 | 013 | exp013_v2_visionfix (wcjklw7a, Isaac PPO) | 65.5M steps (2048 envs×1000 iters) | ✅ 완료 | **Isaac 첫 완주 학습 + 200-ep deterministic eval = 36%.** v1은 비전 사멸 버그(env-origin 프레임 혼용)로 중단·수정 후 재기동. 곡선 plateau(iter ~700), d_xy_min 1.4m 정체. 실패 분해: max_altitude 33%(analytic conf 거리감쇠 누락 → 상승 farming, Rule 17) + crash 27%; farmer>finisher 보상 불균형(Rule 18a); noise_std 0.8→3.92 폭주(Rule 18b); **사후 --zero-actions FAIL(11.9m) → 리셋 속도킥이 run 전체 오염(§4d, 1차 용의자).** **다음: exp_014 = 0순위 킥 수정 → conf 거리감쇠+success 300+entropy 0, fresh.** → [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] / [[research/isaac_ppo_tuning_recommendations]] / [[errors/err_20260703_vision_env_origin_frame]] |
+| 014 | exp014 A2 (v3qk07pg) + A0′ (azoc1xp0), Isaac PPO | 각 26.2M steps (2048 envs×400 iters) | ✅ 완료 | **plant 수정(킥·로터·inertia) + 비전 거리감쇠 → deterministic 200-ep eval = 100.0% (202/202)**, d_xy_min 0.665m. A2 R_alt=0.0000(창발-기각), A0′ 대조로 귀속 분리(지배=plant 일관성). → [[experiments/exp_014_A2_visionrange]] / [[research/isaac_inertia_ctrl_mismatch]] |
+| 015 | isaac_phased_curriculum (`feat/isaac-env-migration`) | 코드만 (미학습) | ✅ 코드 완료 | **Phase별 순차 커리큘럼 구현.** 이미지 3단계(접근/nominal → CCIP+Residual/정지 → 이동타겟) 완전 구현: action 4→6(δ residual), phase 단일 노브+파생 플래그, 릴리스 이벤트(nominal CCIP+δ 트리거 → 실제 DR 낙하 착탄오차 터미널 보상), drag/wind DR, Gauss-Markov 이동타겟, lead 보상, `train.py --phases 1,2,3` 서브프로세스 오케스트레이터(6-dim 고정 → warm-start 무손실). `py_compile` 12파일 통과, pytest는 L4/컨테이너 대기. → [[experiments/exp_015_phased_curriculum]] / [[research/phased_curriculum]] / Rule 20 |
 
 ## 에러 현황
 
@@ -163,6 +166,7 @@ type: index
 - [[research/isaac_ppo_tuning_recommendations]] — exp_013 결론: 무엇을 바꿔야 하는가 (conf 거리감쇠·reward_success 300·entropy 0 우선; 스폰 고도는 유지). Rule 17·18의 근거 문서.
 - [[research/exp014_ablation_protocol]] — exp_014 ablation 설계(07-04): 킥 vs attractor 원인 분리 arms/임계값/무학습 probes. 07-05 실행 완료 — probe 수렴으로 A1 생략, A2+A0′ 실행.
 - [[research/isaac_inertia_ctrl_mismatch]] — **(07-05) set_inertias는 solver에 전파된다(계측 ×1031) — exp_013은 rate loop ~1300× 저토크 plant에서 학습.** 구 정책 plant-overfit 실증(bad_att 68%), 런타임 물리 오버라이드 금지 + 토크 응답 게이트 (Rule 19).
+- [[research/phased_curriculum]] — **(07-05) Phase별 순차 커리큘럼 설계·수식.** 6-dim 고정 action으로 warm-start 무손실, 릴리스/model-mismatch residual 보정, Gauss-Markov 이동타겟·lead, 서브프로세스 오케스트레이션 (Rule 20).
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
@@ -180,6 +184,7 @@ type: index
 - [[experiments/exp_012_isaac_migration_phase2]] — Isaac Lab env+PPO 이식. v13/v15 상수 parity 이식, `pytest test_math.py` 29/29 통과, L4 VM 미기동.
 - [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] — Isaac 첫 완주 PPO(65.5M steps) + eval 36%. 비전 사멸 버그 수정, 상승-farming attractor·보상 불균형·noise_std 폭주 규명 → Rule 17·18.
 - [[experiments/exp_014_A2_visionrange]] — **(07-05) plant 수정(킥·로터·inertia) + 비전 거리감쇠 → eval 100.0%(202/202).** A2 R_alt=0.0000(창발-기각 시그니처), A0′ 대조로 귀속 분리(지배=plant 일관성, 감쇠=꼬리 제거+parity). noise_std 안정 → Rule 18b 재해석.
+- [[experiments/exp_015_phased_curriculum]] — **(07-05) Phase별 순차 커리큘럼 구현(코드).** action 4→6 residual, 릴리스 이벤트+DR 착탄오차 터미널 보상, Gauss-Markov 이동타겟+lead, `train.py --phases` 오케스트레이터. py_compile 통과, 학습은 L4 대기 (Rule 20).
 
 ### 에러 (errors/)
 - [[errors/err_20260703_vision_env_origin_frame]] — Isaac `_update_vision` world/env-local 프레임 혼용 → 벡터화 학습 비전 완전 사멸. "정확히 0.0000인 보상 성분 = 채널 사멸 신호" 규칙.
