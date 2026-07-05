@@ -298,6 +298,31 @@ throughput ~3.9×, 32연속 soft reset에서 EKF d_xy 안정(4.5–5.8m, 발산 
 
 ---
 
+## Rule 16 — smoothness/속도 댐핑 반경이 종단 실패 반경을 덮으면 회귀 유발
+
+**상세:** [[daily/daily_2026-07-05]] · [[experiments/exp_011_wobble_lpf_reward_damping]] · [[experiments/exp_010_byxyaf4d_v14_195k_eval]]
+
+v14의 지배적 실패 모드는 **final-approach stagnation**(0.5–1.2m에서 정체, `success_radius` 직전).
+Rule 15의 wobble 교정(B: 근접-게이팅 속도 댐핑)을 `vel_damp_radius=3.0m`로 도입했는데, 이는
+`success_radius=0.8m`보다 훨씬 넓다 — 결과적으로 **정체가 이미 벌어지던 바로 그 구간 전체에
+"가까울수록 감속" 유인이 추가로 걸림.** `w_ang_vel`/`w_action_smooth` 상향도 방향은 같아서, 종단
+gap을 closing하는 데 필요한 결정적 보정 기동에 비용을 물릴 수 있다.
+
+**교훈 — smoothness/속도 댐핑 보상을 도입할 때:**
+- 댐핑 반경(`*_damp_radius`)은 반드시 **success/termination 반경보다 작게** 설정할 것. 크면
+  "wobble 억제"가 "종단 접근 억제"로 새는 회귀를 유발할 수 있다.
+- 기존에 알려진 실패 모드(여기선 stagnation)가 있는 상태에서 새 댐핑/스무딩 보상을 얹을 땐,
+  그 실패 모드가 발생하던 정확한 거리 구간과 새 보상의 활성 구간이 겹치는지 **먼저 겹쳐 그려볼 것**.
+- 완화(값 축소, 0.15→0.08처럼)는 리스크를 줄이지만 **제거하지는 않는다** — "완화했으니 됐다"로
+  넘기지 말고 반드시 eval outcome breakdown으로 재발 여부를 확인.
+
+**추가로:** crash-resume 서포바이저(`run_train_supervised.sh`)는 재개 시 정책 가중치만 복원하고
+**replay buffer는 매번 초기화**된다. "recurring abort"가 있었다면 최종 스텝 카운트만큼의 연속 학습이
+실제로는 이뤄지지 않았을 수 있다 — 반복 크래시가 있었던 run을 평가할 땐 재개 횟수를 로그에서
+정량화하고, 가능하면 crash-resume 시 replay buffer도 함께 보존하도록 체크포인트 로직을 개선할 것.
+
+---
+
 > **Phase 1 전체 계획:** [[research/phase1_plan]] — CCIP 기반 자율 접근, 8주, 14개 실험
 
 ---

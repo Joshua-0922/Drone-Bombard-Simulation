@@ -62,6 +62,19 @@ wandb_run: v15_bc_stable
 
 **교훈:** train_sac는 `--config` 없으면 기본 `hyperparams.yaml`로 폴백. v14 이후 작업은 반드시 `--config hyperparams_v13.yaml`. 새 보상 변경은 그 파일에 이식할 것. (A/B eval도 hyperparams.yaml(scale 8)로 돌아 raw jerk 절대값이 ~2× 부풀려졌을 수 있음 — LPF −45% 비율은 유효.)
 
+## 6. ⚠️ Postmortem 2 — v15(310K) "X마커 미도달" 회귀 의심 (2026-07-05)
+
+v15는 반복 reset-recursion abort로 서포바이저(`run_train_supervised.sh`) 재개를 거쳐 310K에서
+preempt됐고, §4의 "남은 확인"(eval + jerk 재측정)이 한 번도 실행되지 않은 채 사용자가 "훈련된
+에이전트가 X마커에 도달 못 한다"고 관찰. 원인 후보 2건(미확정, evaluate.py 재실행 필요):
+
+1. **`vel_damp_radius=3.0m` > `success_radius=0.8m`** — 근접-속도 댐핑(B)이 v14의 기존 실패 구간
+   (0.5–1.2m final-approach stagnation)을 정확히 덮어 재타격했을 가능성.
+2. **crash-resume이 replay buffer를 매번 초기화** — 반복 abort가 있었다면 310K라는 스텝 수만큼의
+   연속 학습이 실제로는 이뤄지지 않았을 수 있음.
+
+상세 진단·제안 변경안: [[daily/daily_2026-07-05]] / [[research/rl_rules]] Rule 16
+
 ## 코드/도구
 - `drone_controller_node.py`(EMA `_filter_velocity` + `velocity_lpf_alpha` param), `drone_drop_env.py`(param 주입 + `r3_vel`), `hyperparams.yaml`(w_vel/vel_damp_radius/w_ang_vel/w_action_smooth/velocity_lpf_alpha), `episode.launch.py`(launch arg).
 - 신규 도구(미커밋): `vel_logger.py`, `run_abtest.sh`, `run_dryrun_bc.sh`, `run_train_bc.sh`.

@@ -12,10 +12,10 @@ type: index
 
 ---
 
-## 현재 상태 (2026-07-01)
+## 현재 상태 (2026-07-05)
 
 - **알고리즘:** SAC, `net_arch=[256,256]`, L4 GPU
-- **현재 학습:** ▶️ `rl_yolo_v15_bc_stable` — **Fresh 0→300K 진행 중** (tmux `rl_train`, wandb online). wobble 교정(B+C 보상 댐핑 + LPF 0.4) 적용. Fresh Start가 v14 5체크포인트 삭제 → **`rl_checkpoints/v14_backup/`에 백업**(195K 포함).
+- **현재 학습:** ⏸️ `rl_yolo_v15_bc_stable` — 반복 reset-recursion abort로 오토레쥼 서포바이저(`run_train_supervised.sh`) 추가 후 0→310K, 2026-07-03 preempt(`sac_drop_310000_steps.zip`). **사용자 관찰: 훈련된 에이전트가 X마커에 도달 못 함(v14 대비 회귀).** 원인 후보: (1) 근접-속도 댐핑(`w_vel`, `vel_damp_radius=3.0m`)이 v14의 final-approach stagnation 구간(0.5–1.2m)을 재타격, (2) crash-resume마다 replay buffer 초기화로 학습 불연속. **미확정 — evaluate.py 재실행 필요.** → [[daily/daily_2026-07-05]] / Rule 16
 - **이번 세션 (2026-07-01) — RL wobble 진단·교정:** 사용자 관찰(10 m 핸드오프 후 RL 인수하나 wobble). eval `deterministic=True`라 **탐험 노이즈 아님 = 학습된 bang-bang 정책.** LPF A/B: PX4 수신 속도명령 **jerk RMS 2.92→1.61(−45%)**, 평균 속력 1.13×(안 느려짐) → **smoothness-control 문제 확정.** 교정: (B) 근접-게이팅 속도 댐핑 `w_vel=0.15/R=4`, (C) `w_ang_vel 0.05→0.15`·`w_action_smooth 0.05→0.20`, 로직 LPF `velocity_lpf_alpha=0.4`(학습==배포). dry-run PASS → v15 fresh 기동. → [[experiments/exp_011_wobble_lpf_reward_damping]] / [[research/control_smoothness_wobble]] / Rule 15
 - **이전 학습:** ⏸️ `rl_yolo_v14_softreset` (byxyaf4d) — 196.5K/500K에서 SIGINT stop, `rl_checkpoints/v14_backup/`에 보존. v13(iyhfy5ps 157.7K)는 `rl_checkpoints/archive/v13_iyhfy5ps_157k_20260622`에 백업.
 - **이번 세션 (2026-06-23) — v14 195K eval = 65%(13/20):** plateau(70K부터 reward 평탄) 확인 후 stop → clean 20-ep deterministic eval **65%** (v13 80% 대비 회귀). 실패 7 전부 final-approach stagnation(0.5–0.8m, 0.50m gate 직전), EKF 귀책 0. **Soft reset 장기검증 ✅**(3096 resets, soft ~91%, EKF bounded, no teleport) → Rule 14 검증완료. 회귀=정책 미성숙(39% budget). 비디오 3/3 success 캡처(`rl_eval_results/v14_195k_flight_annotated.mp4`+`_raw.mp4`). v14 commit 결정 대기. → [[experiments/exp_010_byxyaf4d_v14_195k_eval]]
@@ -85,7 +85,7 @@ type: index
 | 008 (dry-run) | dryrun_alt10 (uqy7lmny / _gated, offline) | 1500×2 | ✅ 완료 | 핸드오프 윈도우↑. 고도만 10 m=실패(레버 아님), 10 m+탐지 게이트(conf 0.5 + 200→300 px)=성공(핸드오프 2.7→5.0 m, spurious 0). 미커밋 → [[experiments/exp_008_dryrun_alt10_handoff_window]] / [[research/detection_gate_vs_altitude]] / Rule 13 |
 | 009 | EKF A/B + softreset (byxyaf4d) | proto+full | ✅ 완료 | 리셋 처리량 ~3.9×. EKF param A/B=음성, **soft reset(teleport 회피)=성공**(0.93→3.61 handoffs/min, fps 2→9, reset 65s→11s, soft 100%, EKF 안정). → [[experiments/exp_009_softreset_throughput]] / [[research/reset_throughput_bottleneck]] / Rule 14 |
 | 010 (eval) | rl_yolo_v14_softreset (byxyaf4d, 195K) | 20 ep | ✅ 완료 | **195K eval = 65%(13/20)**, v13 80% 대비 회귀(실패 전부 final-approach stagnation). EKF 귀책 0. **Soft reset 장기검증 ✅**(3096 resets, soft ~91%, EKF bounded) → Rule 14 검증완료. 비디오 3/3 success 캡처. commit 결정 대기. → [[experiments/exp_010_byxyaf4d_v14_195k_eval]] |
-| 011 | wobble A/B + v15_bc_stable | eval×2 + dry-run + 0→300K | ▶️ 학습 중 | **RL wobble = smoothness-control 문제 확정.** LPF A/B: 속도명령 jerk RMS 2.92→1.61(−45%), 평균 속력 불변. 교정(B 근접 속도 댐핑 + C smoothness↑ + LPF 0.4) dry-run PASS → v15 fresh 기동(v14 백업). → [[experiments/exp_011_wobble_lpf_reward_damping]] / [[research/control_smoothness_wobble]] / Rule 15 |
+| 011 | wobble A/B + v15_bc_stable | eval×2 + dry-run + 0→310K(preempt) | ⚠️ 회귀 의심 | **RL wobble = smoothness-control 문제 확정** (LPF A/B: jerk RMS 2.92→1.61, −45%). 교정(B+C+LPF) dry-run PASS → v15 기동했으나 반복 reset-recursion abort로 서포바이저 재개 반복 후 310K preempt. **사용자 관찰: X마커 미도달.** eval 미기록 — 원인 후보(w_vel 종단 재타격 / buffer 초기화) 미확정. → [[experiments/exp_011_wobble_lpf_reward_damping]] / [[research/control_smoothness_wobble]] / [[daily/daily_2026-07-05]] / Rule 15 / Rule 16 |
 
 ## 에러 현황
 
@@ -139,6 +139,7 @@ type: index
 - [[research/eval_terminal_env_metrics]] — v13 eval EKF divergence 흡수 루프 + evaluate.py 지표 비정합 (탄도 투하 없음 → CEP 비실재). 시작 health gate 필요 (Rule 12).
 - [[research/detection_gate_vs_altitude]] — 핸드오프 윈도우의 진짜 레버 = 탐지 게이트(conf + 공간 필터), 고도 아님. 고도↑는 마커 가시성 깎아 역효과 (Rule 13).
 - [[research/reset_throughput_bottleneck]] — 리셋 병목 = teleport 후 EKF 재수렴(param으론 못 고침). soft reset(teleport 회피)으로 ~3.9× (Rule 14).
+- [[research/control_smoothness_wobble]] — wobble 진단(jerk RMS) + v15에서 근접-속도 댐핑 반경이 종단 stagnation 구간을 덮어 회귀 유발한 사후분석 (Rule 16).
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
@@ -160,6 +161,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-07-05]] — v15(310K, preempt) "X마커 미도달" 진단: 근접-속도 댐핑이 v14 stagnation 구간 재타격 + crash-resume replay buffer 초기화로 학습 불연속 (Rule 16, 미확정)
 - [[daily/daily_2026-06-23]] — v14 plateau stop @196.5K → 195K eval 65%(v13 회귀, final-approach stagnation) + soft reset 장기검증(Rule 14 완료) + 비디오 캡처
 - [[daily/daily_2026-06-22]] — 핸드오프 윈도우 확장: 고도↑(10 m) 실패 → 탐지 게이트(conf 0.5 + 200→300 px)로 핸드오프 2.7→5.0 m
 - [[daily/daily_2026-06-20]] — v13 정책 평가: 유효 ep 100% 성공(정책 양호) + eval EKF divergence 흡수 루프 + harness 지표 비정합
