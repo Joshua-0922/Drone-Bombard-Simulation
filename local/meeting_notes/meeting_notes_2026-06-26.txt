@@ -1,0 +1,222 @@
+================================================================================
+ Drone-Bombard-Simulation 작업 정리 — 2026-06-26
+ 세션 기간 : 2026-06-26 (단일 일)
+ 직전 노트 : meeting_notes_2026-06-22.txt
+ 핵심 변화 : v9a 학습 monitoring (시작 → 5시간 진행 → SIGTERM stop)
+================================================================================
+
+
+********************************************************************************
+*  PART 1 — v9a 학습 진행 상태 추적
+********************************************************************************
+
+  run_name: phase1_redux_v9a_payload_dist_angaccel
+  wandb run: zjexq20k
+  시작: 2026-06-22 18:41 UTC (전날 시작 후 monitor)
+
+  진행 추적 (사용자 와 monitoring):
+
+  | 시점     | total_step | success_rate | ep_rew | ep_len | actor_loss |
+  |---------|------------|--------------|--------|--------|------------|
+  | 3h      | 234,301    | 0.51         | -50    | 47     | 60-80      |
+  | 4h      | 296,706    | 0.55         | -43    | 40     | 29-33      |
+  | 4.8h    | 303,127    | 0.54         | -37    | **6.27** | 22-35   |
+  | 5h      | 313k       | 0.58         | -15.5  | 96.3   | 35.1       |
+
+  주요 관찰:
+    - 4.8h 시점 ep_len_mean 6.27 → 정책 발산 의심 (사용자 우려)
+    - 5h 회복 (96.3) — fine-tune 적응 마무리 추정
+    - actor_loss 80 → 35 안정화
+
+  drop count: 4527 (전날 v8 의 4504 + v9a 5h 동안 +23)
+  최근 drops 분포:
+    drop_0115 err=6.19m (fail)
+    drop_0114 err=1.50m ✓
+    drop_0113 err=2.20m (margin)
+    drop_0112 err=2.62m (over)
+    drop_0111 err=8.51m (fail)
+    drop_0110 err=0.91m ✓
+    drop_0109 err=22.74m (큰 fail)
+    drop_0108 err=1.84m ✓
+    → variance 매우 큼. 정책 적응 중 trial-and-error.
+
+
+********************************************************************************
+*  PART 2 — SIGTERM stop 결정
+********************************************************************************
+
+  사용자 결정: A 옵션 (즉시 stop + 평가) — 정책 동작 직접 확인
+
+  SIGTERM 전송:
+    - PID 258 (ros2 launcher) 에 SIGTERM 보냄 → effect 없음
+    - PID 259 (실제 train_sac python) 에 SIGTERM 보냄 → preempt save 진행
+
+  Preempt save 결과:
+    - sac_drop_preempt.zip (3.2 MB) — step 313k 시점 모델
+    - sac_drop_preempt_replay.pkl (86 MB) — replay buffer
+    - wandb sync 완료
+
+  Wandb 최종 통계 (학습 세션 1584 ep):
+    env/total_episodes: 1,584
+    env/total_drops: 176
+    env/total_success: 100 (success rate 56.8%)
+    env/total_jackpot: 0
+
+
+********************************************************************************
+*  PART 3 — v9a 평가 (dgui, 5 ep, deterministic)
+********************************************************************************
+
+  preempt model → eval_models:
+    cp /workspace/ros2_ws/rl_checkpoints/sac_drop_preempt.zip \
+       /workspace/ros2_ws/eval_models/v9a_preempt_step313k.zip
+
+  실행: dgui v9a_preempt_step313k --episodes 5 --no-gui
+
+  결과:
+    EP1: 1.79m ✓, steps=42, max_ang_vel=2.47
+    EP2: 1.81m ✓, steps=46, max_ang_vel=1.87
+    EP3: 1.65m ✓, steps=41, max_ang_vel=2.39
+    EP4: 1.98m ✓, steps=61, max_ang_vel=1.96
+    EP5: 2.22m (margin), steps=47, max_ang_vel=1.83
+
+  통계:
+    success ≤2m:   4/5 = 80%
+    mean err:      1.888m
+    max ang_vel:   2.10 rad/s (평균)
+
+  결과 파일: local/eval_logs/eval_2026-06-27T00-36-50_v9a_preempt_step313k.json
+
+
+********************************************************************************
+*  PART 4 — v8 vs v9a 비교 분석
+********************************************************************************
+
+  | 항목                | v8 (5 ep)  | v9a (5 ep) | 변화                  |
+  |-------------------|-------------|-------------|----------------------|
+  | success rate       | 80% (4/5)   | 80% (4/5)   | 동일                 |
+  | mean err           | 1.852m      | 1.888m      | +0.036m (분포 안)     |
+  | max ang_vel        | 2.5 rad/s   | 2.10 rad/s  | **-16% ↓** ✓        |
+  | 정책 행동           | toss        | toss        | 본질 동일             |
+
+  결론:
+    1. drop_angaccel penalty 효과 명확 (16% ang_vel 감소). 정책이 부드러운 drop 학습.
+    2. w_dist 1.5 효과 미미 — 누적 +1.4 (terminal +30 의 5%) 만으로는
+       정책 본질 행동 변경 어려움.
+    3. 사용자 의도 (지나치는 현상 해결) 안 됨 — toss 전략 그대로 유지.
+    4. 원인: 17k step 만 fine-tune (의도 100k 의 17%). v8 의 강한 toss prior 가
+       처방 흡수.
+
+
+********************************************************************************
+*  PART 5 — GUI 평가 (1 ep, camera follow)
+********************************************************************************
+
+  실행: dgui v9a_preempt_step313k --episodes 1 --camera follow
+
+  결과:
+    err=2.17m (margin), d_xy=1.75m, max_ang_vel=2.49
+
+  사용자 시각 평가:
+    "별로 달라진게 없는거 같은데?"
+    "너 말로는 조금 더 가까워졌다는 거지?"
+
+  Claude 정정:
+    mean err 1.85 → 1.89 (오히려 +0.04m, 변화 미미)
+    가까워졌다고 한 건 잘못 표현. 실제 noise variance 안.
+    명확한 효과는 ang_vel 16% 감소만 — 시각으로는 미세.
+
+
+********************************************************************************
+*  PART 6 — 사용자 결정 (별도 trajectory)
+********************************************************************************
+
+  사용자: "혹시 이쯤에서 아예 새로운 모델을 생각해봐도 돼?
+           이거와 별개로 별도로 다루는거야"
+
+  새 모델 방향 후보 정리 (Issue #026 의 두번째 처방):
+
+  A. 사용자 처방 후보 1 — target 거리 제한 (가장 안전):
+     drone 이 target 가까이 가면 penalty
+     → early shot (조준) 강제
+
+  B. 사용자 처방 후보 2 — 시간 패널티 강화 (위험):
+     w_time 증가
+     → early shot 유리. 발산 가능
+
+  C. 사용자 처방 후보 3 — drop 좌표 강제 (강력):
+     drop 시점이 임의 좌표 에서 멀어질수록 penalty
+     → 정책이 그 좌표에서 drop + 속도 조절 학습
+
+  D. Issue #027 — payload tracking 완전 구현:
+     Gazebo payload pose 받기 + detach 후 ep 연장
+     → 사용자 의도 100% 달성
+
+  E. 환경 변경: spawn/target randomization, cruise 비활성
+
+  F. Fresh start with stronger shaping
+
+
+********************************************************************************
+*  PART 7 — w_dist 정확한 의미 + payload tracking 분석
+********************************************************************************
+
+  사용자 질문: "w_dist는 target에 드론이 가까워질수록 패널티를 주는거야?"
+
+  Claude 답:
+    아니요. **정반대**.
+    r3_dist = w_dist * (d_xy_prev - d_xy)
+    - 가까워지면 (delta > 0) → +reward
+    - 멀어지면 (delta < 0) → -penalty
+    → target 가까이 가도록 유도. v8 의 toss 가 marker 지나친 후 멀어지는 부분에서
+       -penalty 받음.
+
+  사용자 질문: "혹시 payload를 추적할 수는 없는거야?"
+
+  Claude 답 (현재 시스템):
+    1. 매 step: ballistic 예측 (drone vel + alt) → w_impact * exp(-k * d_impact) reward
+       (실제 측정 X, 예측만)
+    2. Drop 시점: drop_calculator 가 Gazebo payload contact 감지 → actual landing
+       위치 → drop_err → terminal reward
+    3. Drop 직후: 추적 안 함 (ep 즉시 종료)
+
+    → 사용자 의도 "처음부터 끝까지 payload" 의 detach 후 부분 미반영.
+
+    구현 옵션:
+      옵션 A — Gazebo payload pose 직접 받기
+      옵션 C — detach 후 ep 연장
+      옵션 A + C = 사용자 의도 100% (Issue #027)
+
+
+********************************************************************************
+*  PART 8 — 결정 보류 + 다음 단계
+********************************************************************************
+
+  사용자 결정 보류:
+    - v9a 100k 까지 더 학습?
+    - 두번째 처방 (1, 2, 3) 도입?
+    - payload tracking (#027) 진행?
+    - 환경 변경?
+    - Fresh start?
+
+  → 별도 trajectory 새 모델 진행 시 사용자 직접 결정 후 진행.
+
+
+================================================================================
+ 메모
+================================================================================
+
+  파일 변경:
+    - 없음 (학습 stop + 평가 + 분석만)
+
+  Backup:
+    - eval_models/v9a_preempt_step313k.zip (3.2 MB)
+    - rl_checkpoints/sac_drop_preempt.zip + _replay.pkl
+
+  평가 결과 자산:
+    - local/eval_logs/eval_2026-06-27T00-36-50_v9a_preempt_step313k.json
+
+  v9a 학습 자산 (rl_checkpoints/):
+    - sac_drop_preempt.zip (3.2 MB) — 313k 시점
+    - drop_episodes/ — v9a 학습 중 누적 (4527 drops)
+    - wandb run zjexq20k 의 전체 metric

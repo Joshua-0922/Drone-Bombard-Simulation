@@ -1,0 +1,42 @@
+# GUI 평가 도구 (dgui) 의 기본 파라미터.
+# 모든 옵션은 CLI 인자로 override 가능.
+
+container: drone-bombard-harmonic
+
+# 평가 동작
+default_episodes: 5
+deterministic: true            # false 면 stochastic policy (분포에서 sample)
+tail_min: 30                   # tail_results 의 max wait time (분)
+
+# GUI 관련
+gui_wait_time: 30              # EP1 시작 전 GUI 안정화 대기 (초)
+gui_relaunch_settle: 5         # 매 _kill_infra 후 GUI relaunch 대기 (초)
+gui_watcher_enabled: true      # GUI process 죽으면 자동 재launch
+gui_watcher_interval: 2.0      # watcher poll 간격 (초)
+gui_watcher_backoff: 25.0      # launch 후 N초 안에는 또 launch 안 함 (H 처방).
+                               # _kill_infra → _start_infra 사이 server 없으면 GUI 가
+                               # 즉시 죽으므로 watcher 가 빈 launch 반복 방지.
+
+# 카메라 모드 (launch_gui 후 적용)
+camera_mode: follow            # follow: drone 자동 추적 (계속 따라다님)
+                               # origin: drone 위치로 카메라 한 번 이동 (고정)
+                               # default: 아무 안 함 (Gazebo 기본 카메라)
+camera_settle_secs: 3.0        # launch_gui 후 camera 명령 호출 전 sleep
+camera_target_model: x500_bombard_0   # follow / move_to 대상 model 이름
+
+# 평가 동작 (정책)
+reset_settle_sleep: 5.0        # reset() 후 PX4 EKF / state settle time (초).
+                               # G 처방 (2.0) 시도 → variability 큼, success rate 33% 까지 떨어짐.
+                               # 5.0 복원 (이전 80% success 달성 시점 값).
+
+# 평가 후 동작
+keep_sim_alive: false          # true 면 평가 후 sim 살아있음 (inspection).
+                               # false 면 즉시 cleanup + 종료.
+
+# 경로 (host/container 양쪽)
+container_models_path: /workspace/ros2_ws/eval_models
+host_models_path: /home/juns/Drone-Bombard-Simulation/ros2_ws/eval_models
+results_dir: /home/juns/Drone-Bombard-Simulation/local/eval_logs
+
+# DISPLAY for X11 forwarding
+display: ":1"

@@ -29,6 +29,7 @@ setup(
     entry_points={
         'console_scripts': [
             'mission_manager_node = mission_manager.mission_manager_node:main',
+            'mission_manager_rad  = mission_manager.mission_manager_rad_node:main',   # RAD v1
         ],
     },
 )

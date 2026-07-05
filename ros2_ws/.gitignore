@@ -39,3 +39,4 @@ Makefile
 # ======================
 .DS_Store
 Thumbs.db
+eval_models/

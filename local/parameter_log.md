@@ -104,6 +104,11 @@
 | `penalty_instability` | drop 시 |ω|>limit_ang_vel 또는 tilt>limit_tilt 면 negative |
 | `limit_ang_vel`, `limit_tilt` | instability 판정 임계 |
 | `truncation_penalty` | max_steps 초과 (timeout) 시 penalty. 너무 크면 "drop 안 하느니 빨리 죽기" |
+| `invalid_drop_threshold` | drop_error 가 이 값 초과 시 invalid drop 판정 (v6 처방 C) |
+| `invalid_drop_penalty` | invalid drop 시 추가 penalty. **v8: 50 → 0 (drop 회피 학습 차단)** |
+| `hover_drop_block_threshold` | vel_xy < 이 값 면 publish_drop 무시 (v6 처방 A). **0 = 비활성** |
+| `drop_angaccel_penalty_scale` | **v9a NEW** — drop 시점 직전 N step 의 max angular acceleration penalty scale. toss 의 급격한 pitch back 차단 |
+| `drop_angaccel_window_n` | **v9a NEW** — ang_vel diff 계산용 window 길이 (step). E 측정 방법: 인접 step diff magnitude 의 max |
 | `g` | 중력 (m/s²). CCIP 계산용 |
 
 ### 1-5. `wandb:` — 로깅
@@ -139,45 +144,95 @@
 
 ---
 
-## 2. 현재 활성 설정 snapshot (2026-05-22 — junsang_v2)
+## 2. 현재 활성 설정 snapshot (2026-06-27 — v9a)
 
-**Branch**: `jekyun_v2` (local) = `origin/jekyun_v2` (commit 46bdb17)
-**Run name**: "junsang_v2"
+**Branch**: junsang
+**Run name**: `phase1_redux_v9a_payload_dist_angaccel`
+**WandB run**: `zjexq20k` (SIGTERM preempt @ step 313k)
+**Base**: v8 warm start (`v8_peak_step217040_err0.87m.zip`) + fresh replay buffer
 **Yaml 핵심 값** (기본값 외):
 
 | Section.Key | 현재 값 | 출처 entry |
 |---|---|---|
-| training.total_timesteps | **200000** (본학습) — dry-run 시 5k | #12 |
+| training.total_timesteps | **100000** (override 시 400000) — v9a fine-tune | #28 |
 | training.eval_freq | 10000 | #4 (L6) |
 | training.eval_episodes | 3 | #4 (L6) |
 | sac.buffer_size | 500000 | #4 (M1) |
 | sac.gamma | 0.995 | #4 (H3) |
-| sac.gradient_steps | **1** (M2 REVERTED) | #11 (유지) |
-| environment.action_vx_scale | **8.0** (P1) | #12 |
-| environment.action_rate_limit | **0.2** (P2, NEW) | #12 |
-| environment.min_altitude | **3.0** (P4) | #12 |
-| environment.min_altitude_start_step | **10** (P4) | #12 |
-| reward.auto_drop_threshold | **10.0** (P6) | #12 |
-| reward.penalty_crash | **-100.0** (P5) | #12 |
-| reward.penalty_overspeed | **-50.0** (P3) | #12 |
-| reward.truncation_penalty | **-30.0** (P8) | #12 |
-| reward.limit_inverted_tilt | **1.047** (P11, NEW) | #12 |
-| reward.penalty_bad_attitude | **-50.0** (P11, NEW) | #12 |
-| reward.auto_drop_threshold | 4.0 | jekyun v2 (base) |
-| reward.w_dist | 0.5 | jekyun v3 (base) |
-| reward.w_heading | 0.7 | jekyun v3 (base) |
-| reward.w_impact | 0.4 | jekyun v3 (base) |
-| reward.k_impact | 0.05 | jekyun v2 (base) |
-| reward.k2_precision | 0.3 | jekyun v2 (base) |
-| reward.w_drop_base | 100.0 | jekyun v2 (base) |
-| reward.drop_attempt_bonus | 150.0 | jekyun v3 (base, NEW key in v2) |
-| reward.truncation_penalty | -80.0 | jekyun v3 (base, NEW key in v2) |
-| wandb.entity | nayoonho0922-seoul-national-university | (5/21 적용) |
-| wandb.run_name | "junsang_v4" | #12 |
+| sac.gradient_steps | 1 | #11 |
+| sac.learning_rate | 1e-4 | Round 3 |
+| sac.tau | 0.002 | Round 3 |
+| sac.use_per | true | Round 3 |
+| sac.per_alpha | 0.6 | Round 3 |
+| sac.per_priority_max | 30.0 | Round 3 |
+| sac.target_entropy | -15.0 | Round 7 |
+| sac.ent_coef_hard_cap | 1.0 | Round 7 |
+| sac.target_q_clip | 500.0 | Round 7 v3 |
+| environment.target_enu_x | **4.0** | Phase 1 redux v1 |
+| environment.target_enu_y | **3.0** | Phase 1 redux v1 |
+| environment.pos_scale | **5.0** | Phase 1 redux v3 |
+| environment.action_vx_scale | **3.0** | Phase 1 redux v3 |
+| environment.action_vy_scale | **3.0** | Phase 1 redux v3 |
+| environment.action_rate_limit | 0.2 | junsang_v4 P2 |
+| environment.max_steps | 800 | Round 2 |
+| environment.min_altitude | 3.0 | junsang_v4 P4 |
+| environment.min_altitude_start_step | 1 | #002 |
+| environment.ground_contact_altitude | 0.5 | #002 |
+| environment.max_distance | **20.0** | Phase 1 redux v3 |
+| environment.max_altitude | 50.0 | Round 3 |
+| environment.max_consecutive_fast_resets | 100 | Round 7 v2 (#021 2차) |
+| reward.auto_drop_threshold | **2.0** | Phase 1 redux v3 |
+| reward.random_drop_start_step | 600 | Round 2 |
+| reward.random_drop_prob | **0.0** | Phase 1 redux v1 |
+| reward.hover_drop_block_threshold | **0.0 (비활성)** | v6→v8 |
+| reward.invalid_drop_threshold | **95.0** | v8 |
+| reward.invalid_drop_penalty | **0.0 (비활성)** | v8 |
+| reward.drop_wait_timeout | **3.0** | v6 처방 B |
+| reward.w_dist | **1.5** (1.0 → 1.5) | **v9a** |
+| reward.w_heading | 0.7 | Round 5 |
+| reward.w_distance_penalty | 0.0 | Round 5 |
+| reward.w_impact | 0.4 | jekyun v3 base |
+| reward.k_impact | 0.05 | jekyun v2 base |
+| reward.k2_precision | 0.2 | Round 2 |
+| reward.w_drop_base | 100.0 | jekyun v2 base |
+| reward.drop_attempt_bonus | 30.0 | Round 2 |
+| reward.k_drop_proximity | **0.4** | Phase 1 redux v3 |
+| reward.w_prediction | **0.0 (비활성)** | v5 (SDF fix 후) |
+| reward.k_prediction | 0.1 | Round 1 |
+| reward.r_success_jackpot | 50.0 | Round 2 |
+| reward.success_threshold | **2.0** | Phase 1 redux v3 |
+| reward.jackpot_threshold | **0.3** | Phase 1 redux v2 |
+| reward.penalty_instability | 50.0 | Round 1 |
+| **reward.limit_ang_vel** | **10.0** (2.0 → 10.0) | **#27 (ang_vel fix)** |
+| reward.alt_penalty_max | 50.0 | Round 3 |
+| reward.alt_penalty_mid | 30.0 | Round 3 |
+| reward.alt_penalty_k | 0.15 | Round 3 |
+| **reward.drop_angaccel_penalty_scale** | **0.5 (NEW)** | **v9a #28** |
+| **reward.drop_angaccel_window_n** | **5 (NEW)** | **v9a #28** |
+| reward.hover_speed_threshold | 1.0 | Round 5 |
+| reward.hover_consecutive_threshold | 200 | Round 5 |
+| reward.penalty_hover | -15.0 | Round 5 |
+| reward.hover_truncate_enabled | false | Round 5 |
+| wandb.entity | nayoonho0922-seoul-national-university | |
+| wandb.run_name | "phase1_redux_v9a_payload_dist_angaccel" | #28 |
 
-**코드 변경 (junsang_v2)**:
-- `train_sac.py`: `_step_rew_impact` callback, `_total_drop_count` counter, `eval_freq` from yaml
-- `drone_drop_env.py`: jekyun_v2 그대로 (spin thread + reset guard + tiered recovery + infra kill 강화)
+**코드 변경 (v9a 최신)**:
+- `drone_drop_env.py`:
+  - `from collections import deque` 추가
+  - `__init__`: `_cfg_drop_angaccel_penalty_scale`, `_cfg_drop_angaccel_window_n`, `_ang_vel_history = deque(maxlen=N+1)`
+  - `reset()`: `_ang_vel_history.clear()`
+  - `step()` 매 step: `_ang_vel_history.append(ang.copy())`
+  - drop trigger 후 instability penalty 다음: max ang_accel penalty
+  - reset() 의 `_start_infra()` 직후: `print('[GZ_SERVER_READY] reset_count=...')` marker (dgui 용)
+- `train_sac.py`: 변경 없음 (v8 와 동일, resume 사용)
+- `dds_topics.yaml` (PX4): `vehicle_angular_velocity` 주석 해제 + PX4 rebuild (#27)
+- `x_marker_world.sdf`: `<camera_pose>` 변경 (dgui spawn 보기 위함)
+
+**평가 도구 (NEW, 2026-06-22 ~)**:
+- `local/scripts/evaluate_gui.py` — dgui (alias)
+- `local/eval_config.yaml` — dgui config
+- `ros2_ws/eval_models/` — 평가용 모델 모음 (bind mount sync)
+- `local/eval_logs/` — 평가 결과 json 자동 저장
 
 ---
 
@@ -207,6 +262,23 @@
 | 20 | 2026-05-31 | bfv4la9a (162k 중단) | junsang (round6 v1) | **Round 6 v1: DampedEntropySAC (mean)** | Mean damping 작동 안 함 (ent_damping=1.0 유지). ent_coef 1.68. 체크포인트 95k 이후 저장 안 됨 (#020) |
 | 21 | 2026-05-31~06-03 | 6b8bslmz (294k OOM) | junsang (round6 v2) | **Round 6 v2: Percentile damping + 체크포인트 정렬 fix** | ent_damping 작동, 95~195k 학습 성공 (success 4건, best 4.36m). 그러나 hard cap 2.0 갇힘 → critic 14M 폭주 → OOM |
 | 22 | 2026-06-03 | iobwvcrm (학습 중) | junsang (round7) | **Round 7: target_entropy=-15 근본 처방 + hard cap 1.0** | (학습 중 — 150k) |
+| 23-30 | 2026-06-04~07 | 다양 (Round 7 v3 ~ v4) | junsang | Round 7 v3 (685k 완성), kill_episode timeout, Phase 1 redux v1/v2/v3/v4 progression — 자세한 history 는 §4 #25~#33 + master.txt | best 1.32m → 0.809m → v5 fresh start (#023 SDF fix) |
+| 33 | 2026-06-07 | (phase1 redux v5) | junsang | **v5 SDF fix** (#023): payload_{0~3}/model.sdf 에 `<dimensions>3</dimensions>` 추가, `w_prediction 20.0 → 0.0`, 옵션 A 코드 전부 제거. Fresh start | success ~16% (이전 false reward 위 학습 → 진짜 reward) |
+| 34 | 2026-06-11~ | (phase1 redux v6) | junsang | **v6 hover drop 처방** (#022 fps + v5 invalid 50%): `drop_wait_timeout 10.0 → 3.0`. hover_drop_block_threshold 검토 후 폐기 (0 = 비활성) | success 11%, invalid drop 50% 여전 (실제 root cause = DetachableJoint plugin) |
+| 35 | 2026-06-15~ | (phase1 redux v7) | junsang | **v7 safe attach (옵션 C)**: DetachableJoint reattach 후 detach silent fail 우회 시도 | **drop 0 — 학습 완전 실패**. invalid_drop_penalty 50 이 정책 drop 회피 학습 강제 |
+| 36 | 2026-06-19~21 | **96bokgae** (303k) | junsang (phase1 redux v8) | **v8 no_invalid_penalty**: `invalid_drop_penalty 50 → 0`, `invalid_drop_threshold 50 → 95`. D1 처방 = 매 drop 후 `_kill_infra` (옵션 C 비활성) | **success 80.6%, jackpot 13, mean 1.85m, best 0.07m**. toss 전략 발견 (drone 이 marker 지나친 후 pitch back). 8,736 ep / 3,342 drops. backup 8.6 GB |
+| 37 | 2026-06-22 | (v8 fix) | junsang | **ang_vel callback fix**: PX4 `dds_topics.yaml` 의 `vehicle_angular_velocity` 주석 제거 + PX4 rebuild. `limit_ang_vel: 2.0 → 10.0` (false crash 방지) | v8 학습 전체 obs[6:9]=0 이었음 (정책 영향 미미, 5 ep 평가 동일). v9a 의 drop_angaccel 의 prerequisite |
+| 38 | 2026-06-26~27 | **zjexq20k** (313k, +17k) | junsang (v9a) | **v9a payload_dist + drop_angaccel**: `w_dist 1.0 → 1.5`, NEW `drop_angaccel_penalty_scale=0.5`, NEW `drop_angaccel_window_n=5`. v8 warm start + fresh replay buffer. SIGTERM stop @ 313k (의도 100k 의 17%) | 5 ep 평가: success 80% (v8 동일), mean 1.89m, **max ang_vel 2.10 rad/s (v8 2.5 대비 -16%)**. toss 그대로 유지 — fine-tune 17k 부족 |
+| 39 | 2026-06-26~27 | **xzoz52cw** (313k → 432k) | junsang (v9a resume) | **v9a resume**: 313k preempt 에서 resume + replay buffer 자동 load. 의도 ~600k 까지, 사용자 SIGTERM 예정 | **CUDA error → container SIGKILL (137) @ step 432k**. preempt save 실패. rolling checkpoint 5k 마다 자동 저장 → `sac_drop_432806_steps.zip` 보존. drop_episodes +449 누적 |
+| 40 | 2026-06-27 | (평가 only, 5 ep dgui) | — | **v9a step432k 평가** | 5 ep: drops 3, **success 2/3 = 66.7%**, mean 1.96m, **2 hover_timeout** ⚠️. EP5 max ang_vel 2.95 (outlier) — 정책 unstable. 추가 학습 (+119k) 이 정책 악화 시킴 |
+| 41 | 2026-06-27 | (평가 only, 10 ep dgui) | — | **v8 + v9a 313k 10 ep 비교** — 통계 신뢰성 확인 | **v8**: 5/10 = 50%, mean 2.002m, 0 hover_timeout. **v9a 313k**: 3/9 = 33%, mean 2.006m, 1 hover_timeout. → 이전 5 ep 100% / 80% 는 표본 운. **v8 가 best baseline** (v9a 보다 success 17% ↑). 둘 다 mean ≈ 2.0m (success_threshold 2.0m 경계) |
+| 42 | 2026-06-30 | (RAD v1 design only) | — (신규 framework, hyperparams_rad.yaml 예정) | **RAD v1 design 완료** — Relative + Approach (Phase 1) + Drop (Phase 2). 2 정책 hierarchical, obs 14d 상대좌표 (yaw-only body frame), spawn yaw ±90°, cruise 1m/s 가속, target (4,3,0), switch sphere d²≤20.5, z Hann reward (w_z=0.3, [0.5,7.5]), 7 final state 조건 (C1~C7) jackpot 총 +120, drop trigger d_impact≤1m, w_impact 1.0/k=0.1, sphere 벗어남 crash (d²>22 → −30), Phase 2 time/ang_vel/action_smooth 2× 강화, action_rate_limit 0.15, success_threshold 1.0m, max_distance 15, max_consecutive_fast_resets 50 | design 완료, 코드 작업 대기. 자세한 변경 = §4 #42 |
+| 43 | 2026-06-30~07-02 | RAD v1 Phase 1 v1 (g8mvzniw) | — | **RAD v1 Phase 1 v1 (원본 학습)**: Original design 그대로 시작 | NaN abort at 62k step (actor forward NaN). 진단 여러 가설 (H1/H3/H5) 확답 못 함. Issue #028 최초 |
+| 44 | 2026-07-02 | RAD v1 Phase 1 v2 | — | **v2 self-healing 도입** — A1: `clip_grad_norm_(actor, 20)` / `(critic, 200)`, B3: 매 gradient step 시 weight snapshot → step 후 NaN 감지 시 rollback. 상세 metric 대량 추가 (train/{q_target,q_current,q_pi}_{max,mean,min,std}, actor_loss_{q,ent}_term, log_prob_{mean,std}, reward_batch_{mean,max,min}, actor/critic weight/grad norm, nan_rollback_count, actor/critic_grad_clip_hit) | NaN abort at 171k step 재현. Self-healing 은 발동 안 함 (weight rollback 못 잡음). NaN 은 rollout action sampling 시 발생 |
+| 45 | 2026-07-03 | RAD v1 Phase 1 v3 | — | **v3 curriculum + regression 도입**: 5-stage (intro/close/target/partial/full), advance 조건 강화 (window 5k→10k, threshold 0.9→0.95, min_stage 2k→10k), regression 신규 (window success<0.3 시 이전 stage 복귀, cooldown 20k), curriculum config 관련 yaml key 대량 추가 | Stage 1 정체 (75%). 그 후 발산 방향 진행. Curriculum 매커니즘 자체는 정상 작동 |
+| 46 | 2026-07-03 | RAD v1 Phase 1 v4 | — | **v4 reward magnitude 축소**: `penalty_crash: -50 → -20`, `penalty_hover: -30 → -10`, `truncation_penalty: -15 → -5`, `target_q_clip: 500 → 200`, `max_consecutive_fast_resets: 50 → 500` (Phase 1 fast reset 정상) | Stage 1↔Stage 2 cycle 반복 (Advance-Regress 2회). Q_target_std 289→166 (43% 축소), q_clip_ratio 58%→41%. Stage 2 hover 65% 로 stuck |
+| 47 | 2026-07-04 | RAD v1 Phase 1 v5 | — | **v5 stage2_close 완화**: switch_d² 25→30.25 (radius 5→5.5m), z_min 0.15→0.08, max_distance 40→50, limit_tilt 0.9→1.0 | 여전 Stage 2 hover 65% 로 실패. 갭 완화가 문제 아님 — 정책이 sphere entry 시도 자체 안 함 |
+| 48 | 2026-07-04~05 | RAD v1 Phase 1 v6 | — | **v6 근본 접근**: `spawn_yaw_relative_range: ±90° → ±45°`, `penalty_hover: -10 → -30` (crash -20 대비 강 penalty), **info['initial_target_dist_3d/xy'], initial_pos_{x,y,z}, initial_speed_xy log 신규** (env callback rolling stats → WandB) | Stage 1 통과 (14k), Stage 2 통과 (28k, hover 65%→1% 극적 효과), **Stage 3 완전 실패 (0%)** cycle 반복. **Initial pos 실측으로 진짜 원인 확정**: target 거리 5.10m (spawn 근처). Stage1/2 는 spawn 이미 안 (trivial), Stage3 만 학습 필요 → Issue #029 |
 
 ---
 
@@ -1416,7 +1488,7 @@ WandB run: `ayi27a56` (v1, 89k 중단), `za9zxdh6` (v2, 진행 중)
   - best drop < 0.3m
   - fps 5-10 회복 (kill_infra timeout 효과)
 
-**결론 / 다음**: 학습 진행 중. Rolling 100 episode buffer refresh 후 (~30분) 진짜 1m 기준 success_rate 확인 가능.
+**결론 / 다음**: 143k 에서 실패 → v3 로 전환 (Entry #31 참조)
 
 ---
 
@@ -1454,6 +1526,799 @@ WandB run: (다음 학습부터 적용)
   - 다음 학습부터: **✓ 자동 적용**
 
 **결론 / 다음**: 평가 도구만 추가. 학습 영향 X. v2 종료 후 다음 학습에서 활용.
+
+---
+
+### #29. 2026-06-05 — **Phase 1 redux v2 실패 분석 + 도구 강화**
+
+WandB run: `za9zxdh6` (v2 failed 143k)
+**Base**: #27 (v2 시작)
+
+**v2 실패 결과** (143k 수동 중단):
+  - Curriculum gap 너무 컸음: 5m success → 1m, 4× 정밀화 요구
+  - 10 drops in 50k step (정상 학습의 1/100)
+  - step 123k 이후 17k+ step 동안 0 drops → 정책이 drop 행동 잃음
+  - success_rate metric = 0.9 (misleading — ep_info_buffer 의 v1 잔존)
+  - fps 8 (예상 잔여 8.8h 효율 낮음)
+  - ep_rew_mean -15 ~ -42 (음수, 학습 신호 좋지 않음)
+
+**진단 결과**:
+  - 임계 점프 (5m → 1m) 너무 가팔라 정책 적응 못함
+  - 또한 pos_scale=50 등 거리 의존 파라미터들이 14m task 설계 그대로 → 5m 환경에 mis-scaled
+
+**도구 강화 적용** (다음 학습부터):
+  - DropEpisodeRecorderCallback: index.csv 헤더 + row 에 drop_trigger 컬럼 추가
+    (이전: filename,timestep,drop_error_m,is_success,episode_reward,n_steps)
+    (이후: 위 + drop_trigger)
+  - RepresentativeBestCallback 신규 추가 (train_sac.py):
+    * 매 rollout end 마다 REPRESENTATIVE_BEST.json 자동 갱신
+    * peak success_rate window 안 top-3 auto+success drops
+    * 결정 C: drop < 3 시 not_measurable
+  - local/tools/representative_best_analysis.py 신규:
+    * 사후 분석 스크립트
+    * Round 7 v3 에 적용 → "not_measurable" 결과 보존
+    * Round 7 v3 의 best 1.32m 이 isolated lucky drop 임을 입증
+
+**보존**: rl_checkpoints/archive/phase1_redux_v2_failed_143k/
+  - sac_drop_preempt.zip + replay.pkl
+  - REPRESENTATIVE_BEST.json (실시간 callback 결과)
+  - NOTE.md (실패 원인 분석)
+
+**결론 / 다음**: v3 로 전환 — scale 처방 + 임계 완화 + fresh start
+
+---
+
+### #30. 2026-06-05 — **학습 데이터 정리 (~10 GB 절약)**
+
+WandB run: N/A (housekeeping)
+
+**배경**: 누적된 학습 데이터 12.7 GB. 대부분 superseded 라운드.
+
+**삭제** (~10 GB):
+  - local/backups/backup_pre_pull_2026-05-22 (4.6 GB)
+    : 5월 22일 이전 repo+wandb snapshot, git/cloud 에 있어 redundant
+  - ros2_ws/wandb/ 의 옛 runs (3 GB)
+    : 모두 클라우드에 sync 됨, 로컬은 캐시
+    : 보존만: 현재 진행 중 run
+  - ros2_ws/rl_checkpoints/archive/ 옛 라운드 폴더 (340 MB)
+    : round1~round6 디렉터리, 모두 Round 7 v3 가 갱신
+    : milestone .zip 들 (Phase 1 백업에 final 있음)
+  - ros2_ws/success_replay/ 의 옛 run 폴더들 (2.5 GB)
+    : 모두 superseded
+    : ayi27a56 (Phase 1 redux v1) 의 799 모델 → best 5 만 보존
+  - drop_episodes/*.npz 의 옛 trajectory (55 MB)
+    : index.csv 는 유지
+
+**유지**:
+  - local/backups/phase1_final_round7_v3/ (609 MB) — Phase 1 endpoint
+  - rl_checkpoints/archive/phase1_redux_v1_pause_89k/ (86 MB) — v1 preempt
+  - rl_checkpoints/archive/phase1_redux_v2_failed_143k/ (86 MB) — v2 실패 case study
+  - success_replay/round6_v2_recovered/ (3 MB) — 역사 best
+  - success_replay/ayi27a56_best5/ (16 MB) — v1 best 5
+  - success_replay/za9zxdh6/ — v2 진행 데이터
+
+**총 변화**: 12.7 GB → 1.9 GB
+
+**결론 / 다음**: 디스크 깔끔. 다음 학습 시작 가능 상태.
+
+---
+
+### #33. 2026-06-07 — **Phase 1 redux v5: SDF dimensions=3 fix — 진짜 root cause**
+
+WandB run: TBD (v5)
+**Base**: Fresh start (v3/v4 preempt 안 씀 — 잘못된 reward 위에서 학습됐음)
+
+**v3/v4 의 잘못된 가설 폐기**:
+  v3 의 396 drops 의 "α 가설" (velocity inheritance 실패) 은 잘못된 진단.
+  진짜 root cause: payload OdometryPublisher 의 `<dimensions>` 미지정
+    → gz-sim8 default = 2 (2D mode)
+    → payload odom 의 z 좌표 항상 0 publish
+    → drop_calculator 가 payload_z ≤ 0.04 시 즉시 impact 처리
+    → drop_error = drone 의 분리 시점 horizontal 위치 (= d_xy_at_trigger)
+  상세는 issue_023_payload_odom_2d_bug.md 참조.
+
+**검증**:
+  - minimal_test mtest2: multi-model DetachableJoint detach 후 child v 보존 ratio = 101.5%
+  - 학습 환경 측정: drone alt 4.58m 일 때 payload odom z = 0 (부착 중)
+  - SDF fix 후: drone alt 4.06m → payload odom z = 4.053m ✓
+  - test_v1 dry-run: payload first sample z=5.33m, 자유낙하 1.0s, transfer 103.1%
+
+**변경 (코드)**:
+  payload_{0,1,2,3}/model.sdf 의 OdometryPublisher:
+    + <dimensions>3</dimensions>
+    * <odom_publish_frequency>10 → 50</odom_publish_frequency>
+
+**Option A 흔적 정리**:
+  - drone_drop_env.py: wrench_pub publisher, EntityWrench/Wrench/Vector3/GzEntity 임포트,
+    publish_drop 의 wrench publish, bridge config wrench topic, DROP_SKIP_WRENCH toggle 모두 제거
+  - worlds/x_marker_world.sdf: ApplyLinkWrench plugin 제거
+  - drop_calculator_node.py: /tmp/w_verify.csv 로깅 제거
+
+**Hyperparams 변경**:
+  - `w_prediction: 20.0 → 0.0` (fix 후 gap ≈ 0 이라 reward 무의미)
+  - `run_name: phase1_redux_v5_sdf_fix`
+  - 그 외 v3 hyperparams 유지 (auto_drop_threshold 2.0, random_drop_prob 0, scale 5.0, action 3.0)
+
+**예상 효과**:
+  - drop_error 가 진짜 ground impact 측정값
+  - CCIP d_impact 가 진짜 prediction 신호
+  - gap (drop_error - d_impact) ≈ 0 (air dynamics 작음)
+  - 정책이 진짜로 d_impact 최소화 학습 가능
+
+---
+
+### #32. 2026-06-07 — **Phase 1 redux v4: Option A (ApplyLinkWrench) — 폐기 (잘못된 진단)**
+
+⛔ **폐기 — Issue #023 참조.** 가설 자체가 잘못. 진짜 root cause 는 SDF dimensions 누락. 처방의 효과 16% 는 noise. 280k step 까지 학습됐지만 잘못된 reward 위. v5 fresh start 로 교체.
+
+(이하 원본 entry 보존)
+
+
+WandB run: TBD (v4)
+**Base**: #31 (v3) + v3 preempt 254k
+
+**v3 분석 결과 (CCIP gap root cause)**:
+  v3 의 396 drops 분석으로 α 가설 (velocity inheritance 실패) 압도적 입증:
+    - gap mean = 1.73m (정상 396), std 0.73m
+    - correlation(gap, d_xy_trigger - d_impact) = 0.955
+    - speed_xy 단독 R² = 0.643
+    - 81.6% 의 drops 가 drop_error ≈ d_xy_at_trigger (±0.3m)
+    - DetachableJoint 가 분리 시 payload velocity 0 으로 reset
+    - payload 가 거의 straight-down fall
+
+**처방 시도 history**:
+  옵션 X (CCIP velocity 항 제거): hover-and-drop 만 가능, 학습 목표 위배 → 폐기
+  옵션 W (VelocityControl + subprocess gz topic): latency 50-150ms → 실패
+  옵션 A (ApplyLinkWrench + ros_gz_bridge + EntityWrench publish):
+    - in-process publish (sub-ms latency)
+    - 1 physics step impulse force (F = m × v / dt = 25 × v)
+    - 자연 free fall 모방
+
+**변경 (코드)**:
+  - x_marker_world.sdf:
+    + <plugin name="gz::sim::systems::ApplyLinkWrench"
+              filename="gz-sim-apply-link-wrench-system"/>
+  - drone_drop_env.py:
+    + import EntityWrench, GzEntity from ros_gz_interfaces.msg
+    + _RLBridgeNode 에 wrench_pub (EntityWrench)
+    + Bridge config: /world/x_marker_world/wrench (ROS_TO_GZ)
+    + publish_drop:
+        wrench = EntityWrench(entity=GzEntity(name='payload_<iid>', type=LINK),
+                               wrench=Wrench(force=Vector3(25*vx, 25*vy, 25*vz)))
+        wrench_pub.publish(wrench)
+        detach_pub.publish(Empty())
+  - drop_calculator_node.py: w_verify.csv 에 payload 시계열 저장 (debugging)
+
+**Option A mechanism 검증** (test_v1.py, 정책 무관):
+  - mission_manager 를 TRACK state 로 강제 전환 (CRUISE 의 position cmd 비활성)
+  - drone state 측정 → wrench publish → payload state 측정
+  - 결과:
+    drone speed at trigger:   0.48 m/s
+    payload first sample:     0.54 m/s
+    Velocity transfer ratio:  112.8% ← ✓ 작동
+  - Drone 이 비행 명령 안 듣는 별도 문제 있지만 검증과 무관 (any v 측정해서 비교 가능)
+
+**v4 학습 설정** (yaml):
+  - run_name: phase1_redux_v4_option_a
+  - 그 외 모든 v3 동일 (auto/success threshold 2.0, scale 처방 유지)
+  - Resume from v3 preempt 254k
+  - 옵션 A 만 다름 (publish_drop 에서 wrench 발생)
+
+**검증 가설** (v3 baseline vs v4):
+  - gap (drop_error - d_impact): v3=1.73m → v4 ≈ 0 (velocity 보정 작동)
+  - correlation(gap, speed_xy): v3=0.955 → v4 ≈ 0 (gap 이 speed 와 무관해짐)
+  - success_rate (2m): v3=1% → v4 가능 증가
+  - drop_error 평균: v3=3.59m → v4 < 3.59m (velocity 가 drone-target 거리 보정)
+
+**결론 / 다음**: 30+ drops 후 통계 비교. 효과 확인 시 정식 baseline.
+
+---
+
+### #31. 2026-06-05 — **Phase 1 redux v3: scale 처방 + 임계 완화 + fresh start**
+
+WandB run: TBD (시작 중)
+**Base**: #29 (v2 실패) + #28 (도구) + #30 (정리)
+
+**근본 원인 분석 (v1/v2 의 hidden issue)**:
+  Phase 1 redux target (4,3) = spawn-to-target 5m.
+  그러나 거리 의존 파라미터들은 14.87m task 설계 그대로 유지:
+    pos_scale=50 → obs 가 [-0.1, 0.1] 만 활용 → network 신호 약함
+    action_vx=8 m/s → 5m 거리 0.625초 만에 통과 (overshoot)
+    action_vy=5 m/s → 비슷
+    max_distance=100 → 20× 과대
+    k_drop_proximity=0.15 → 5m 환경에서 gradient 너무 완만
+
+  v1 의 96% success 는 사실 운+task 단순화 덕분.
+  v2 실패는 mis-scaled 환경에 정밀화 요구 가속 안 되어서.
+
+**변경 (Scale 처방)**:
+- `environment.pos_scale`: 50.0 → **5.0**
+  - **이유**: 5m 거리에 맞춤. obs 범위 [-1,1] 활용.
+- `environment.action_vx_scale`: 8.0 → **3.0** m/s
+  - **이유**: 5m 거리에 정밀 제어 가능. 8 m/s 면 0.6초 통과.
+- `environment.action_vy_scale`: 5.0 → **3.0** m/s
+- `environment.max_distance`: 100.0 → **20.0** m
+  - **이유**: 4× target 안전 마진, 명확성.
+- `reward.k_drop_proximity`: 0.15 → **0.4**
+  - **이유**: 5m 안에서 sharp gradient (가까울수록 강한 신호).
+
+**변경 (임계 완화)**:
+- `reward.auto_drop_threshold`: 1.0 → **2.0** m
+  - **이유**: v2 의 1m 너무 빡빡 → curriculum gap 줄임.
+- `reward.success_threshold`: 1.0 → **2.0** m
+- `reward.jackpot_threshold`: 0.3 m 유지
+
+**run_name**: `phase1_redux_v3_scaled_thresholds`
+**Resume vs Fresh**: Fresh — replay buffer 의 scale 가정 변경됨, mis-scaled 정책 무효화.
+
+**WandB metric 변경** (WandbMetricsCallback):
+- 추가: `env/d_xy_outlier_ratio` (0-6m: 0, 6m+: 1 의 평균 — outlier 검출)
+- 추가: `env/success_rate` (SB3 의 rollout/success_rate 를 env/ 에도 mirror)
+- 작동: `env/current_success_streak` (v2 는 옛 코드 메모리 로드라 안 됐던 것)
+- 제거: `env/total_truncate_*` 모두
+
+**유지** (Phase 1 redux v3 핵심 처방):
+  - SAC: target_entropy=-15, target_q_clip=500, ent_coef_hard_cap=1.0
+  - PER: alpha=0.6
+  - Critic: Huber + per-sample damping
+  - 인프라: max_consecutive_fast_resets=100, _kill_episode/_infra timeout=2s
+  - 환경: target_enu=(4,3), random_drop_prob=0
+
+**초기 결과** (step 1405):
+  - **ep_len_mean = 351 step** (v2 의 23 대비 15배 ↑) ← scale 처방 즉각 효과
+  - **ep_rew_mean = +168** (v2 의 -42 와 정반대 — 양수 reward)
+  - 드론 안정 비행 (action_vx 3 m/s 효과)
+  - critic_loss 1.53 (안정)
+  - 4 drops in 1.4k step (0.3%, 정상 시작)
+  - fps 7 (첫 4 episode 표본 작아 신뢰성 낮음, 진행 후 회복 예상)
+
+**검증 가설 (5가지)**:
+  1. Scale 처방 → 학습 효율 + 정밀도 향상?
+  2. 임계 2m → 적응 가능 curriculum 시작점?
+  3. fps 15-25 회복?
+  4. 새 도구들 정상 작동 (wandb 표시)?
+  5. **Representative top 3 의 첫 의미 측정 가능?**
+
+**결론 / 다음**: 학습 진행 중. 300k step → 약 3-5시간 예상 (fps 따라).
+
+---
+
+### #34. 2026-06-11 — **Phase 1 redux v6: hover drop 처방 (drop_wait timeout + hover_drop_block 검토)**
+
+WandB run: `phase1_redux_v6_hover_drop_fix` (300k)
+**Base**: #33 v5 (SDF dimensions=3 fix)
+
+**v5 결과 → v6 처방 동기**:
+  - v5 학습 success 16% (이전 baseline 갱신)
+  - 그러나 invalid drop **50% 발생** — drop_calculator 가 정상 ground impact 받기 전 timeout
+  - Issue #022: fps 6 정체 — reset overhead 70-80%
+
+**변경**:
+- `reward.drop_wait_timeout`: 10.0 → **3.0** s
+  - **이유**: 정상 자유낙하 1초면 충분. 10s timeout 의 7s 가 invalid drop 비용 (fps 낭비). 70% 단축.
+- `reward.hover_drop_block_threshold`: **검토 후 0 (비활성) 유지**
+  - 가설: hover 중 drop 이 50% invalid 원인
+  - 검토: 실측 시 hover drop 도 정상 ground impact. invalid 의 진짜 원인은 DetachableJoint plugin 의 reattach 후 detach silent fail (v7/v8 에서 확정)
+  - 그래도 yaml key 는 추가 (config 화), 값 0 = 비활성
+
+**결과**:
+- success 11% (v5 의 16% 대비 약간 감소 — variance 안)
+- invalid drop 50% 여전 (hover drop 가설 폐기)
+- fps 약간 회복
+
+**결론 / 다음**: invalid drop 의 진짜 원인 미해결 → v7 (옵션 C safe attach) 시도.
+
+---
+
+### #35. 2026-06-15 — **Phase 1 redux v7: safe attach (옵션 C) — drop 0 학습 실패**
+
+WandB run: `phase1_redux_v7_safe_attach` (실패, ~37k)
+**Base**: #34 v6
+
+**옵션 C (safe drop reset path) 의도**:
+  - drop 후 _kill_infra (38s) 대신 safe path (reattach 검토)
+  - fps 회복 + DetachableJoint plugin 의 silent fail 우회 시도
+
+**변경 (코드 + yaml)**:
+- 옵션 C safe path 활성 (drone_drop_env.py)
+- `reward.invalid_drop_penalty`: 50.0 유지 (drop_calculator timeout 회피 학습 의도)
+- `reward.invalid_drop_threshold`: 50.0 유지
+
+**결과 (재앙)**:
+- **drop 0건** — 정책이 drop 행동 자체를 학습 회피
+- 원인 분석: invalid_drop_penalty 50 의 신호가 강력 → 정책이 drop = 50% invalid (이전 v5/v6 경험) → drop 아예 안 함이 안전
+- 옵션 C 의 reattach 자체도 silent fail (DetachableJoint plugin 의 본질 문제)
+
+**결론 / 다음**:
+- 옵션 C 폐기
+- invalid_drop_penalty 의 정책 영향 분리: 0 으로 비활성 → v8
+- 옵션 C 코드는 비활성 (D1 처방으로 매 drop 마다 _kill_infra 회귀)
+
+---
+
+### #36. 2026-06-19~21 — **Phase 1 redux v8: no invalid penalty — 80.6% success 달성**
+
+WandB run: **`96bokgae`** (303k 자연 종료)
+**Base**: #35 v7 (옵션 C 폐기 후 D1 회귀)
+
+**핵심 진단** (v7 의 drop 0 결과 분석):
+  - `invalid_drop_penalty: 50.0` 이 정책의 drop 회피 학습 강제
+  - v5/v6 의 50% invalid drop 경험 → penalty 누적 → drop = 위험
+  - 정책이 drop 안 함이 최적 결정 → 학습 실패
+
+**변경**:
+- `reward.invalid_drop_penalty`: 50.0 → **0.0** (비활성)
+  - **이유**: 정책이 drop 회피 학습 차단. invalid 도 학습 신호로 받되 negative reward 0.
+- `reward.invalid_drop_threshold`: 50.0 → **95.0**
+  - **이유**: 99m default 만 잡음 (안전망). 실제 invalid 의 49% 가 50-95m 범위 였음 → 정상 drop 으로 분류.
+
+**유지**:
+- D1 처방 (옵션 C 폐기): 매 drop 후 `_kill_infra + _start_infra` (38s) → DetachableJoint silent fail 우회 (fresh SDF attach 보장)
+- 그 외 v3 의 scale 처방 + v5 의 SDF fix 모두 그대로
+
+**결과 (Phase 1 redux 의 진짜 baseline)**:
+- **success 80.6%** (2,694 success / 3,342 drops)
+- **jackpot 13건** (≤ 0.3m)
+- mean drop_err **1.85m**
+- **best drop 0.07m** (drop_0588_step157201_err0.07m.npz)
+- 8,736 episodes, 303,801 timesteps
+- backup 8.6 GB (모델 + replay 8.1GB + drop_episodes 28MB + wandb 421MB)
+
+**정책 행동 분석** (사용자 GUI 관찰):
+  - drone 이 marker (4, 3) 를 지나친 위치 (예: (5, 4)) 까지 비행
+  - 그 위치에서 멈춤 + 몸을 marker 방향으로 기울임 (pitch back)
+  - detach → payload 가 forward momentum 으로 marker 향해 toss
+  - 모든 ep 마다 일관 — 정책 완전 수렴
+
+**결론 / 다음**: Phase 1 redux 완성. toss 전략 본질 변경하려면 환경 / reward 추가 처방 필요 → v9 라운드.
+
+---
+
+### #37. 2026-06-22 — **ang_vel callback fix: PX4 dds_topics + limit_ang_vel**
+
+WandB run: 별도 없음 (v8 fix only)
+**Base**: #36 v8
+
+**발견 동기**: v9 처방 (drop ang_vel penalty) 검증 위해 v8 의 drop_episodes 의 ang_vel obs 분석
+
+**충격 결과**:
+```
+v8 학습 500 ep sample 의 obs[:, 6:9] (ang_vel 부분):
+  mean: 0.000000
+  max:  0.000000
+  std:  0.000000
+  >0 인 비율: 0.00%
+```
+
+→ **v8 학습 전체가 ang_vel obs 없이 진행됨에도 80% success 달성**.
+
+**Root cause**:
+`/opt/PX4-Autopilot/src/modules/uxrce_dds_client/dds_topics.yaml` 의 `vehicle_angular_velocity` 가 PX4 default 에서 **주석 처리됨**:
+
+```yaml
+# Before
+publications:
+#  - topic: /fmu/out/vehicle_angular_velocity    ← 주석
+#    type: px4_msgs::msg::VehicleAngularVelocity
+  - topic: /fmu/out/vehicle_attitude            ← 활성
+  - topic: /fmu/out/vehicle_local_position
+  - topic: /fmu/out/vehicle_status
+```
+
+PX4 maintainers 가 의도적으로 disable (quaternion 의 derivative 라 redundant 판단).
+
+**Fix**:
+1. `dds_topics.yaml` 의 두 줄 uncomment
+2. PX4 rebuild (`make px4_sitl_default`, ~15분)
+3. `reward.limit_ang_vel`: **2.0 → 10.0**
+   - **이유**: line 848 의 `omega_mag > limit_ang_vel` crash detection. 실측 max ang_vel = 4.89 rad/s (toss pitch back peak). false crash trigger 위험 → 10.0 완화.
+4. install/share sync (hyperparams.yaml + drone_drop_env.py)
+
+**검증 (v8 정책 5 ep 평가)**:
+- 5/5 success ✓ (fix 전 5 ep 와 동일 success rate)
+- mean err 1.85m (분포 안)
+- 실측 max ang_vel: 2.1 ~ 2.7 rad/s
+- drop 직전 ang_vel < 0.5 rad/s (drone 자연 안정화)
+
+→ v8 정책 동작 영향 미미 (학습 시 항상 0 이라 weights 가 그 input 에 무지).
+
+**Backup**:
+- container: `/tmp/ang_vel_fix_backup/dds_topics.yaml`
+- host: `local/backups/hyperparams_v8_pre_angvel_fix_20260622_042523.yaml`
+
+**결론 / 다음**: v9a 의 drop_angaccel penalty 의 prerequisite. 이제 ang_vel 측정 가능 → 처방 1 (drop_angaccel) 구현 가능.
+
+---
+
+### #38. 2026-06-26~27 — **Phase 1 redux v9a: payload_dist + drop_angaccel (v8 warm start fine-tune)**
+
+WandB run: **`zjexq20k`** (SIGTERM stop @ step 313k = v8 + 17k)
+**Base**: #36 v8 (warm start) + #37 (ang_vel fix prerequisite)
+
+**사용자 처방 결정**:
+1. **drop 시점 drone 의 각속도 변화 penalty** (사용자 제안 — toss 의 급격한 pitch back 차단)
+2. **payload 가 target 향해 가까워지면 +reward, 멀어지면 -penalty** (사용자 제안)
+
+**처방 1 (drop_angaccel) — 측정 방법 E**:
+  drop trigger 시 직전 5 step 의 인접 ang_vel diff magnitude 의 max
+
+```python
+# drone_drop_env.py step() drop trigger 후:
+hist = list(self._ang_vel_history)   # deque(maxlen=6)
+max_ang_accel = 0
+for i in range(1, len(hist)):
+    accel = ||hist[i] - hist[i-1]||
+    if accel > max_ang_accel: max_ang_accel = accel
+reward -= drop_angaccel_penalty_scale * max_ang_accel
+```
+
+**처방 2 (payload distance) — 구현 분석**:
+  사용자 의도 = "payload trajectory 의 monotonic 거리 감소 보상"
+  분석 결과: 기존 `r3_dist = w_dist * (d_xy_prev - d_xy)` 와 본질적으로 동일 (attached 동안 drone == payload)
+  → **w_dist scale 증가** (1.0 → 1.5) 로 구현 (옵션 A)
+  → detach 후 payload tracking 은 ep 즉시 종료라 추적 안 됨 (옵션 B, C 폐기)
+
+**변경 (hyperparams)**:
+- `reward.w_dist`: 1.0 → **1.5**
+  - **이유**: payload distance reward 강화 (+50%). marker 지나치는 시점의 penalty 도 50% 더 큼.
+- `wandb.run_name`: "phase1_redux_v8_no_invalid_penalty" → **"phase1_redux_v9a_payload_dist_angaccel"**
+- `wandb.tags`: + ["v9a", "payload_dist", "drop_angaccel"]
+- `training.total_timesteps`: 300000 → 100000 (override 시 400000 = v8 의 303k + 100k)
+
+**추가** (NEW yaml keys):
+- `reward.drop_angaccel_penalty_scale` = **0.5**
+  - **이유**: drop 시점 max ang_accel 평균 ~2 rad/s² × 0.5 = -1.0 per ep (terminal +30 의 ~3%). 명확한 영향, 발산 안전.
+- `reward.drop_angaccel_window_n` = **5**
+  - **이유**: drop 직전 5 step (fps 1-2 → 2-5초). toss 의 pitch back 동작 윈도우.
+
+**추가** (NEW 코드, `drone_drop_env.py`):
+- `from collections import deque`
+- `__init__`: `_cfg_drop_angaccel_penalty_scale`, `_cfg_drop_angaccel_window_n`, `_ang_vel_history = deque(maxlen=N+1)`
+- `reset()`: `_ang_vel_history.clear()`
+- `step()` 매 step: `_ang_vel_history.append(ang.copy())`
+- drop trigger 후 instability penalty 다음: max ang_accel 계산 + reward 차감 + `info['drop_max_ang_accel']`
+
+**학습 명령**:
+```bash
+ros2 run rl_navigation train_sac \
+    --resume /workspace/ros2_ws/eval_models/v8_peak_step217040_err0.87m.zip \
+    --timesteps 400000
+```
+
+- warm start: v8_peak (`num_timesteps = 217,040`)
+- fresh replay buffer: `_replay.pkl` 없음 → 자동 새 buffer (CLAUDE.md "보상 공식 변경 → Fresh Start" 준수)
+- reset_num_timesteps=False → counter 유지, total 400k 까지 학습 = +183k step 의도 (실제 17k 만 진행)
+
+**학습 진행 (5h, SIGTERM stop)**:
+| 시점 | total_step | success_rate | ep_rew_mean | ep_len_mean | actor_loss |
+|---|---|---|---|---|---|
+| 시작 (18:41 UTC) | 217,040 | (v8 0.80) | — | — | — |
+| 3시간 | 234,301 | 0.51 ⚠️ | -50 | 47 | 60-80 |
+| 4시간 | 296,706 | 0.55 | -43 | 40 | 29-33 |
+| 4.8시간 | 303,127 | 0.54 | -37 | **6.27** ⚠️ | 22-35 |
+| 5시간 (SIGTERM) | **313k** | **0.58** | **-15.5** | **96.3** ✓ | 35.1 |
+
+- 4.8h 시점에 ep_len 6.27 — 정책 발산 의심
+- 5h 회복 (96.3) — fine-tune 적응 마무리
+
+**평가 (dgui 5 ep, preempt step 313k)**:
+```
+EP1: 1.79m ✓
+EP2: 1.81m ✓
+EP3: 1.65m ✓
+EP4: 1.98m ✓
+EP5: 2.22m (margin)
+success ≤2m:   4/5 = 80%
+mean err:      1.888m
+max ang_vel:   2.10 rad/s (평균)
+```
+
+**v8 vs v9a 비교**:
+
+| 항목 | v8 | v9a | 변화 |
+|---|---|---|---|
+| success rate | 80% | 80% | 동일 |
+| mean err | 1.852m | 1.888m | +0.036m (분포 안) |
+| **max ang_vel** | **2.5 rad/s** | **2.10 rad/s** | **-16% ↓** ✓ |
+| 정책 행동 | toss | **toss 유지** | 본질 동일 |
+
+**결론**:
+- **drop_angaccel penalty 효과 명확** (16% ang_vel 감소). 정책이 부드러운 drop 학습.
+- **w_dist 1.5 효과 미미** — 누적 +1.4 (terminal +30 의 5%) 만으로는 정책 본질 행동 변경 어려움.
+- **사용자 의도 (지나치는 현상 해결) 안 됨** — toss 전략 그대로 유지.
+- 원인: 17k step 만 fine-tune (의도 100k 의 17%). v8 의 강한 toss prior 가 처방 흡수.
+
+**Backup**:
+- `eval_models/v9a_preempt_step313k.zip` (3.2 MB, 평가용)
+- `rl_checkpoints/sac_drop_preempt.zip` + `_replay.pkl` (86 MB)
+- 평가 결과: `local/eval_logs/eval_2026-06-27T00-36-50_v9a_preempt_step313k.json`
+
+**다음 단계 후보**:
+1. v9a 100k 까지 더 학습 (+~12시간) — 처방 효과 누적 가능
+2. 두번째 처방 도입 (사용자 1, 2, 3 안건)
+3. payload tracking 완전 구현 (Gazebo pose + ep 연장)
+4. 환경 변경 (target randomize, cruise 비활성)
+5. Fresh start with stronger shaping
+
+---
+
+### #39. 2026-06-26~27 — **v9a resume (xzoz52cw) — CUDA error 로 강제 종료**
+
+WandB run: **`xzoz52cw`** (313k → 432k, +119k step)
+
+**의도**: v9a 313k preempt 에서 resume + 추가 학습 (의도 ~600k 까지, 사용자 SIGTERM 예정)
+
+**진행**:
+- 시작: 2026-06-26 17:33 UTC, 7시간 18 분 진행
+- replay buffer 자동 load (`sac_drop_preempt_replay.pkl` 86 MB)
+- drop_episodes +449 추가 (4527 → 4976)
+
+**종료 (실패)**:
+- **CUDA error: unspecified launch failure** — checkpoint 저장 시 torch.save 의 GPU 오류
+- container Exit (137) — SIGKILL
+- preempt save 실패 (CUDA error 가 _emergency_save 호출 전 발생)
+- **rolling checkpoint 5k 마다 자동 저장** → `sac_drop_432806_steps.zip` 보존
+
+**결과**: `eval_models/v9a_step432806.zip` (3.2 MB)
+**replay buffer 일관성**: 313k 시점 만 (432k 와 mismatch → resume 어려움)
+
+---
+
+### #40. 2026-06-27 — **v9a step432k 5 ep 평가 — 정책 악화**
+
+평가 only. Base: v9a step432k
+
+**dgui 5 ep, deterministic**:
+```
+EP1: 2.10m margin, steps 103, max_ang_vel 1.94
+EP2: hover_timeout (drop X, d_xy 10m) ⚠️
+EP3: 1.83m ✓, max_ang_vel 2.08
+EP4: 1.94m ✓, max_ang_vel 2.11
+EP5: hover_timeout + max_ang_vel 2.95 ⚠️ (정책 unstable)
+
+drops: 3, success ≤2m: 2/3 = 66.7%, mean 1.96m
+```
+
+**비교**:
+| 모델 | step | success | hover_timeout |
+|---|---|---|---|
+| v8 | 217k | 5/5 = 100% | 0 |
+| v9a 313k | 313k | 4/5 = 80% | 0 |
+| **v9a 432k** | 432k | **2/3 = 66.7%** | **2** ⚠️ |
+
+**결론**: 추가 학습 (+119k) 이 정책 악화. 313k 가 더 안정. 그러나 5 ep 표본 작음 → 10 ep 평가 필요.
+
+---
+
+### #41. 2026-06-27 — **10 EP 통계 비교 (v8 vs v9a 313k) — 표본 운 의 영향 발견**
+
+평가 only. 통계 신뢰성 확인 위해 양 모델 각 10 ep.
+
+**v8_peak (10 ep)**:
+```
+EP 1~5:  1.93, 1.92, 1.87, 1.98, 1.74  → 5/5 ≤2m ✓
+EP 6~10: 2.18, 2.08, 2.03, 2.18, 2.12  → 5/5 borderline ✗ (2.0~2.2m)
+success ≤2m: 5/10 = 50%
+mean: 2.002m, min 1.744, max 2.181, hover_timeout 0
+```
+
+**v9a 313k (10 ep)**:
+```
+EP 1~3:  1.99, 1.75, 1.85  → ✓
+EP 4, 5: 2.01, 2.07  → ✗ borderline
+EP 6:    hover_timeout (drop X) ⚠️
+EP 7~10: 2.01, 2.11, 2.13, 2.13  → ✗ borderline
+success ≤2m: 3/9 = 33%, drops 9/10
+mean: 2.006m, hover_timeout 1
+```
+
+**핵심 발견**:
+1. **이전 5 ep 100% (v8) / 80% (v9a) 는 표본 운** — 실제 50% / 33%
+2. **v8 가 v9a 보다 success 17% ↑** (binomial 검정 의미 있음)
+3. **mean err 둘 다 ≈ 2.0m** — 정책 정확도 자체는 비슷, threshold 2.0m 경계
+4. **만약 success_threshold 가 2.1m 였다면** → v8 9/10 (90%), v9a 6/9 (67%)
+
+**v9a 처방 최종 trade-off**:
+- ✓ drop_angaccel 효과 명확 (ang_vel -16%)
+- ✗ success rate 약간 ↓ (50% → 33%)
+- ✗ 사용자 의도 (지나치는 현상 해결) 안 됨 — toss 그대로
+
+**최종 결정 (사용자, 2026-06-27)**:
+- **v8 을 best baseline** 으로 결정
+- v9a 의 fine-tune 처방으로는 사용자 의도 달성 어려움
+- **새 design framework** (2 단계 모드 분리, `design/two_stage_learning_plan.md`) 로 진행
+
+---
+
+### #42. 2026-06-30 — **RAD v1 design 완료** (Relative Approach Drop, 새 framework)
+
+**Base**: v8 (`hyperparams.yaml`) 기준. RAD 는 v8/v9a 와 완전 다른 framework — Round/redux 시리즈의 patch 가 아닌 **새 framework 의 v1**.
+
+**파일 분리 (옵션 A)**:
+- `hyperparams_rad.yaml` (신규)
+- `drone_drop_env_rad.py` (신규, Class: `DroneDropEnvRAD`)
+- `train_sac_rad.py` (신규, Phase 1/2 분리 logic)
+- `mission_manager_rad_node.py` (신규)
+- `infra_rad.launch.py`, `episode_rad.launch.py` (신규)
+- 기존 v8 파일 그대로 (왔다갔다 학습 가능)
+
+**참조**: [design/rad_v1_design.md](design/rad_v1_design.md) — single source of truth.
+
+---
+
+**환경 (Phase 1 + Phase 2 공통)**:
+
+- `environment.target_enu_x`: 4.0 (v8 그대로)
+- `environment.target_enu_y`: 3.0 (v8 그대로)
+- `environment.target_enu_z`: 5.0 → **0.0** (지면 marker 명시. v10a stage1 임시값 폐기)
+  - **이유**: drop_calculator 가 z=0 지면에서 측정. target = (4, 3, 0) 통합
+- `environment.pos_scale`: 5.0 → **10.0**
+  - **이유**: v10 좌표 √50 ≈ 7m 대응 (obs ∈ [−1, 1] 유지)
+- `environment.vel_scale`: 15.0 (v8 그대로)
+- `environment.ang_vel_scale`: π (v8 그대로)
+- `environment.action_vx_scale`, `vy`, `vz`: 3.0 (v8 그대로)
+- `environment.action_yaw_scale`: 1.0 (v8 그대로)
+- `environment.max_steps`: 800 (v8 그대로)
+- `environment.min_altitude`: 3.0 → **0.5** (사실상 ground_contact_alt 와 통합, dead)
+- `environment.ground_contact_altitude`: 0.5 (v8 그대로)
+- `environment.max_distance`: 20.0 → **15.0**
+  - **이유**: v10 좌표 √50 ≈ 7m 에 적정 마진 2× = 15m
+- `environment.max_altitude`: 50.0 (v8 그대로)
+- `environment.max_consecutive_fast_resets`: 100 → **50**
+  - **이유**: Phase 1 drop 없음 → fast reset 비율 100% → GZ 누적 leak 조기 차단
+
+**obs (14d, 상대좌표, yaw-only body frame)**:
+
+- **REMOVED**: obs[0:3] 절대 pos_world, obs[9:11] pixel u/v, obs[13:14] rel_dx/dy (world frame)
+- **NEW obs structure**:
+  - `obs[0:3]` = (Δx_b, Δy_b, Δz_world) / POS_SCALE — target - drone, body frame
+  - `obs[3:6]` = (vx_b, vy_b, vz_world) / VEL_SCALE — drone vel, body frame
+  - `obs[6:9]` = (ω) / π (v8 그대로)
+  - `obs[9:11]` = (roll, pitch) / π
+  - `obs[11]` = payload_attached (Phase 1 dead = 1.0)
+  - `obs[12]` = d_impact / POS_SCALE (Phase 1 dead = 0)
+  - `obs[13]` = t_f / 10 (Phase 1 dead = 0)
+  - **REMOVED**: yaw 절대값 (정책이 yaw-invariant 학습)
+- 변환식: `[Δx_b; Δy_b] = R(yaw)^(-1) · [Δx_w; Δy_w]`, Δz_world 회전 안 함
+
+**Spawn / Cruise (RAD only)**:
+
+- **NEW**: `cruise.spawn_yaw_random_enabled` = true
+- **NEW**: `cruise.spawn_yaw_relative_range` = [−π/2, +π/2] (relative to drone→target vector, uniform)
+- **NEW**: `cruise.target_speed` = 1.0 m/s (head 방향 가속)
+- **REMOVED**: `cruise_speed_x` (1.0), `cruise_speed_y` (−1.0) — 자동 이동 폐기
+
+**Switch sphere / Final state (Phase 1)**:
+
+- **NEW**: `phase1.switch_d_sq` = 20.5 (sphere d²≤20.5 진입 시 Phase 1 종료, radius √20.5 ≈ 4.53m)
+- **NEW**: `phase1.terminal_floor` = 20 (sphere 진입 자체 보상)
+- **NEW**: `phase1.terminal_w_each` = 50/7 ≈ 7.14 (각 final state 조건 만족당)
+- **NEW**: `phase1.terminal_complete_bonus` = 50 (모든 조건 만족 jackpot)
+- **NEW**: Final state 7 조건 임계값
+  - `phase1.C1_z_min` = 3, `C1_z_max` = 5
+  - `phase1.C2_v_xy_max` = 4
+  - `phase1.C3_v_z_max` = 2
+  - `phase1.C4_tilt_max` = 0.26
+  - `phase1.C5_omega_max` = 2
+  - `phase1.C6_yaw_err_max` = 1.047 (60°)
+  - `phase1.C7_v_xy_min` = 0.3
+- **REMOVED**: `stage1_R` (2.0), `stage1_only` (false), `stage1_reach_bonus` (100) — v10a stage1 임시 메커니즘 전체 폐기
+
+**Reward (per-step)**:
+
+- `reward.w_dist`: 1.0 (Phase 1 그대로) / 1.0 (Phase 2, v9a 의 1.5 폐기)
+  - **거리 계산 변경**: `d_xy = √(x² + y²)` (v8) → `d_reward = √((x−target_x)² + (y−target_y)² + (z−4)²)` (RAD)
+  - **이유**: z 포함, reference = (target_x, target_y, 4) — z=4 최소 안전 고도 위 1m
+- `reward.w_heading`: 0.7 (v8 그대로, 수평만)
+- **NEW**: `reward.w_z` = 0.3 (Hann raised cosine 가중치, **Phase 1 + Phase 2 모두 활성**)
+- **NEW**: `reward.z_target` = 4.0 (Hann mu)
+- **NEW**: `reward.z_half_range` = 3.5 (Hann window half-range. ⚠️ gaussian σ 가 아님)
+- **NEW form**: `r_z = w_z × 0.5 × (1 + cos(π × (z − 4) / 3.5))` for z ∈ [0.5, 7.5], else 0
+- `reward.w_impact`: 0.4 → **Phase 1: 0** (drop 없음), **Phase 2: 1.0** (강화)
+- `reward.k_impact`: 0.05 → **0.1** (Phase 2, decay 강화)
+- `reward.w_distance_penalty`: 0 (v8 그대로, dead)
+- `reward.w_time` (hardcoded `-0.05`): **Phase 1: −0.05, Phase 2: −0.1** (2× 강화)
+- `reward.w_ang_vel`: 0.05 → **Phase 1: 0.05, Phase 2: 0.1** (2× 강화)
+- `reward.w_action_smooth`: 0.05 → **Phase 1: 0.05, Phase 2: 0.1** (2× 강화)
+- `reward.speed_gate_enabled`: true (v8 그대로)
+
+**Drop trigger (Phase 2)**:
+
+- `reward.auto_drop_threshold`: 2.0 → **1.0** (CCIP 예측 miss < 1m 시 auto drop, 정밀도 강화)
+- `reward.random_drop_prob`: 0 (v8 그대로)
+- `reward.random_drop_start_step`: 600 (v8 그대로, dead)
+- `reward.hover_drop_block_threshold`: 0 (v8 그대로, dead)
+- Manual drop (action[4]): 비활성 (v8 그대로)
+
+**Drop event reward (Phase 2)**:
+
+- `reward.drop_attempt_bonus`: 30 (v8 그대로)
+- `reward.k_drop_proximity`: 0.4 → **0.1** (약화)
+  - **이유**: drone 이 target 위 정확히 가도록 압박 약화 → toss 학습 보존
+- `reward.w_drop_base`: 100 (v8 그대로)
+- `reward.k2_precision`: 0.2 (v8 그대로)
+- `reward.r_success_jackpot`: 50 (v8 그대로)
+- `reward.jackpot_threshold`: 0.3 (v8 그대로)
+- `reward.success_threshold`: 2.0 → **1.0** (Phase 2)
+  - **이유**: d_impact trigger 1m 과 정합. trigger 가 곧 success 정의
+- `reward.alt_penalty_max`: 50 → **0** (폐기)
+- `reward.alt_penalty_mid`: 30 → **0**
+- `reward.alt_penalty_k`: 0.15 → **0**
+  - **이유**: RAD 의 z=4 강제 정책 (Hann reward) + Phase 1 C1 조건 (z∈[3,5]) 으로 drop 고도 안전. sigmoid 발동 안 됨
+- `reward.drop_angaccel_penalty_scale`: 0.5 (v9a, 그대로)
+- `reward.drop_angaccel_window_n`: 5 (v9a, 그대로)
+- `reward.invalid_drop_penalty`: 0 (v8 그대로, dead)
+- `reward.invalid_drop_threshold`: 95 (v8 그대로)
+- `reward.drop_wait_timeout`: 3.0 (v6, 그대로)
+- `reward.w_prediction`: 0 (v5+, 그대로 dead)
+- `reward.penalty_instability`: 50 (v8 그대로)
+
+**경계 제약 (Phase 2)**:
+
+- `environment.action_rate_limit`: 0.2 → **0.15 (Phase 2)** (Phase 1 은 0.2 유지)
+  - **이유**: drop 직전 부드러움 강화
+
+**Crash (Phase 2 신규)**:
+
+- **NEW**: `phase2.sphere_escape_d_sq` = 22 (drone d² > 22 → ep terminate)
+  - radius √22 ≈ 4.690m (sphere 4.527m + margin 0.163m)
+  - **이유**: Phase 1 종단 distribution 보호 + 정책 발산 방지. margin 0.16m 로 학습 noise 흡수
+- **NEW**: `phase2.sphere_escape_penalty` = −30
+
+**Phase 2 max_steps**:
+
+- **NEW**: `phase2.max_steps` = 200 (≈ 10 초)
+  - **이유**: 사용자 원칙 "Phase 2 짧고 빠른 drop"
+
+**기존 페널티 (변경 없음)**:
+
+- `reward.penalty_crash`: −50 (v8 그대로, z<0.5 발동)
+- `reward.penalty_overspeed`: −30 (v8 그대로)
+- `reward.penalty_target_lost`: −10 (v8 그대로, vision dead)
+- `reward.penalty_out_of_range`: −30 (v8 그대로, d>15m)
+- `reward.penalty_max_altitude`: −15 (v8 그대로)
+- `reward.penalty_hover`: −30 (v8 그대로)
+- `reward.hover_speed_threshold`: 1.0 (v8 그대로)
+- `reward.hover_consecutive_threshold`: 150 (v8 그대로)
+- `reward.hover_truncate_enabled`: true (v8 그대로)
+- `reward.truncation_penalty`: −15 (v8 그대로)
+- `reward.penalty_bad_attitude`: −30 (v8 그대로)
+- `reward.limit_ang_vel`: 10.0 (v8 그대로, ang_vel fix 후)
+- `reward.limit_tilt`: 0.26 (v8 그대로)
+- `reward.limit_inverted_tilt`: 1.047 (v8 그대로)
+
+**SAC hyperparams (변경 없음)**:
+
+- 전부 v8 그대로 (lr=1e-4, buffer_size=500k, batch=256, tau=0.002, gamma=0.995, learning_starts=1000, gradient_steps=1, net_arch [256,256], PER alpha=0.6 etc., DampedEntropySAC settings, target_entropy=−15.0, target_q_clip=500)
+
+**학습 (Phase 1)**:
+
+- **NEW**: `training.phase` = "phase1"
+- `training.total_timesteps`: 600000 → **300000 floor + success gate**
+- 종료 조건: step ≥ 300k AND 50k window success_rate ≥ 90% (success = sphere 진입 AND ∏ C1~C7 = 1)
+- `training.checkpoint_dir`: `/workspace/ros2_ws/rl_checkpoints` → `/workspace/ros2_ws/rl_checkpoints_rad`
+
+**학습 (Phase 2)**:
+
+- **NEW**: `training.phase` = "phase2"
+- **NEW**: `training.phase1_model_path` = `rl_checkpoints_rad/sac_phase1_final.zip`
+- `training.total_timesteps`: → **150000 floor + success gate**
+- 종료 조건: step ≥ 150k AND 50k window success_rate ≥ 90% (success = drop_error ≤ 1.0m)
+- **NEW**: `training.phase1_rollout_max_steps` = 300 (Phase 2 ep 시작 시 Phase 1 정책 rollout 최대)
+- Phase 1 rollout step 은 Phase 2 buffer 에 안 들어감 (학습 신호 오염 방지)
+
+**Wandb**:
+
+- `wandb.project`: `drone-bombard-sac` (그대로)
+- `wandb.run_name`: `phase1_redux_v9a_payload_dist_angaccel` → **`rad_phase1_v1`** (Phase 1), **`rad_phase2_v1`** (Phase 2)
+- `wandb.tags`: → **`["rad", "phase1", "v1"]`** 또는 **`["rad", "phase2", "v1"]`**
+
+**결과**: design 완료. 학습 결과는 추후 entry #43+ 에서 기록 예정.
+
+**결론 / 다음**:
+- design 단계 완료. 코드 작성 (#134, #135) 대기
+- 학습 전 Reset 잔존 속도 / EKF 누설 dgui smoke test (#129) 필요
+- Phase 1 5k dry-run → 본학습 → 종료 → Phase 2 5k dry-run → 본학습 sequence
 
 ---
 

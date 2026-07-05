@@ -45,3 +45,142 @@ Gazebo 물리 엔진은 공기저항, 관성, 드론 자체의 기류 영향 등
   [2026-05-26] Issue #013 발견: 이전 갭 데이터는 전부 무효.
                d_error가 payload 착탄 위치가 아닌 드론 crash 위치였음.
                SDF 수정 후 실제 payload 착탄 데이터로 재분석 필요 (run r5zp3k1c).
+
+
+================================================================================
+ 4. 2026-06-06 ~ 06-07 정밀 분석 (Phase 1 redux v3)
+================================================================================
+
+v3 의 400 drops 분석 → 진짜 root cause 발견.
+
+이전 가설 (공기저항/관성 영향) 폐기. 진짜 원인:
+  → DetachableJoint 분리 시 payload 가 drone velocity 를 inherit 못 함
+
+[측정 결과 (v3, 400 drops)]
+  d_impact (예측) 평균:    1.86m
+  drop_error (실제) 평균:  3.68m
+  gap (실제 - 예측) 평균: 1.82m (전체)
+  gap mean (정상 396):    1.73m, std 0.73m
+  Catastrophic 4건:        gap 7.99 ~ 22.4m (별도 mechanism)
+
+[α 가설 — Velocity Inheritance Failure]
+  payload 가 drone velocity 안 받음 → 거의 straight-down fall
+  → drop_error ≈ d_xy_at_trigger (drone 의 horizontal 위치)
+  → 81.6% of drops 가 drop_error ≈ d_xy_at_trigger (±0.3m)
+
+[정량 입증]
+  Correlation(gap, d_xy_trigger - d_impact) = 0.955
+  Speed_xy 단독 R² = 0.643
+  다변량 회귀 R² = 0.659
+  Speed bucket 별 패턴:
+    slow (0.3-1.0 m/s): gap 0.75m
+    mid  (1.0-2.0 m/s): gap 1.50m
+    fast (2.0-4.0 m/s): gap 2.42m
+  → gap 이 speed 와 강하게 선형 관계 → α 가설 압도적 입증
+
+[처방 후보들 — 시도 결과]
+
+  옵션 X (CCIP 의 velocity 항 제거):
+    효과: CCIP=실제 일치, success_rate 향상 가능
+    한계: fly-by drop 불가능 (호버-and-drop 만), 사용자 학습 목표 위배 → 폐기
+
+  옵션 W (VelocityControl + subprocess gz topic):
+    효과: payload odom 측정 첫 sample 에 큰 velocity (mechanism 작동 일부)
+    문제: subprocess.Popen latency 50-150ms → cmd_vel 도착 전 payload 이미 fall
+          VelocityControl plugin 의 continuous setpoint → gravity 방해 가능
+    학습 시 drop_error 5-10m 으로 악화, ep_rew_mean -5 (정책 망가짐)
+    → 실패, 폐기
+
+  옵션 A (ApplyLinkWrench + bridge + EntityWrench):
+    구현:
+      - world SDF 에 ApplyLinkWrench plugin 추가
+      - bridge config 에 /world/x_marker_world/wrench topic
+      - env._RLBridgeNode 에 EntityWrench publisher
+      - publish_drop 에서 F = m × v / dt = 25 × v 의 impulse force 1 step 인가
+
+    효과 검증 (test_v1.py, 2026-06-07):
+      방법:
+        - mission_manager 를 TRACK state 로 강제 전환 (CRUISE 의 position cmd 비활성)
+          → fake target /target/pixel_coords 발행
+        - drone state 측정 (어떤 v 든 무관) → wrench publish → payload state 측정
+      결과:
+        drone speed at trigger:  0.48 m/s
+        payload first sample:    0.54 m/s
+        Velocity transfer ratio: 112.8%  ← ✓ mechanism 작동
+      12.8% 오차 = noise (timing, bridge latency, sampling) — 학습용 충분
+
+    중요 깨달음 (사용자 지적):
+      Drone 이 명령대로 3 m/s 비행하지 않아도 검증 가능.
+      "측정된 v 와 전달된 v 의 일치" 만 보면 됨.
+      → drone 의 어떤 v 라도 측정 + wrench → payload v 비교 가능.
+
+[현재 진행 상황 2026-06-07]
+  - 옵션 A mechanism 검증 완료 (112.8% velocity transfer)
+  - 학습 통합 시작:
+      run_name: phase1_redux_v4_option_a
+      resume from v3 preempt 254k
+      Option A 만 다름 (그 외 v3 yaml 동일)
+  - 통계 비교 가설:
+      gap mean:    v3=1.73m → v4 ≈ 0
+      correlation: v3=0.955 → v4 ≈ 0
+      drop_error:  v3=3.59m → v4 < 3.59m
+      success:     v3=1% → v4 증가
+  - 30+ drops 후 결과 검증
+
+[연관 문서]
+  - local/design/model_history.md — Phase 1 redux v3 섹션
+  - local/parameter_log.md — Entry #31 (v3 시작)
+  - issue_010_release_impact_dual_reward.txt — prediction_bonus 시도 (간접 대응)
+
+
+================================================================================
+ 5. RESOLVED — 진짜 root cause 발견 (2026-06-07)
+================================================================================
+
+이 issue 의 모든 가설 (velocity inheritance failure, 옵션 A, G-a, G-b)
+이 잘못된 진단 위에 쌓였음. 진짜 root cause 는 별개:
+
+  payload_0~3/model.sdf 의 OdometryPublisher 가 <dimensions> 미지정
+  → gz-sim8 default = 2 (2D mode)
+  → payload odom 의 z 좌표가 항상 0 으로 publish
+  → drop_calculator 가 payload_z ≤ 0.04 시 즉시 impact 처리
+  → drop_error = drone 의 분리 시점 horizontal 위치 (= d_xy_at_trigger)
+
+상세는 issue_023_payload_odom_2d_bug.md 참조.
+
+[v3 의 모든 통계 재해석]
+  drop_error ≈ d_xy        → 분리 즉시 ground 판단의 artifact
+  gap mean 1.73m           → d_xy - d_impact (의미 없는 값)
+  correlation 0.955        → speed 클수록 drop trigger 시 d_xy 큼 (statistical)
+  옵션 A 의 16% 감소       → measurement noise 안의 변동
+
+[v4 결과 (188 drops) 재해석]
+  drop_error mean 3.585m   → v3 와 동일 (artifact 그대로)
+  gap 1.46m, corr 0.849   → 부분 변화는 noise 안에서
+  → 옵션 A 의 효과는 사실상 없었음
+
+[Fix 후 검증 (test_v1, 2026-06-07)]
+  payload first sample z = 5.33m (이전: 0)
+  자유낙하 → 1.0s 후 ground 도달
+  velocity transfer ratio 103.1%
+  → drop_error 가 진짜 ground impact 측정
+
+[처방 정리]
+  - 옵션 A 코드 제거 (drone_drop_env.py 의 wrench_pub, publish_drop 의 wrench 부분)
+  - ApplyLinkWrench plugin 제거 (world SDF)
+  - bridge config 의 wrench topic 제거
+  - DROP_SKIP_WRENCH toggle 제거
+  - w_verify.csv 로깅 제거 (drop_calculator)
+  - w_prediction = 0 (gap reward 비활성 — fix 후 gap≈0)
+  - run_name → phase1_redux_v5_sdf_fix
+
+[Status]
+  RESOLVED — v5 fresh start 로 새 baseline 시작
+
+
+[연관 문서]
+  - local/issues/issue_023_payload_odom_2d_bug.md — root cause 자체
+  - local/design/model_history.md — Phase 1 redux v3 섹션
+  - local/parameter_log.md — Entry #31 (v3 시작)
+  - issue_010_release_impact_dual_reward.txt — prediction_bonus 시도 (간접 대응)
+

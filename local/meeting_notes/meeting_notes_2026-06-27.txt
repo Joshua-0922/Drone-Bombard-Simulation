@@ -1,0 +1,342 @@
+================================================================================
+ Drone-Bombard-Simulation 작업 정리 — 2026-06-27
+ 세션 기간 : 2026-06-27 (단일 일, 2 부 — 새벽 정리 / 저녁 학습)
+ 직전 노트 : meeting_notes_2026-06-26.txt
+ 핵심 변화 : v9a 결과 종합 분석 + 사용자 두번째 처방 후보 논의 + 문서 정리
+              + (저녁) v9a resume CUDA error / 10 ep 통계 평가 / v8 best baseline 확정
+              + 새 design framework (2 단계 모드 분리) 진행 결정
+================================================================================
+
+
+********************************************************************************
+*  PART 1 — Fine-tune 17k step 의 한계 분석
+********************************************************************************
+
+  사용자 분석 (정확):
+    "사용자 의도 (지나치는 현상 해결) 안 됨"
+    "별로 달라진게 없는거 같은데?"
+
+  Claude 분석:
+    1. v9a 의 처방 magnitude vs v8 baseline:
+       - v8 평균 terminal reward = +30 ~ +80 per ep
+       - v9a 의 처방 영향:
+         · w_dist 1.5 의 누적 (50 step 비행): +5 (지나치는 시점 -1.4 포함 → 순 +3.6)
+           = terminal +30 의 ~12%
+         · drop_angaccel penalty 0.5 × max_accel 2 rad/s² = -1.0 per ep
+           = terminal +30 의 ~3%
+       - 처방 총 영향 = +2.6 (terminal 의 8.7%)
+       → 17k step 으로는 정책 본질 변경 어려움.
+
+    2. v8 의 강한 toss prior (303k 학습):
+       - critic network 가 toss trajectory 의 high reward 확신
+       - actor network 가 toss action sequence 강하게 학습
+       - fine-tune 의 작은 처방 신호가 이 prior 흡수
+
+    3. fine-tune step 수의 효과 curve (예상):
+       - 0 ~ 10k:    정책 초기 흔들림 (adapter loss spike)
+       - 10k ~ 50k:  새 reward 적응 시작
+       - 50k ~ 100k: 본질 행동 변화 가능
+       - 100k +:    new local optimum 정착
+
+    → v9a 의 17k 는 0~10k 흔들림 직후. 본질 변화 시작 전.
+
+  새 Rule (Issue #025 등록):
+    Fine-tune step 수 권장 범위:
+      - 최소 50k step (baseline 의 16.5%) — 처방 본질 효과 보이려면
+      - 권장 100k step (33%) — 안정 신뢰성
+      - 최대 200k step (66%) — 완전 새 정책 가능
+
+
+********************************************************************************
+*  PART 2 — 사용자 두번째 처방 후보 정리
+********************************************************************************
+
+  사용자가 직접 두번째 처방 3 가지 후보 제시 (각 위험성 자각):
+
+  옵션 1 — target 거리 제한 (안전: ★★★):
+    drone 이 어느 거리 이상으로 target 과 가까워지면 penalty
+    → drone 이 target 위 까지 안 가게 강제
+    → early shot (조준 후 toss) 학습 유도
+
+    구현:
+      ```python
+      if d_xy < target_distance_min:
+          reward -= scale * (target_distance_min - d_xy)
+      ```
+
+  옵션 2 — 시간 패널티 강화 (위험: ★):
+    사용자 자각: "최단 시간 조건을 강화 < - 기존 학습이 정말 잘 된 경우에만 사용가능.
+    그 외에는 발산 가능성"
+
+    구현:
+      ```yaml
+      reward.w_time: 0.01 → 0.05
+      ```
+    위험: per-step density 변경 → SAC entropy 발산 (Round 4 교훈)
+    v9 단계 적합 안 함
+
+  옵션 3 — drop 좌표 강제 (강력: ★★):
+    drop 시점이 임의 사용자 정의 좌표 에서 멀어질수록 penalty
+    → 강제로 어느 거리에서 발사하게끔
+    → drop 좌표에 맞춰 드론이 속도 조절
+
+    구현:
+      ```python
+      if drop_triggered:
+          reward -= scale * ||drone_xy - desired_drop_xy||
+      ```
+    위험: 좌표 결정 자체가 학습 prior 강제
+
+  안전 순위: 1 > 3 > 2
+
+
+********************************************************************************
+*  PART 3 — w_dist 와 drop_angaccel 정확한 의미 (사용자 재확인)
+********************************************************************************
+
+  사용자 질문: "w_dist와 drop_angaccel은 각각 정확히 무슨 보상이야?"
+
+  Claude 답 (정확):
+
+  3-1. w_dist (= 1.5):
+    매 step (drop_drop_env.py line 1110):
+      r3_dist = w_dist * (d_xy_prev - d_xy)
+      reward += r3_dist
+
+    의미: drone 의 horizontal distance to target 의 변화에 weight 곱한 reward.
+    가까워지면 +reward (positive), 멀어지면 -penalty (negative).
+
+  3-2. drop_angaccel_penalty_scale (= 0.5):
+    drop 시점에 (1회만):
+      hist = list(self._ang_vel_history)  # last 5 step ang_vel
+      max_accel = max(||hist[i] - hist[i-1]|| for i in range(1, len(hist)))
+      reward -= drop_angaccel_penalty_scale * max_accel
+
+    의미: drop 직전 5 step 의 가장 큰 각가속도 (인접 step ang_vel diff magnitude) penalty.
+    toss 의 갑작스러운 pitch back 차단.
+
+  v9a 측정값:
+    | EP | max_ang_vel | max_accel 추정 | penalty |
+    | 1  | 2.47 rad/s  | ~1.5 rad/s²    | -0.75   |
+    | 2  | 1.87        | ~1.2           | -0.60   |
+    | 3  | 2.39        | ~1.4           | -0.70   |
+    | 4  | 1.96        | ~1.3           | -0.65   |
+    | 5  | 1.83        | ~1.2           | -0.60   |
+    평균 penalty ≈ -0.66 (terminal reward +30 의 2%)
+
+
+********************************************************************************
+*  PART 4 — payload distance reward 의 의도와 한계
+********************************************************************************
+
+  사용자 질문: "혹시 이쯤에서 아예 새로운 모델을 생각해봐도 돼?
+                이거와 별개로 별도로 다루는거야"
+
+  분석:
+    payload distance reward 의 사용자 의도 = payload trajectory monotonic 보상
+    → "drone 이 x 위에서 떨구는 거나, x 도달 전 조준해서 떨구는 거나 reward 동일"
+    → drone 의 위치 무관, payload 가 target 향해 가면 OK
+
+    가능한 학습 결과 (학습 잘 되었다는 가정):
+      A. hover-drop (사용자 예상): drone 이 target 위 멈춤 + drop ← 40-50% 가능성
+      B. early shot (조준): drone 이 target 도달 전 ballistic 활용 ← 30% 가능성
+      C. 부드러운 toss: 약화 ← 15%
+      D. toss 유지 (local optimum): ← 10%
+      E. 예상치 못한 발견: ← 5%
+
+  B (early shot) 가능성 ↑ 방향:
+    추가 처방 (사용자 답: A + α):
+      - 처방 A (payload distance + ang_accel) 진행
+      - 추가 α: CCIP 보상 활성 (w_prediction 0 → 5.0) — ballistic 정확도 학습 강화
+
+  현실: detach 후 payload trajectory 추적 안 함 → Issue #027 (큰 변경)
+
+
+********************************************************************************
+*  PART 5 — 문서 정리 작업 (Claude 자율 진행)
+********************************************************************************
+
+  사용자: "지금까지의 내용을 문서 업데이트해줘. 정말 광범위하기 때문에 철저하게 해줘"
+
+  처음 실수:
+    Claude 가 notes/ (Obsidian vault) 에 직접 문서 작성 → 사용자 워크플로우와 다름.
+
+  사용자 정정:
+    "notes 는 최종 목적지. 자잘자잘한 문서는 local 폴더 내에서 진행. 별도 프로세스가
+     local 폴더 내 문서들을 읽고서 notes 로 정리하는 과정 진행."
+
+    "design, issues, guides, meeting notes 등등 업데이트해야할 폴더나 문서가
+     한두개가 아닐텐데??"
+
+  사용자 정정 후 Claude 진행:
+    1. notes/ 에 작성한 노트 7 개 모두 git restore → local/notes/ 로 이동
+    2. local 의 README.md, parameter_log.md, design/, issues/, meeting_notes/, guides/
+       워크플로우 패턴 정확히 학습
+    3. 누락 항목 list 작성 → 사용자 OK → 진행
+
+  진행 list:
+    1. parameter_log.md
+       - §1 새 key 추가 (drop_angaccel_penalty_scale, drop_angaccel_window_n,
+         invalid_drop_*, hover_drop_block_threshold)
+       - §2 snapshot 갱신 (2026-06-27 v9a 활성)
+       - §3 표 추가 (#33 v5 ~ #38 v9a)
+       - §4 상세 entries (#34 v6, #35 v7, #36 v8, #37 ang_vel fix, #38 v9a)
+
+    2. issues/master.txt
+       - Round 5 이후 history 추가 (v5, v6, v7, v8, ang_vel fix, v9a)
+       - 신규 안건 영역 (#024, #025, #026, #027) 추가
+       - 최종 갱신: 2026-06-07 → 2026-06-27
+
+    3. issues/issue_024_ang_vel_callback_disabled.md (NEW)
+    4. issues/issue_025_finetune_step_insufficient.md (NEW)
+    5. issues/issue_026_toss_environment_indistinguishable.md (NEW)
+    6. issues/issue_027_payload_tracking_after_detach.md (NEW)
+
+    7. meeting_notes/meeting_notes_2026-06-22.txt (NEW)
+    8. meeting_notes/meeting_notes_2026-06-26.txt (NEW)
+    9. meeting_notes/meeting_notes_2026-06-27.txt (NEW) ← 이 노트
+
+   10. design/design_review_2026-06-27.md (NEW) — Round 별 상세
+   11. design/design_review.md — 현재 최종 갱신 (v9a 처방 + 다음 후보)
+   12. design/model_history.md — v5, v6, v7, v8, v9a narrative
+
+   13. guides/dgui_usage_guide.md (NEW)
+
+   14. README.md 갱신 — 현재 상태 (2026-06-27) + 새 파일/폴더 등록
+
+
+********************************************************************************
+*  PART 6 — 다음 작업 (사용자 결정 후)
+********************************************************************************
+
+  v9 다음 step 후보:
+    1. v9a 100k 까지 더 학습 (Issue #025) — 처방 효과 누적 확인
+    2. 두번째 처방 (사용자 1, 3 중) 도입 → v9b
+    3. payload tracking 완전 구현 (Issue #027) → v10 or fresh start
+    4. 환경 변경 (cruise 비활성, target/spawn randomize)
+    5. Fresh start with stronger shaping
+
+  Claude 추천: 1 → 1 끝 → 2 (옵션 1, target 거리 제한) 단계적.
+
+  사용자 응답 대기 중.
+
+
+********************************************************************************
+*  PART 7 — (저녁) v9a resume 학습 + CUDA error 종료
+********************************************************************************
+
+  사용자: "v9a 추가학습을 진행하자. 대략 300k까지 진행하고 중간에 내가 끊을게."
+
+  결정:
+    - 313k preempt checkpoint 에서 resume
+    - hyperparams total_timesteps 313k → 600k 로 설정 (+300k 추가)
+    - run_id: xzoz52cw (NEW, 이전 zjexq20k 종료)
+
+  학습 진행:
+    - start: 2026-06-27 12-13시경
+    - duration: 약 7시간 18분
+    - 진행 step: 313k → 432k (+119k)
+
+  사건:
+    CUDA error: unspecified launch failure
+      → torch.save(checkpoint) 도중 발생
+      → docker container Exit code 137 (OOM/SIGKILL 추정)
+      → preempt save 실패 (signal handler 동작 못함)
+
+  복구:
+    - rolling checkpoint (5k step 마다) 가 마지막으로 저장한 파일:
+      sac_drop_432806_steps.zip → eval_models/v9a_step432806.zip
+
+  사용자 결정: "A로 진행" (rolling checkpoint 432k 를 평가용으로 사용)
+
+
+********************************************************************************
+*  PART 8 — v9a step432k 5 ep 평가
+********************************************************************************
+
+  대상: eval_models/v9a_step432806.zip
+  결과:
+    drops 3/5, success 2/3 (66.7%), mean err 1.96m, max ang_vel 2.10 rad/s
+    hover_timeout 2 (40%) ← 신규 failure mode
+
+  관찰:
+    - v9a 313k 의 mean 1.65m 보다 악화 (1.96m)
+    - hover_timeout 발생 = drone 이 target 위에서 정체 → drop 못함
+    - 추가 학습 (+119k) 이 정책 악화 (catastrophic forgetting 의심)
+
+
+********************************************************************************
+*  PART 9 — 10 EP 통계 비교 (v8 vs v9a 313k vs v9a 432k)
+********************************************************************************
+
+  사용자 의문: "v9와 비교해서 v9a 313k가 더 좋은게 맞아?"
+    → 5 ep 표본 운 의심
+    → 10 ep 평가 진행 ("진행해봐")
+
+  결과:
+    | 모델              | step | drops | success≤2m | mean err | hover_timeout |
+    | v8 (96bokgae)     | 217k | 10/10 | 5/10 = 50% | 2.002m   | 0             |
+    | v9a 313k          | 313k |  9/10 | 3/9 = 33%  | 2.006m   | 1             |
+    | v9a 432k (5 ep)   | 432k |  3/5  | 2/3 = 67%  | 1.96m    | 2 ⚠️          |
+
+  통계 해석 (binomial SE):
+    - 5 ep 의 SE ≈ 22% (samples=5 시)
+    - 10 ep 의 SE ≈ 16%
+    - 이전 5 ep 100%/80% = 표본 운 (실제 50%/33%)
+
+  핵심:
+    - v8 가 v9a 보다 success 17% ↑ (50% vs 33%)
+    - mean err 둘 다 ≈ 2.0m (success_threshold 경계)
+    - **v8 = best baseline 확정**
+
+
+********************************************************************************
+*  PART 10 — 최종 결정: 새 design framework 시작
+********************************************************************************
+
+  사용자:
+    "자 일단은 그러면 다시 새로운 design 모델로 돌아가보자"
+    "그러면 모든 문서를 업데이트한다음 compact을 진행할게. 새로운 디자인을 시작해보자"
+    "처음부터 다시 논의해보자. 구조부터 철저하게 이야기 해보는거야"
+
+  결정:
+    1. v9a 의 fine-tune 처방 (w_dist 1.5 + drop_angaccel 0.5/N=5) 으로는
+       사용자 의도 (지나치는 현상 해결) 달성 어려움 확인
+    2. v8 = best baseline (이후 비교 기준)
+    3. v10a (단계 1 만 학습) 시도 → 중간 중단 → v9a 추가학습 으로 전환
+       → 그것도 정책 악화
+    4. → 새 design framework (2 단계 모드 분리, design/two_stage_learning_plan.md)
+         의 구조부터 철저히 논의 — 7 카테고리 top-down
+         (MDP / reward / env / policy / training / eval / deploy)
+
+  다음 단계:
+    - 모든 문서 업데이트 완료 → compact
+    - compact 후 → 카테고리 1 (MDP definition) 부터 논의 시작
+
+
+================================================================================
+ 메모
+================================================================================
+
+  파일 변경:
+    - hyperparams.yaml: total_timesteps 600000 (v9a resume 용)
+    - eval_models/v9a_step432806.zip (rolling checkpoint 산물)
+    - eval_models/v9a_preempt_step313k.zip (10 ep 평가 용)
+
+  추가 사건:
+    - 컨테이너 dead 한번 (Exit 137) → docker start 로 복구
+    - v10a 단계1 학습 시도 → 사용자 중단 → v9a 추가학습 으로 전환
+      (Issue #028 → design/two_stage_learning_plan.md 로 이동)
+
+  사용자 워크플로우 학습:
+    - notes/ = 최종 목적지 (Obsidian vault, 별도 프로세스가 정리)
+    - local/ = 작업 폴더 (자잘자잘한 문서)
+    - design_review.md = 총 요약 (현재 최종, Round 마다 갱신)
+    - design_review_YYYY-MM-DD.md = 상세 이력 (Round 별 새 파일)
+    - issues/master.txt = 안건 전체 관리, 새 안건은 issue_NNN_slug
+    - meeting_notes = 매 세션 새 파일, 이전 노트 수정 X
+    - parameter_log.md = 한 파일 entry 추가, §1 의미사전 갱신
+
+  Claude 의 잘못 (정정 후):
+    - notes/ 에 직접 문서 작성 → 모두 git restore + local/notes/ 로 이동
+    - "Obsidian vault 갱신" 이 사용자 워크플로우 가 아님 — 별도 정리 프로세스가 처리

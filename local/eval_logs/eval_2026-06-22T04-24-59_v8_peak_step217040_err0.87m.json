@@ -1,0 +1,23 @@
+{
+  "episodes": 1,
+  "drops": 1,
+  "success_2m": 1,
+  "jackpot_03m": 0,
+  "mean_err": 1.8632316589355469,
+  "min_err": 1.8632316589355469,
+  "max_err": 1.8632316589355469,
+  "results": [
+    {
+      "ep": 1,
+      "steps": 38,
+      "trigger": "auto",
+      "drop_error": 1.8632316589355469,
+      "d_xy": 1.4816396450482792,
+      "reward": 34.78041003358549,
+      "truncate_reason": ""
+    }
+  ],
+  "model": "v8_peak_step217040_err0.87m.zip",
+  "timestamp": "2026-06-22T04-24-59",
+  "deterministic": true
+}

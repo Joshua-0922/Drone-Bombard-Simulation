@@ -1,0 +1,271 @@
+# =============================================================================
+# RAD v1 hyperparams — Relative Approach Drop
+# =============================================================================
+# RAD = Relative coordinate + Approach (Phase 1) + Drop (Phase 2).
+# 새 framework — v8/v9a 의 patch 가 아닌 새 framework 의 v1.
+# 참조: local/design/rad_v1_design.md (single source of truth)
+# =============================================================================
+
+training:
+  phase: "phase1"                    # "phase1" or "phase2" — train_sac_rad 분기
+  total_timesteps: 600000            # floor; success_rate gate 로 조기 종료 가능
+  checkpoint_freq: 5000
+  max_checkpoints_kept: 5
+  checkpoint_dir: "/workspace/ros2_ws/rl_checkpoints_rad"
+  num_envs: 1
+  env_stagger_secs: 10
+  eval_freq: 10000
+  eval_episodes: 3
+
+  # Phase 2 specific
+  phase1_model_path: ""              # Phase 2 시 필수. 예: "/workspace/ros2_ws/rl_checkpoints_rad/sac_phase1_final.zip"
+  phase1_rollout_max_steps: 300      # Phase 1 정책 rollout 의 max step (sphere 진입 못하면 ep 폐기)
+
+  # Phase 별 종료 조건 — design 문서 2.1 / 3.1
+  phase1_step_floor: 300000
+  phase1_success_window: 50000       # 50k window
+  phase1_success_threshold: 0.9      # 90%
+  phase2_step_floor: 150000
+  phase2_success_window: 50000
+  phase2_success_threshold: 0.9
+
+sac:
+  # v8 그대로 — RAD 에서 변경 없음
+  learning_rate: 1.0e-4
+  buffer_size: 500000
+  batch_size: 256
+  tau: 0.002
+  gamma: 0.995
+  learning_starts: 1000
+  gradient_steps: 1
+  net_arch: [256, 256]
+  device: "cuda"
+  use_per: true
+  per_alpha: 0.6
+  per_eps: 0.1
+  per_priority_max: 30.0
+  ent_damping_threshold: 5.0
+  ent_coef_hard_cap: 1.0
+  # Issue #028 fix: -15 → -10. 너무 deterministic 유도 시 RAD reward 분포에서 actor 발산.
+  # entropy 더 유지 → 정책 stochastic → NaN weights 방지.
+  target_entropy: -10.0
+  # Issue #028 v2 (v4): 500 → 200. Q bootstrap 발산 압력 축소.
+  # 관찰: v3 44k 시 q_clip_ratio 22.7%, q_target_min -735. 축소로 발산 억제.
+  target_q_clip: 200.0
+
+environment:
+  # --- Target (지면 marker, z=0) ---
+  target_enu_x: 4.0
+  target_enu_y: 3.0
+  target_enu_z: 0.0                  # 지면. drop_calculator 와 정합
+
+  # --- Observation 정규화 ---
+  pos_scale: 10.0                    # v8: 5 → 10 (RAD 좌표 √50 ≈ 7m 대응)
+  vel_scale: 15.0
+  ang_vel_scale: 3.14159265
+
+  # --- Action scale (v8 그대로) ---
+  action_vx_scale: 3.0
+  action_vy_scale: 3.0
+  action_vz_scale: 3.0
+  action_yaw_scale: 1.0
+
+  # --- Action rate limit (Phase 별) ---
+  action_rate_limit_phase1: 0.2      # v8 그대로
+  action_rate_limit_phase2: 0.15     # Phase 2 강화
+
+  # --- Step caps ---
+  max_steps: 800                     # Phase 1 RL step max
+  phase2_max_steps: 200              # Phase 2 RL step max (sphere 진입 후 카운트)
+
+  # --- Layer 1 임계값 ---
+  min_altitude: 0.5                  # ground_contact_alt 와 동일 — 사실상 단일 crash 임계값
+  min_altitude_start_step: 1
+  ground_contact_altitude: 0.5
+  max_distance: 15.0                 # v8: 20 → 15
+  max_altitude: 50.0
+
+  # --- Timeouts ---
+  obs_wait_timeout: 0.02
+  cruise_poll_timeout: 60.0
+
+  # --- Vision ---
+  use_vision: false
+
+  # --- Fast reset cap ---
+  # v4: 50 → 500. Phase 1 은 drop 없음 → 매 ep 이 fast reset. Threshold 낮으면 infra restart 병목.
+  max_consecutive_fast_resets: 500
+
+# --- Cruise / Spawn (RAD 신규) ---
+cruise:
+  spawn_yaw_random_enabled: true
+  # v6: -π/2 ~ +π/2 (±90°) → -π/4 ~ +π/4 (±45°). 정책 학습 어려움 완화.
+  spawn_yaw_relative_range: [-0.7854, 0.7854]   # ±45° relative to drone→target
+  target_speed: 1.0                  # head 방향 1 m/s 까지 가속
+
+# --- Phase 1 specific ---
+phase1:
+  switch_d_sq: 20.5                  # sphere d²≤20.5 → Phase 1 종료 (Stage 3 목표)
+  terminal_floor: 20.0               # sphere 진입 자체 보상
+  terminal_w_each: 7.142857          # 50/7 — 각 final state 조건 만족당
+  terminal_complete_bonus: 50.0      # 모든 조건 만족 jackpot
+
+  # === Curriculum (Issue #028 v2 근본 처방) ===
+  # 5-Stage 자동 progression + regression (뒤로 돌아가기).
+  # 각 stage window success ≥ threshold 시 advance.
+  # 진입한 stage 에서 학습 부진 시 (long window success 낮으면) 이전 stage 로 regression.
+  curriculum_enabled: true
+  curriculum_window_size: 10000       # 5000 → 10000 (우연 감소)
+  curriculum_success_threshold: 0.95  # 0.9 → 0.95 (실력 검증 강화)
+  curriculum_min_stage_steps: 10000   # 2000 → 10000 (최소 학습 시간 확보)
+  # Regression (뒤로 돌아가기) — 학습 부진 시 이전 stage 복귀. 널널하게.
+  curriculum_regression_enabled: true
+  curriculum_regression_threshold: 0.3      # window 안 success < 30% 시 regression
+  curriculum_regression_min_steps: 5000     # 진입 후 최소 5000 step 은 regression 안 함
+  curriculum_regression_cooldown: 20000     # regression 후 20000 step 은 다시 regression 안 함
+  curriculum_stages:
+    # Stage 1: intro — spawn (7.07m) 밖 sphere. 정책이 진입 학습 시작.
+    - name: "stage1_intro"
+      switch_d_sq: 36.0                # radius 6m
+      active_conditions: []            # 조건 없음
+      z_min: 0.05                      # crash 극단 완화
+      max_distance: 60.0
+      limit_tilt: 1.2                  # ~69°
+    # Stage 2: close — sphere 축소, crash 완만 (v4 관찰: stage1→stage2 갭 커서 2회 regression)
+    - name: "stage2_close"
+      switch_d_sq: 30.25               # radius 5.5m (v4: 5m→5.5m 완만화)
+      active_conditions: []
+      z_min: 0.08                      # v4: 0.15 → 0.08
+      max_distance: 50.0               # v4: 40 → 50
+      limit_tilt: 1.0                  # v4: 0.9 → 1.0 (~57°)
+    # Stage 3: target — design sphere size 도달, 조건 없음
+    - name: "stage3_target"
+      switch_d_sq: 20.5                # design radius 4.53m
+      active_conditions: []
+      z_min: 0.25
+      max_distance: 25.0
+      limit_tilt: 0.5                  # ~29°
+    # Stage 4: partial — 3개 조건 활성
+    - name: "stage4_partial"
+      switch_d_sq: 20.5
+      active_conditions: ["C1", "C4", "C5"]  # z 범위 + tilt + omega
+      z_min: 0.35
+      max_distance: 18.0
+      limit_tilt: 0.30                 # ~17°
+    # Stage 5: full — 원래 design 목표
+    - name: "stage5_full"
+      switch_d_sq: 20.5
+      active_conditions: ["C1", "C2", "C3", "C4", "C5", "C6", "C7"]
+      z_min: 0.5
+      max_distance: 15.0
+      limit_tilt: 0.26                 # 15°
+
+  # 7 final state 조건 임계값
+  C1_z_min: 3.0
+  C1_z_max: 5.0
+  C2_v_xy_max: 4.0
+  C3_v_z_max: 2.0
+  C4_tilt_max: 0.26
+  C5_omega_max: 2.0
+  C6_yaw_err_max: 1.047              # 60° in radian
+  C7_v_xy_min: 0.3
+
+# --- Phase 2 specific ---
+phase2:
+  sphere_escape_d_sq: 22.0           # drone d²>22 → ep terminate (margin 0.16m)
+  sphere_escape_penalty: -30.0
+
+reward:
+  # --- Physics ---
+  g: 9.81
+
+  # --- Approach shaping 공통 ---
+  k1_potential: 1.0
+  w_dist: 1.0                        # Phase 1 + Phase 2 동일. 거리 = √((x−tx)² + (y−ty)² + (z−4)²)
+  w_heading: 0.7
+  w_distance_penalty: 0.0
+  speed_gate_enabled: true
+
+  # --- z reward (Hann raised cosine, RAD 신규) ---
+  w_z: 0.3                           # Phase 1 + Phase 2 모두 활성
+  z_target: 4.0                      # Hann mu
+  z_half_range: 3.5                  # Hann window half-range (gaussian σ 아님). reward range [0.5, 7.5]
+
+  # --- Phase 별 per-step penalty ---
+  w_time_phase1: -0.05               # v8 그대로
+  w_time_phase2: -0.1                # 2× 강화
+  w_ang_vel_phase1: 0.05
+  w_ang_vel_phase2: 0.1
+  w_action_smooth_phase1: 0.05
+  w_action_smooth_phase2: 0.1
+
+  # --- d_impact reward (Phase 별) ---
+  w_impact_phase1: 0.0               # Phase 1 비활성 (drop 없음)
+  w_impact_phase2: 1.0               # Phase 2 강화 (v8: 0.4 → 1.0)
+  k_impact_phase2: 0.1               # Phase 2 (v8: 0.05 → 0.1)
+  # Phase 1 dead. 값은 비활성이라 0.
+  k_impact_phase1: 0.05
+
+  # --- Drop trigger (Phase 2 만 의미) ---
+  auto_drop_threshold: 1.0           # v8: 2 → 1 (정밀도)
+  random_drop_prob: 0.0
+  random_drop_start_step: 600
+  hover_drop_block_threshold: 0.0    # 비활성
+
+  # --- Drop event reward (Phase 2 만 발동) ---
+  drop_attempt_bonus: 30.0           # v8 그대로
+  k_drop_proximity: 0.1              # v8: 0.4 → 0.1 (약화, toss 보존)
+  w_drop_base: 100.0
+  k2_precision: 0.2
+  success_threshold: 1.0             # v8: 2 → 1 (auto_drop trigger 와 정합)
+  jackpot_threshold: 0.3
+  r_success_jackpot: 50.0
+  penalty_instability: 50.0
+
+  # --- Alt penalty (폐기 — v10 z=4 강제) ---
+  alt_penalty_max: 0.0
+  alt_penalty_mid: 0.0
+  alt_penalty_k: 0.0
+
+  # --- v9a drop_angaccel (유지) ---
+  drop_angaccel_penalty_scale: 0.5
+  drop_angaccel_window_n: 5
+
+  # --- Invalid drop (dead) ---
+  invalid_drop_threshold: 95.0
+  invalid_drop_penalty: 0.0
+  drop_wait_timeout: 3.0
+
+  # --- Prediction bonus (dead) ---
+  w_prediction: 0.0
+  k_prediction: 0.1
+
+  # --- Layer 1 limit + penalty ---
+  # v4 (Issue #028 v2): crash / hover / truncation penalty magnitude 축소.
+  # 관찰: v3 44k 시 reward_batch_min -120, hover 25% → Q negative bootstrap 축적.
+  # crash -50→-20, hover -30→-10, truncation -15→-5 로 발산 압력 완화.
+  limit_ang_vel: 10.0
+  limit_tilt: 0.26
+  limit_inverted_tilt: 1.047
+  penalty_crash: -20.0
+  penalty_overspeed: -30.0
+  penalty_target_lost: -10.0
+  penalty_out_of_range: -30.0
+  penalty_max_altitude: -15.0
+  penalty_bad_attitude: -30.0
+  truncation_penalty: -5.0
+
+  # --- Hover detection ---
+  # v6: hover_penalty -10 → -30. crash -20 대비 강 penalty 로 hover local optimum 회피.
+  hover_speed_threshold: 1.0
+  hover_consecutive_threshold: 150
+  penalty_hover: -30.0
+  hover_truncate_enabled: true
+
+wandb:
+  project: "drone-bombard-sac"
+  entity: "nayoonho0922-seoul-national-university"
+  run_name: "rad_phase1_v1"          # Phase 2 시 "rad_phase2_v1" 로 override (CLI 또는 직접 변경)
+  tags: ["rad", "phase1", "v1"]      # Phase 2 시 ["rad", "phase2", "v1"]
+  save_model_artifact: true
+  log_freq: 1000

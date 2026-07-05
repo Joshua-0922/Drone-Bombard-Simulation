@@ -67,6 +67,11 @@ ros2_ws/wandb/
 
 # RL checkpoints (large .zip and .pkl files)
 ros2_ws/rl_checkpoints/
+ros2_ws/rl_checkpoints_rad/
+
+# Backup files
+*.bak
+*.pre_e_lite
 
 # Success replay 모델 (run_id별 영구 보관 — large files)
 ros2_ws/success_replay/

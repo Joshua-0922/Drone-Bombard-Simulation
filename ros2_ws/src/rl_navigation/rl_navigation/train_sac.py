@@ -2,6 +2,7 @@
 
 import argparse
 import glob as _glob
+import json
 import os
 import shutil
 import signal
@@ -61,10 +62,36 @@ class DampedEntropySAC(SAC):
         ent_coef_losses, ent_coefs = [], []
         actor_losses, critic_losses = [], []
         damping_factors = []  # 모니터링용
+        # === Issue #028 diag: Q/actor loss/log_prob/reward batch stats ===
+        q_target_means, q_target_maxs, q_target_mins, q_target_stds = [], [], [], []
+        q_current_means, q_current_maxs, q_current_mins = [], [], []
+        q_pi_means, q_pi_maxs, q_pi_mins = [], [], []
+        q_clip_ratios = []
+        actor_loss_q_terms, actor_loss_ent_terms = [], []
+        log_prob_means, log_prob_stds = [], []
+        reward_means, reward_maxs, reward_mins = [], [], []
+        # === Issue #028 self-healing: A1 gradient clip + B3 weight NaN rollback ===
+        nan_rollback_count = 0
+        actor_grad_clip_hit = 0
+        critic_grad_clip_hit = 0
+        _ACTOR_GRAD_CLIP = 20.0
+        _CRITIC_GRAD_CLIP = 200.0
 
         for _ in range(gradient_steps):
             replay_data = self.replay_buffer.sample(
                 batch_size, env=self._vec_normalize_env)
+
+            with th.no_grad():
+                _r = replay_data.rewards
+                reward_means.append(_r.mean().item())
+                reward_maxs.append(_r.max().item())
+                reward_mins.append(_r.min().item())
+
+            # === B3: snapshot before gradient step (rollback 목적) ===
+            _actor_snapshot = {k: v.detach().clone()
+                               for k, v in self.actor.state_dict().items()}
+            _critic_snapshot = {k: v.detach().clone()
+                                for k, v in self.critic.state_dict().items()}
 
             if self.use_sde:
                 self.actor.reset_noise()
@@ -119,8 +146,20 @@ class DampedEntropySAC(SAC):
                 target_q_values = (
                     replay_data.rewards
                     + (1 - replay_data.dones) * self.gamma * next_q_values)
+                # Q_target 통계
+                q_target_means.append(target_q_values.mean().item())
+                q_target_maxs.append(target_q_values.max().item())
+                q_target_mins.append(target_q_values.min().item())
+                q_target_stds.append(target_q_values.std().item())
+                q_clip_ratios.append(
+                    (target_q_values.abs() > self.target_q_clip).float().mean().item())
 
             current_q_values = self.critic(replay_data.observations, replay_data.actions)
+            with th.no_grad():
+                _cq_all = th.cat([cq.detach() for cq in current_q_values], dim=1)
+                q_current_means.append(_cq_all.mean().item())
+                q_current_maxs.append(_cq_all.max().item())
+                q_current_mins.append(_cq_all.min().item())
             # Round 7 v3 (#021 b): critic stability — Huber loss + target Q clipping.
             # MSE: 큰 TD-error 에 대해 gradient 가 비례 증가 → 폭발 feedback 가능.
             # Huber: error > 1 에서 gradient 1.0 으로 saturate → 안전한 step size.
@@ -134,6 +173,11 @@ class DampedEntropySAC(SAC):
 
             self.critic.optimizer.zero_grad()
             critic_loss.backward()
+            # A1: gradient clip (극단 spike 방지)
+            _critic_norm = th.nn.utils.clip_grad_norm_(
+                self.critic.parameters(), max_norm=_CRITIC_GRAD_CLIP)
+            if _critic_norm.item() > _CRITIC_GRAD_CLIP:
+                critic_grad_clip_hit += 1
             self.critic.optimizer.step()
 
             q_values_pi = th.cat(
@@ -141,10 +185,42 @@ class DampedEntropySAC(SAC):
             min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
             actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
             actor_losses.append(actor_loss.item())
+            with th.no_grad():
+                q_pi_means.append(min_qf_pi.mean().item())
+                q_pi_maxs.append(min_qf_pi.max().item())
+                q_pi_mins.append(min_qf_pi.min().item())
+                actor_loss_q_terms.append((-min_qf_pi).mean().item())
+                actor_loss_ent_terms.append((ent_coef * log_prob).mean().item())
+                log_prob_means.append(log_prob.mean().item())
+                log_prob_stds.append(log_prob.std().item())
 
             self.actor.optimizer.zero_grad()
             actor_loss.backward()
+            # A1: gradient clip (극단 spike 방지)
+            _actor_norm = th.nn.utils.clip_grad_norm_(
+                self.actor.parameters(), max_norm=_ACTOR_GRAD_CLIP)
+            if _actor_norm.item() > _ACTOR_GRAD_CLIP:
+                actor_grad_clip_hit += 1
             self.actor.optimizer.step()
+
+            # === B3: weight NaN check → rollback ===
+            _weight_nan = False
+            for _p in self.actor.parameters():
+                if th.isnan(_p).any() or th.isinf(_p).any():
+                    _weight_nan = True
+                    break
+            if not _weight_nan:
+                for _p in self.critic.parameters():
+                    if th.isnan(_p).any() or th.isinf(_p).any():
+                        _weight_nan = True
+                        break
+            if _weight_nan:
+                self.actor.load_state_dict(_actor_snapshot)
+                self.critic.load_state_dict(_critic_snapshot)
+                nan_rollback_count += 1
+                # gradient state clear (다음 iteration 위해)
+                self.actor.optimizer.zero_grad()
+                self.critic.optimizer.zero_grad()
 
             if self._n_updates % self.target_update_interval == 0:
                 polyak_update(
@@ -165,6 +241,56 @@ class DampedEntropySAC(SAC):
         if damping_factors:
             self.logger.record("train/ent_damping",
                                float(sum(damping_factors)/len(damping_factors)))
+
+        # === Issue #028 diag: Q / actor_loss decomposition / log_prob / reward / norms ===
+        def _avg(xs):
+            return float(sum(xs) / len(xs)) if xs else 0.0
+        self.logger.record("train/q_target_mean", _avg(q_target_means))
+        self.logger.record("train/q_target_max", _avg(q_target_maxs))
+        self.logger.record("train/q_target_min", _avg(q_target_mins))
+        self.logger.record("train/q_target_std", _avg(q_target_stds))
+        self.logger.record("train/q_current_mean", _avg(q_current_means))
+        self.logger.record("train/q_current_max", _avg(q_current_maxs))
+        self.logger.record("train/q_current_min", _avg(q_current_mins))
+        self.logger.record("train/q_pi_mean", _avg(q_pi_means))
+        self.logger.record("train/q_pi_max", _avg(q_pi_maxs))
+        self.logger.record("train/q_pi_min", _avg(q_pi_mins))
+        self.logger.record("train/q_clip_ratio", _avg(q_clip_ratios))
+        self.logger.record("train/actor_loss_q_term", _avg(actor_loss_q_terms))
+        self.logger.record("train/actor_loss_ent_term", _avg(actor_loss_ent_terms))
+        self.logger.record("train/log_prob_mean", _avg(log_prob_means))
+        self.logger.record("train/log_prob_std", _avg(log_prob_stds))
+        self.logger.record("train/reward_batch_mean", _avg(reward_means))
+        self.logger.record("train/reward_batch_max", _avg(reward_maxs))
+        self.logger.record("train/reward_batch_min", _avg(reward_mins))
+        # Weight/gradient norms — gradient_steps=1 이라 마지막 iteration 값
+        with th.no_grad():
+            actor_wnorm = 0.0
+            for p in self.actor.parameters():
+                actor_wnorm += (p.detach() ** 2).sum().item()
+            actor_wnorm = actor_wnorm ** 0.5
+            critic_wnorm = 0.0
+            for p in self.critic.parameters():
+                critic_wnorm += (p.detach() ** 2).sum().item()
+            critic_wnorm = critic_wnorm ** 0.5
+            actor_gnorm = 0.0
+            for p in self.actor.parameters():
+                if p.grad is not None:
+                    actor_gnorm += (p.grad ** 2).sum().item()
+            actor_gnorm = actor_gnorm ** 0.5
+            critic_gnorm = 0.0
+            for p in self.critic.parameters():
+                if p.grad is not None:
+                    critic_gnorm += (p.grad ** 2).sum().item()
+            critic_gnorm = critic_gnorm ** 0.5
+        self.logger.record("train/actor_weight_norm", actor_wnorm)
+        self.logger.record("train/critic_weight_norm", critic_wnorm)
+        self.logger.record("train/actor_grad_norm", actor_gnorm)
+        self.logger.record("train/critic_grad_norm", critic_gnorm)
+        # Self-healing metrics
+        self.logger.record("train/nan_rollback_count", nan_rollback_count)
+        self.logger.record("train/actor_grad_clip_hit", actor_grad_clip_hit)
+        self.logger.record("train/critic_grad_clip_hit", critic_grad_clip_hit)
 
 
 class PrioritizedReplayBuffer(ReplayBuffer):
@@ -235,16 +361,15 @@ class WandbMetricsCallback(BaseCallback):
         super().__init__()
         self._ep_drop_errors: list = []
         self._step_d_xy: list = []
+        # Phase 1 redux v3: d_xy outlier 추적 (1 if > 6m else 0)
+        self._step_d_xy_outlier: list = []
         self._step_rew_drop: list = []
         self._total_episodes: int = 0
         self._total_drops: int = 0
         self._total_auto_drops: int = 0
         self._total_success: int = 0
         self._total_jackpot: int = 0
-        self._truncate_counts: dict = {
-            'crash': 0, 'overspeed': 0, 'ang_vel': 0, 'inverted': 0,
-            'timeout': 0, 'out_of_range': 0, 'max_altitude': 0,
-        }
+        # Phase 1 redux v3: total_truncate_* wandb 제거 → 카운트 자체 안 함
         # Phase 1 redux v2: 현재 시점의 연속 성공 횟수.
         # success 발생 시 +1, 그 외 (실패 drop, drop 없는 episode 끝) 시 0 리셋.
         self._current_success_streak: int = 0
@@ -254,15 +379,16 @@ class WandbMetricsCallback(BaseCallback):
         dones = self.locals.get('dones', [])
         for info, done in zip(infos, dones):
             if 'd_xy' in info:
-                self._step_d_xy.append(info['d_xy'])
+                d_xy = info['d_xy']
+                self._step_d_xy.append(d_xy)
+                # Phase 1 redux v3: outlier 표시 (0~6m: 0, 6m+: 1)
+                self._step_d_xy_outlier.append(1 if d_xy > 6.0 else 0)
             if 'rew_drop' in info:
                 self._step_rew_drop.append(info['rew_drop'])
 
             if done:
                 self._total_episodes += 1
-                reason = info.get('truncate_reason')
-                if reason in self._truncate_counts:
-                    self._truncate_counts[reason] += 1
+                # Phase 1 redux v3: total_truncate_* wandb 제거 (truncate_counts 추적 안 함)
                 if 'drop_error_actual_m' in info:
                     self._ep_drop_errors.append(info['drop_error_actual_m'])
                     self._total_drops += 1
@@ -285,7 +411,8 @@ class WandbMetricsCallback(BaseCallback):
         if not wandb.run:
             return
         log_dict = {}
-        for key in ('rollout/ep_rew_mean', 'rollout/ep_len_mean',
+        # Phase 1 redux v3: rollout/success_rate 도 fetch
+        for key in ('rollout/ep_rew_mean', 'rollout/ep_len_mean', 'rollout/success_rate',
                      'train/actor_loss', 'train/critic_loss',
                      'train/ent_coef', 'train/ent_coef_loss',
                      'train/learning_rate', 'train/n_updates',
@@ -300,6 +427,10 @@ class WandbMetricsCallback(BaseCallback):
         if self._step_d_xy:
             log_dict['env/d_xy'] = _mean(self._step_d_xy)
             self._step_d_xy.clear()
+        # Phase 1 redux v3: d_xy outlier ratio (0~6m: 0, 6m+: 1 의 평균)
+        if self._step_d_xy_outlier:
+            log_dict['env/d_xy_outlier_ratio'] = _mean(self._step_d_xy_outlier)
+            self._step_d_xy_outlier.clear()
         if self._step_rew_drop:
             log_dict['env/rew_drop'] = _mean(self._step_rew_drop)
             self._step_rew_drop.clear()
@@ -315,8 +446,11 @@ class WandbMetricsCallback(BaseCallback):
         log_dict['env/total_jackpot'] = self._total_jackpot
         # Phase 1 redux v2: 현재 연속 성공 횟수 (rollout end 시점 snapshot)
         log_dict['env/current_success_streak'] = self._current_success_streak
-        for reason, count in self._truncate_counts.items():
-            log_dict[f'env/total_truncate_{reason}'] = count
+        # Phase 1 redux v3: success_rate 도 env/ namespace 에 mirror (찾기 편하게)
+        sr = self.logger.name_to_value.get('rollout/success_rate')
+        if sr is not None:
+            log_dict['env/success_rate'] = sr
+        # Phase 1 redux v3: env/total_truncate_* 모두 제거 (사용자 요청)
 
         if log_dict:
             # NOTE: time/total_timesteps 는 위 L123 fetch 에서 이미 들어가지만,
@@ -542,8 +676,10 @@ class DropEpisodeRecorderCallback(BaseCallback):
         self._index_path = os.path.join(save_dir, 'index.csv')
         if not os.path.exists(self._index_path):
             with open(self._index_path, 'w') as f:
+                # Phase 1 redux v2: drop_trigger 컬럼 추가 (auto/random/manual 구분)
+                # representative_best_analysis 에서 auto drop 만 필터 위해 필수.
                 f.write('filename,timestep,drop_error_m,is_success,'
-                        'episode_reward,n_steps\n')
+                        'episode_reward,n_steps,drop_trigger\n')
 
     def _get_buf(self, i):
         if i not in self._buffers:
@@ -600,10 +736,11 @@ class DropEpisodeRecorderCallback(BaseCallback):
                         n_steps=np.int32(n_steps),
                     )
 
+                    drop_trigger = info.get('drop_trigger', 'unknown')
                     with open(self._index_path, 'a') as f:
                         f.write(f'{fname},{self.num_timesteps},'
                                 f'{drop_error:.4f},{is_success},'
-                                f'{ep_reward:.2f},{n_steps}\n')
+                                f'{ep_reward:.2f},{n_steps},{drop_trigger}\n')
 
                     # Round 6+: success + auto_drop 모델을 success_replay로 저장.
                     # 이전 best_drops 시스템 대체 (run_id별 영구 보관, host symlink 접근).
@@ -630,6 +767,159 @@ class DropEpisodeRecorderCallback(BaseCallback):
                     'd_xy': [], 'd_impact': [],
                 }
         return True
+
+
+class RepresentativeBestCallback(BaseCallback):
+    """Phase 1 redux v2: 학습 종료 시 representative_top_3 자동 산출.
+
+    정의:
+        peak_episode = LAST episode E where rolling_100_success_rate(E) == max
+        peak_window  = episodes [E-99, E]
+        representative_top_3 = sorted(auto+success drops in window by drop_error)[:3]
+
+    규칙:
+        - "auto drop 만" 카운트 (random/manual 제외)
+        - drop < 3 시 → "not measurable" (skip)
+        - tie 시 LAST peak
+
+    저장:
+        매 rollout end 시 manifest 갱신 → SIGTERM/SIGINT 발생해도 마지막 상태 보존.
+        REPRESENTATIVE_BEST.json → success_replay/{run_id}/
+    """
+
+    def __init__(self, success_replay_dir=None, run_id=None, verbose=0):
+        super().__init__(verbose)
+        if success_replay_dir and run_id:
+            self._manifest_dir = os.path.join(success_replay_dir, run_id)
+            self._manifest_path = os.path.join(self._manifest_dir, 'REPRESENTATIVE_BEST.json')
+        else:
+            self._manifest_path = None
+        self._run_id = run_id
+        # Per-episode: 1 if is_success else 0
+        self._is_success_per_ep: list = []
+        # 모든 auto+success drops 누적
+        self._auto_success_drops: list = []
+        # Per-rollout snapshot
+        self._rolling_history: list = []
+
+    def _on_step(self):
+        infos = self.locals.get('infos', [])
+        dones = self.locals.get('dones', [])
+        for info, done in zip(infos, dones):
+            if not done:
+                continue
+            # episode 가 drop 으로 끝났을 때만 is_success 의미 있음
+            if 'drop_error_actual_m' in info:
+                is_success = bool(info.get('is_success', False))
+                self._is_success_per_ep.append(1 if is_success else 0)
+                if is_success and info.get('drop_trigger') == 'auto':
+                    self._auto_success_drops.append({
+                        'episode': len(self._is_success_per_ep),
+                        'step': int(self.num_timesteps),
+                        'drop_error_m': float(info['drop_error_actual_m']),
+                    })
+            else:
+                # drop 없이 episode 끝남 → 실패로 카운트
+                self._is_success_per_ep.append(0)
+        return True
+
+    def _on_rollout_end(self):
+        # 현재 시점의 rolling-100 success_rate snapshot
+        if not self._is_success_per_ep:
+            return
+        window = self._is_success_per_ep[-100:]
+        sr = sum(window) / len(window)
+        self._rolling_history.append({
+            'episode': len(self._is_success_per_ep),
+            'step': int(self.num_timesteps),
+            'rolling_100_sr': sr,
+        })
+        # Manifest 매 rollout 갱신 → SIGTERM 받아도 최근 상태 보존
+        self._save_manifest()
+
+    def _save_manifest(self):
+        if not self._manifest_path:
+            return
+        if not self._rolling_history:
+            return
+
+        # 마지막 peak 찾기
+        max_sr = max(r['rolling_100_sr'] for r in self._rolling_history)
+        peaks = [r for r in self._rolling_history if r['rolling_100_sr'] == max_sr]
+        peak = peaks[-1]
+        peak_ep = peak['episode']
+        peak_step = peak['step']
+        win_ep_start = peak_ep - 100
+        win_ep_end = peak_ep
+
+        # Peak window step 범위 추정 (rolling_history 중 window 시작 직전 rollout)
+        win_step_start = None
+        for r in self._rolling_history:
+            if r['episode'] >= win_ep_start:
+                win_step_start = r['step']
+                break
+        if win_step_start is None:
+            win_step_start = self._rolling_history[0]['step']
+        win_step_end = peak_step
+
+        # 윈도우 내 auto+success drops
+        drops_in_window = [
+            d for d in self._auto_success_drops
+            if win_ep_start <= d['episode'] <= win_ep_end
+        ]
+        sorted_drops = sorted(drops_in_window, key=lambda d: d['drop_error_m'])
+
+        # 결정 C: drop < 3 면 not measurable
+        if len(sorted_drops) < 3:
+            manifest = {
+                'run_id': self._run_id,
+                'status': 'not_measurable',
+                'reason': (f'Auto+success drops in peak window = {len(sorted_drops)} (< 3). '
+                           f'Per decision C: skip representative_best measurement.'),
+                'peak_success_rate': max_sr,
+                'peak_episode': peak_ep,
+                'peak_step': peak_step,
+                'peak_window_episodes': [win_ep_start, win_ep_end],
+                'peak_window_steps': [win_step_start, win_step_end],
+                'auto_success_drops_in_window': len(sorted_drops),
+                'drops_found_in_window': [
+                    {'step': d['step'], 'drop_error_m': d['drop_error_m'],
+                     'episode': d['episode']}
+                    for d in sorted_drops
+                ],
+                'total_auto_success_drops': len(self._auto_success_drops),
+                'total_episodes': len(self._is_success_per_ep),
+                'updated_at_step': int(self.num_timesteps),
+            }
+        else:
+            top_3 = sorted_drops[:3]
+            manifest = {
+                'run_id': self._run_id,
+                'status': 'measured',
+                'peak_success_rate': max_sr,
+                'peak_episode': peak_ep,
+                'peak_step': peak_step,
+                'peak_window_episodes': [win_ep_start, win_ep_end],
+                'peak_window_steps': [win_step_start, win_step_end],
+                'auto_success_drops_in_window': len(sorted_drops),
+                'representative_top_3': [
+                    {
+                        'rank': i + 1,
+                        'drop_error_m': d['drop_error_m'],
+                        'step': d['step'],
+                        'episode': d['episode'],
+                        'model_filename': f"success_step{d['step']}_err{d['drop_error_m']:.2f}m",
+                    }
+                    for i, d in enumerate(top_3)
+                ],
+                'total_auto_success_drops': len(self._auto_success_drops),
+                'total_episodes': len(self._is_success_per_ep),
+                'updated_at_step': int(self.num_timesteps),
+            }
+
+        os.makedirs(self._manifest_dir, exist_ok=True)
+        with open(self._manifest_path, 'w') as f:
+            json.dump(manifest, f, indent=2, ensure_ascii=False)
 
 
 def _parse_args():
@@ -767,11 +1057,17 @@ def main(args=None):
     # Round 7 diagnostic: leak investigation
     infra_health_callback = InfraHealthMonitorCallback(
         env=env, check_freq=200, verbose=1)
+    # Phase 1 redux v2: representative_top_3 자동 산출
+    representative_callback = RepresentativeBestCallback(
+        success_replay_dir=_success_replay_dir,
+        run_id=_success_run_id,
+        verbose=1)
     callbacks = CallbackList([
         checkpoint_callback, cleanup_callback,
         best_model_callback, milestone_callback,
         wandb_callback, wandb_metrics_callback,
-        drop_recorder_callback, infra_health_callback])
+        drop_recorder_callback, infra_health_callback,
+        representative_callback])
 
     # --- Model ---
     if cli.resume:

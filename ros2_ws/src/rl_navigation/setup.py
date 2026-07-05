@@ -10,7 +10,10 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/config', ['config/hyperparams.yaml']),
+        ('share/' + package_name + '/config', [
+            'config/hyperparams.yaml',
+            'config/hyperparams_rad.yaml',   # RAD v1
+        ]),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -28,6 +31,7 @@ setup(
             'rl_navigation_node = rl_navigation.rl_navigation_node:main',
             'simple_drop        = rl_navigation.simple_drop_node:main',
             'train_sac        = rl_navigation.train_sac:main',
+            'train_sac_rad    = rl_navigation.train_sac_rad:main',   # RAD v1
             'evaluate         = rl_navigation.evaluate:main',
             'baseline_ccip    = rl_navigation.baseline_ccip:main',
             'replay_drop      = rl_navigation.replay_drop_episode:main',

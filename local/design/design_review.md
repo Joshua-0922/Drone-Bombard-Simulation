@@ -1,10 +1,34 @@
 # Design Review — 최종 설계 요약
 
-> 이 문서는 **현재 기준 최종 결정만** 담는다.
+> 이 문서는 **v8/v9a 기준 최종 결정** 만 담는다 (RAD 도입 이전, legacy reference).
 > 변경 이유, 이력, 대안 분석은 날짜별 design_review 파일 참조.
 >
-> 최종 갱신: 2026-06-05 (Phase 1 redux v1 99% success → v2 진입: 1m/1m/0.3m tight thresholds + streak metric)
-> 상세 이력: [design_review_2026-05-25.md](design_review_2026-05-25.md)
+> **🆕 새 framework RAD v1 도입 (2026-06-30)**: [rad_v1_design.md](rad_v1_design.md) — single source of truth. v8/v9a 와 완전 다른 framework (Round/redux 시리즈의 patch 가 아닌 새 framework 의 v1). 이 문서의 §1~§N 은 v8/v9a 의 reward / drop 메커니즘 만 — RAD 의 값은 [rad_v1_design.md](rad_v1_design.md) 참조.
+>
+> **🔥 RAD v1 Phase 1 v1~v6 종합 (2026-07-05)**: [design_review_2026-07-05.md](design_review_2026-07-05.md) — 6번 시행 이력 + 진짜 원인 확정 (Issue #029: curriculum stage 설계 결함) + stage 재설계 안 (v7 계획).
+>
+> 최종 갱신: 2026-07-05 (RAD v1 Phase 1 v1~v6 종합 완료)
+> 이전 갱신: 2026-06-30 (RAD v1 도입 노트)
+> 상세 이력:
+>   - [design_review_2026-07-05.md](design_review_2026-07-05.md) — **RAD v1 Phase 1 v1~v6 종합 + 진짜 원인 확정 + stage 재설계 안 (현재 최신)**
+>   - [rad_v1_design.md](rad_v1_design.md) — **RAD v1 의 모든 design 결정 (현재 활성)**
+>   - [design_review_2026-06-30.md](design_review_2026-06-30.md) — RAD 도입 결정 narrative
+>   - [design_review_2026-06-27.md](design_review_2026-06-27.md) — v9a 결과 + 다음 처방 후보
+>   - [design_review_2026-05-25.md](design_review_2026-05-25.md) — Round 1 결정
+>
+> 현재 활성 처방 요약:
+>   - **RAD v1 (design 완료, 코드 작업 대기, 2026-06-30)**: 2 정책 hierarchical, obs 14d 상대좌표, spawn yaw 랜덤, z Hann reward, 7 final state 조건 jackpot. v8/v9a 와 완전 다른 framework
+>   - Phase 1 redux v8 (96bokgae): success 80.6% (학습 통계), 10 ep dgui 50%, mean 2.0m — **best baseline 확정 (v8/v9a 시리즈 한정)**
+>   - v9a (zjexq20k 313k): w_dist 1.5, drop_angaccel 0.5/N=5 — fine-tune 17k → 10 ep dgui 33% (v8 보다 17% ↓)
+>   - v9a resume (xzoz52cw 432k): CUDA error 종료, 5 ep dgui 67% — 정책 악화
+>   - ang_vel callback fix (Issue #024): PX4 dds_topics uncomment, limit_ang_vel 10
+>   - dgui 도구 (local/scripts/evaluate_gui.py)
+>
+> **사용자 결정 (2026-06-27)**: v8 = best baseline. v9a 처방으로는 사용자 의도 미달성.
+> **사용자 결정 (2026-06-30)**: 새 framework RAD v1 design 완료. 코드 작업 후 학습 시작.
+> **사용자 결정 (2026-07-05, 대기)**: RAD v1 Phase 1 v1~v6 종합 완료. 진짜 원인 (Issue #029) 확정. Stage 재설계 (v7) 진행 결정 대기.
+>
+> 다음 처방 후보 (RAD 가 대체 또는 우회): Issue #025 (fine-tune step 부족), #026 (toss 환경), #027 (payload tracking)
 
 ---
 
@@ -26,25 +50,30 @@ proximity + precision 거리별 (Round 2):
   d_xy= 0m: 30  + 100  = 130 (+prediction 20 +jackpot 50 = 200)
 ```
 
-| 파라미터 | 값 |
-|----------|-----|
-| drop_attempt_bonus | 30 |
-| k_drop_proximity | 0.15 (bonus *= exp(-0.15 * d_xy)) — Round 2: 0.3→0.15 |
-| w_drop_base | 100 |
-| k2_precision | 0.2 — Round 2: 0.5→0.2 |
-| w_prediction | 20 |
-| k_prediction | 0.1 |
-| r_success_jackpot | 50 |
-| success_threshold | 5.0m (total_success_count 기준) |
-| jackpot_threshold | 0.1m (total_jackpot_count 기준) |
-| penalty_instability | 50 |
+| 파라미터 | 값 (v9a 활성) | 이력 |
+|----------|-----|-----|
+| drop_attempt_bonus | 30 | Round 2 |
+| k_drop_proximity | **0.4** | Phase 1 redux v3 (0.15→0.4) |
+| w_drop_base | 100 | jekyun v2 base |
+| k2_precision | 0.2 | Round 2 |
+| w_prediction | **0.0** | **v5: 20→0 (SDF fix 후 CCIP gap 의미 없음)** |
+| k_prediction | 0.1 | Round 1 |
+| r_success_jackpot | 50 | Round 2 |
+| success_threshold | **2.0m** | Phase 1 redux v3 (5→2) |
+| jackpot_threshold | **0.3m** | Phase 1 redux v2 (0.1→0.3) |
+| penalty_instability | 50 | Round 1 |
+| invalid_drop_threshold | **95.0** | v8 (50→95) |
+| invalid_drop_penalty | **0.0** | **v8 (50→0) — drop 회피 학습 차단** |
+| **drop_angaccel_penalty_scale** | **0.5** | **v9a NEW** |
+| **drop_angaccel_window_n** | **5** | **v9a NEW** |
+| limit_ang_vel | **10.0** | **ang_vel fix (2.0→10.0)** |
 
 ```
 Per-step 보상 (Layer 2+3):
   R = -0.05 (time)
     - 0.05 * ||omega||²
     - 0.05 * ||Δa||²
-    + 1.0 * (d_prev - d_now)              ← Round 2: 0.5→1.0
+    + 1.5 * (d_prev - d_now)              ← v9a: 1.0 → 1.5 (payload distance reward 강화, 처방 2)
     + 0.7 * cos(heading) * speed_gate     ← Round 5: 0.3→0.7 복원
     + 0.4 * exp(-0.05 * d_impact) * speed_gate
     (Round 4 w_distance_penalty 0.03 제거됨 — SAC 발산 원인)
@@ -67,16 +96,23 @@ if (random_drop or auto_drop) and not dropped:
 
 | 파라미터 | 값 |
 |----------|-----|
-| auto_drop_threshold | **1.0m** — Phase 1 redux v2: 3.0 → 1.0 (정밀 drop trigger) |
-| success_threshold | **1.0m** — Phase 1 redux v2: 5.0 → 1.0 (정밀 명중) |
+| auto_drop_threshold | **2.0m** — Phase 1 redux v3: v2 의 1.0 너무 빡빡 → 2.0 (curriculum gap 완화) |
+| success_threshold | **2.0m** — Phase 1 redux v3: v2 의 1.0 → 2.0 (일관성) |
 | jackpot_threshold | **0.3m** — Phase 1 redux v2: 0.1 → 0.3 (도달 가능 영역) |
 | random_drop_start_step | 600 — Round 2: 150→600 (600 step 자유 접근 확보) |
 | random_drop_prob | **0.0** — Phase 1 redux: 0.005 → 0 (정책 자체 drop 학습 강제) |
 | target_enu (x, y) | **(4, 3)** — Phase 1 redux: (11, 10) → (4, 3), spawn 부터 5m |
+| **pos_scale** | **5.0** — Phase 1 redux v3: 50 → 5 (5m task 에 맞춤, obs 범위 활용) |
+| **action_vx_scale** | **3.0 m/s** — Phase 1 redux v3: 8 → 3 (5m 거리 정밀 제어) |
+| **action_vy_scale** | **3.0 m/s** — Phase 1 redux v3: 5 → 3 |
+| **max_distance** | **20.0m** — Phase 1 redux v3: 100 → 20 (4× 안전 마진) |
+| **k_drop_proximity** | **0.4** — Phase 1 redux v3: 0.15 → 0.4 (5m 환경 sharp gradient) |
 
-Phase 1 redux 이전: random_drop 이 학습 안전망 역할 (정책이 직접 drop 못해도 fallback).
-Phase 1 redux 이후: 정책이 직접 auto_drop trigger 학습해야 함. 더 어렵지만 진정한 능력 측정 가능.
-Phase 1 redux v2: 3개 임계 모두 좁힘 — 정밀화 (best 0.809m → target < 0.3m).
+Phase 1 redux 이전: random_drop 이 학습 안전망. 14m task 설계 그대로.
+Phase 1 redux v1: 96% (5m), best 0.809m. random_drop=0 효과 입증.
+  그러나 pos_scale=50 등 거리 의존 파라미터 mis-scaled (14m task 설계 유지).
+Phase 1 redux v2 (실패): 1m 임계 너무 가팔라서 정책 drop 행동 잃음.
+Phase 1 redux v3: scale 처방 + 임계 2m (curriculum gap 완화). 5m task 전용 첫 일관 설계.
 
 auto_drop: 타겟 근처 정밀 drop. (random_drop 비활성화됨)
 wandb에서 `env/total_drops` / `env/total_auto_drops`로 추적.
@@ -277,14 +313,21 @@ Action (5D):
   - **best drop 0.809m** (Round 7 v3 의 1.32m 갱신)
   - 정책 매우 deterministic (ent_coef 0.001)
   - fps 18→2 (drop 빈번 → _kill_infra 5s timeout 누적)
-- **Phase 1 redux v2 진행 중** (za9zxdh6, resume from 89k preempt, curriculum):
-  - auto_drop_threshold 3.0 → **1.0m** (정밀 drop trigger)
-  - success_threshold 5.0 → **1.0m** (정밀 명중 강제)
-  - jackpot_threshold 0.1 → **0.3m** (도달 가능 영역, 첫 jackpot 도전)
-  - `_kill_infra` timeout 5s → **2s** (fps 회복)
-  - 코드 추가: `current_success_streak` metric (callback only — 다음 학습부터 적용)
-  - 목표: 새 1m success > 50%, 첫 jackpot, best < 0.3m, fps 5-10
-  - 누적 target 약 390k step
+- **Phase 1 redux v2 실패** (za9zxdh6, 143k 수동 중단):
+  - auto_drop_threshold/success 3.0/5.0 → 1.0/1.0
+  - curriculum learning gap 너무 컸음 (5m → 1m, 4× 정밀화)
+  - step 123k 이후 17k+ step 동안 0 drops (정책 drop 행동 잃음)
+  - pos_scale=50 등 거리 의존 파라미터 mis-scaled 발견
+  - 보존: archive/phase1_redux_v2_failed_143k/ (case study)
+- **Phase 1 redux v3 진행 중** (TBD, fresh start, scale 처방):
+  - **Scale 처방**: pos_scale 50→5, action_vx 8→3, action_vy 5→3, max_distance 100→20, k_drop_proximity 0.15→0.4
+  - **임계 완화**: auto/success 1.0 → 2.0 (curriculum 점진적)
+  - jackpot 0.3 유지
+  - WandB metric 추가: env/d_xy_outlier_ratio, env/success_rate, env/current_success_streak
+  - 제거: env/total_truncate_*
+  - 도구: RepresentativeBestCallback (실시간 manifest), drop_trigger column
+  - 초기 결과: ep_len_mean 351 (v2 의 15배), ep_rew_mean +168 (양수)
+  - 목표: fps 15-25, 2m success > 50%, 첫 jackpot, representative top 3 첫 의미 측정
 - Issue #013+#014 해결: inline SDF + paused start + unpause
 - Issue (Reset 버그) 해결: reset()에서 pos_enu/vel/ang/roll/pitch 명시 초기화
 - best drop 시 모델 가중치 자동 저장 (auto drop 성공 시만)

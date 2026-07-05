@@ -344,6 +344,147 @@
     Fps 여전히 < 3 → 다른 원인 (e.g. obs_wait_timeout, gz_ms degradation)
 
 
+********************************************************************************
+*  PART 11 — Phase 1 redux v2 실패 분석 + 도구 강화 + ~10GB 정리
+********************************************************************************
+
+  v2 (run za9zxdh6) 143k 수동 중단:
+    실패 결과:
+      - Curriculum gap 너무 컸음 (5m → 1m, 4× 정밀화)
+      - 10 drops in 50k step (정상 학습의 1/100)
+      - step 123k 이후 17k+ step 동안 0 drops
+      - 정책이 drop 행동 자체를 잃음
+      - success_rate metric 0.9 — misleading (ep_info_buffer 의 v1 잔존)
+      - fps 8 (예상 잔여 8.8h 낮음)
+      - ep_rew_mean -15 ~ -42 (음수)
+
+    교훈:
+      - Curriculum learning gap 이 너무 크면 정책이 학습 못함
+      - 사용자 발견: pos_scale 등 거리 의존 파라미터가 14m task 설계 그대로
+      - 5m 환경에 mis-scaled → 학습 가속 안 됨
+
+    보존: rl_checkpoints/archive/phase1_redux_v2_failed_143k/
+      - sac_drop_preempt.zip + replay.pkl
+      - REPRESENTATIVE_BEST.json (실시간 callback 결과)
+      - NOTE.md (실패 원인 분석)
+
+
+  도구 강화 (다음 학습부터 적용):
+
+    1. DropEpisodeRecorderCallback:
+       index.csv 헤더 + row 에 drop_trigger 컬럼 추가
+       (auto/random/manual 구분 가능)
+
+    2. RepresentativeBestCallback 신규 (train_sac.py):
+       매 rollout end 마다 REPRESENTATIVE_BEST.json 자동 갱신
+       peak success_rate window 안 top-3 auto+success drops
+       결정 C: drop < 3 시 not_measurable
+
+    3. local/tools/representative_best_analysis.py 신규:
+       사후 분석 스크립트 (any run_id 지원)
+       Round 7 v3 에 적용 → "not_measurable" 결과 보존
+
+    4. WandbMetricsCallback 변경:
+       추가: env/d_xy_outlier_ratio (0-6m: 0, 6m+: 1 의 평균)
+       추가: env/success_rate (env/ namespace mirror)
+       제거: env/total_truncate_* (사용자 요청)
+       작동: env/current_success_streak (v2 안 됐던 것 정상화)
+
+
+  Round 7 v3 representative best 분석 결과:
+    peak success_rate = 0.13 at episode 8488 (step 661,673)
+    peak window steps [657591, 661673] 안 auto+success drops = 0건
+    결과: "not_measurable" (결정 C)
+
+    의미:
+      best 1.32m 은 isolated lucky auto drop 임을 입증
+      success_rate 의 13% 도 random_drop 도움 영향
+      Phase 1 redux (random_drop=0) 도입의 정당성 검증
+      방법론의 가치 증명
+
+
+  학습 데이터 정리 (~10 GB 절약):
+
+    삭제 (cleanup):
+      - local/backups/backup_pre_pull_2026-05-22 (4.6 GB)
+      - ros2_ws/wandb 의 옛 runs (3 GB)
+      - rl_checkpoints/archive 의 옛 라운드 폴더 (340 MB)
+      - success_replay 의 옛 run 폴더들 (2.5 GB)
+      - drop_episodes 의 옛 npz (55 MB)
+
+    유지 (보존):
+      - local/backups/phase1_final_round7_v3/ (609 MB) — Phase 1 endpoint
+      - archive/phase1_redux_v1_pause_89k/ (86 MB) — v1 preempt
+      - archive/phase1_redux_v2_failed_143k/ (86 MB) — v2 실패 case
+      - success_replay/round6_v2_recovered/ (3 MB)
+      - success_replay/ayi27a56_best5/ (16 MB) — v1 best 5
+      - 현재 v3 학습 데이터
+
+    총: 12.7 GB → 1.9 GB
+
+
+********************************************************************************
+*  PART 12 — Phase 1 redux v3: scale 처방 + 임계 완화 + fresh start
+********************************************************************************
+
+  사용자 통찰 (v2 실패 분석 후):
+    "최대 거리도 기존 14m 기준에서 다 줄여야겠지. 이처럼 5m로 온 만큼
+     scale에 변화가 필요하다"
+
+    핵심 문제 진단:
+      Phase 1 redux target = (4, 3) = spawn-to-target 5m
+      그러나 거리 의존 파라미터들은 14.87m task 설계 그대로:
+        pos_scale=50 → obs 가 [-0.1, 0.1] 만 활용 → 신호 약함
+        action_vx=8 m/s → 5m 거리 0.625초 만에 통과 (overshoot)
+        max_distance=100 → 20× 과대
+        k_drop_proximity=0.15 → 5m 환경에서 gradient 너무 완만
+
+      → v1 의 96% 는 운+task 단순화 덕분
+      → v2 실패는 mis-scaled 환경에 정밀화 요구 가속 안 되어서
+
+
+  Scale 처방:
+    pos_scale: 50 → 5
+    action_vx_scale: 8 → 3 m/s
+    action_vy_scale: 5 → 3 m/s
+    max_distance: 100 → 20
+    k_drop_proximity: 0.15 → 0.4
+
+  임계 완화 (curriculum gap 줄임):
+    auto_drop_threshold: 1.0 → 2.0 m
+    success_threshold: 1.0 → 2.0 m
+    jackpot_threshold: 0.3 m 유지
+
+  run_name: phase1_redux_v3_scaled_thresholds
+  Fresh start (mis-scaled 정책 폐기)
+
+
+  초기 결과 (step 1405):
+    ep_len_mean = 351 step (v2 의 23 대비 15배 ↑)
+    ep_rew_mean = +168 (v2 의 -42 와 정반대)
+    드론 안정 비행
+    critic_loss 1.53 안정
+    4 drops in 1.4k step (정상 시작)
+
+    → Scale 처방의 효과 즉각 입증
+    → action_vx 3 m/s 로 정밀 제어
+    → pos_scale 5 로 obs 신호 정상
+
+
+  검증 가설 (5가지):
+    1. Scale 처방 → 학습 효율 + 정밀도?
+    2. 임계 2m → 적응 가능 curriculum?
+    3. fps 15-25 회복?
+    4. 새 도구들 정상 작동 (wandb 표시)?
+    5. Representative top 3 의 첫 의미 측정?
+
+  목표 metrics:
+    fps 15-25
+    2m success_rate > 50%
+    첫 jackpot 발화 (drop_error < 0.3m)
+    Representative top 3 진정한 첫 측정
+
+
 ################################################################################
 #  관련 문서 (경로: /home/juns/Drone-Bombard-Simulation/local/)
 ################################################################################

@@ -1,0 +1,104 @@
+{
+  "episodes": 10,
+  "drops": 9,
+  "success_2m": 3,
+  "jackpot_03m": 0,
+  "mean_err": 2.005587763256497,
+  "min_err": 1.752423882484436,
+  "max_err": 2.12980318069458,
+  "results": [
+    {
+      "ep": 1,
+      "steps": 57,
+      "trigger": "auto",
+      "drop_error": 1.9909353256225586,
+      "d_xy": 1.929952219795757,
+      "reward": 27.253705317275095,
+      "truncate_reason": ""
+    },
+    {
+      "ep": 2,
+      "steps": 58,
+      "trigger": "auto",
+      "drop_error": 1.752423882484436,
+      "d_xy": 1.9984189303808237,
+      "reward": 30.651108011020845,
+      "truncate_reason": ""
+    },
+    {
+      "ep": 3,
+      "steps": 39,
+      "trigger": "auto",
+      "drop_error": 1.8467508554458618,
+      "d_xy": 1.3671218825960347,
+      "reward": 33.766304912540164,
+      "truncate_reason": ""
+    },
+    {
+      "ep": 4,
+      "steps": 70,
+      "trigger": "auto",
+      "drop_error": 2.0109364986419678,
+      "d_xy": 1.8981699443226234,
+      "reward": 29.274948673777217,
+      "truncate_reason": ""
+    },
+    {
+      "ep": 5,
+      "steps": 45,
+      "trigger": "auto",
+      "drop_error": 2.0657577514648438,
+      "d_xy": 1.6294534859805745,
+      "reward": 29.19852912430308,
+      "truncate_reason": ""
+    },
+    {
+      "ep": 6,
+      "steps": 202,
+      "trigger": "none",
+      "drop_error": null,
+      "d_xy": 2.6848643626935003,
+      "reward": -15.913185205111972,
+      "truncate_reason": "hover_timeout"
+    },
+    {
+      "ep": 7,
+      "steps": 53,
+      "trigger": "auto",
+      "drop_error": 2.0147359371185303,
+      "d_xy": 1.8506856020990954,
+      "reward": 27.52533757482342,
+      "truncate_reason": ""
+    },
+    {
+      "ep": 8,
+      "steps": 42,
+      "trigger": "auto",
+      "drop_error": 2.1103217601776123,
+      "d_xy": 1.5537057429776806,
+      "reward": 28.168150215262184,
+      "truncate_reason": ""
+    },
+    {
+      "ep": 9,
+      "steps": 39,
+      "trigger": "auto",
+      "drop_error": 2.12980318069458,
+      "d_xy": 1.4812931733382868,
+      "reward": 28.51173574564726,
+      "truncate_reason": ""
+    },
+    {
+      "ep": 10,
+      "steps": 49,
+      "trigger": "auto",
+      "drop_error": 2.128624677658081,
+      "d_xy": 1.71670914989638,
+      "reward": 27.10988581893631,
+      "truncate_reason": ""
+    }
+  ],
+  "model": "v9a_preempt_step313k.zip",
+  "timestamp": "2026-06-27T21-17-26",
+  "deterministic": true
+}

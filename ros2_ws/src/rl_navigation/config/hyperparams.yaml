@@ -1,5 +1,5 @@
 training:
-  total_timesteps: 300000   # Round 7 resilient v1 → v2: 99807에서 resume, 300k 목표
+  total_timesteps: 600000   # v9a resume: 313k → ~600k 까지 (사용자 중간 SIGTERM)
   checkpoint_freq: 5000
   max_checkpoints_kept: 5
   checkpoint_dir: "/workspace/ros2_ws/rl_checkpoints"
@@ -37,11 +37,15 @@ sac:
 environment:
   target_enu_x: 4.0       # Phase 1 redux: 11 → 4 (spawn 부터 거리 14.87m → 5m, 쉬운 task)
   target_enu_y: 3.0       # 10 → 3
-  pos_scale: 50.0
+  target_enu_z: 5.0       # v10a stage1: 호버 z (cruise alt) — 3D 거리 계산용
+  stage1_R: 2.0           # v10a stage1: 호버 도달 (단계 1 → 2 전환) 3D 거리
+  stage1_reach_bonus: 100.0   # v10a stage1: d_3d < R 도달 시 bonus + ep terminate
+  stage1_only: false      # v9a 학습 시 비활성 (v10a stage1 비활성)
+  pos_scale: 5.0          # Phase 1 redux v3: 50 → 5 (target 거리 5m 에 맞춤, obs 범위 [-1,1] 활용)
   vel_scale: 15.0
   ang_vel_scale: 3.14159265
-  action_vx_scale: 8.0
-  action_vy_scale: 5.0
+  action_vx_scale: 3.0    # Phase 1 redux v3: 8 → 3 (5m 거리에 더 정밀한 제어 — 8 m/s 면 0.6초만에 통과)
+  action_vy_scale: 3.0    # Phase 1 redux v3: 5 → 3 (마찬가지)
   action_vz_scale: 3.0
   action_yaw_scale: 1.0
   action_rate_limit: 0.2
@@ -49,7 +53,7 @@ environment:
   min_altitude: 3.0
   min_altitude_start_step: 1    # Issue #002: 10 → 1 (grace period 최소화)
   ground_contact_altitude: 0.5  # Issue #002: 신규 — altitude < 0.5m → 무조건 crash
-  max_distance: 100.0           # Issue #002: 신규 — d_xy > 100m → out_of_range truncate
+  max_distance: 20.0            # Phase 1 redux v3: 100 → 20 (target 5m 의 4배 안전 마진, 명확성)
   # stagnation 제거 — speed_gate가 이미 hover 보상 차단함
   max_altitude: 50.0            # Round 3: 비행 중 50m 초과 → truncate (-15 페널티)
   obs_wait_timeout: 0.02
@@ -65,18 +69,32 @@ reward:
   g: 9.81
 
   # --- Drop trigger (hybrid: manual + auto safety net) ---
-  auto_drop_threshold: 1.0     # Phase 1 redux v2: 3.0 → 1.0 (정밀 drop 강제)
+  auto_drop_threshold: 2.0     # Phase 1 redux v3: v2 의 1.0 너무 빡빡 → 2.0 (curriculum gap 완화)
   # manual drop 비활성 — action[4] 무시 ("drop ASAP" exploit 방지)
   random_drop_start_step: 600  # Round 2: 150→600 (600 step 자유 접근 확보)
   random_drop_prob: 0.0        # Phase 1 redux: 0.005 → 0 (정책 자체 drop 능력 학습 강제)
-  drop_wait_timeout: 10.0
+
+  # === v7: A 제거 (호버 drop 도 정상 작동 확인됨, 진짜 원인은 reattach 후 detach silent fail) ===
+  hover_drop_block_threshold: 0.0   # 0 = 비활성 (모든 drop 허용)
+
+  # === v8: invalid_drop_penalty 제거 (v7 의 drop 0 진짜 원인) ===
+  # v6 도입 시 의도: 멀리 drop 페널티. 실제: 정책의 drop 회피 학습 강제.
+  # D1 (옵션 C 비활성) 으로 invalid 0% 보장 → penalty 자체 불필요.
+  invalid_drop_threshold: 95.0      # 99m default 만 잡음 (안전망)
+  invalid_drop_penalty: 0.0         # 페널티 비활성
+  drop_wait_timeout: 3.0       # v6 처방 B: 10.0→3.0 (정상 자유낙하 1초 충분, invalid 비용 70% 절약)
 
   # --- Approach shaping (Layer 3) ---
   k1_potential: 1.0
-  w_dist: 1.0
+  w_dist: 1.5               # v9a: 1.0 → 1.5 (payload distance reward 강화, 처방 2)
   w_heading: 0.7            # Round 5: 0.3 → 0.7 복원 (Round 4 발산 원인)
   w_distance_penalty: 0.0   # Round 5: 0.03 → 0 비활성 (Round 4 발산 원인)
   speed_gate_enabled: true
+
+  # --- v9a 처방 1: drop 시점 직전 N step 의 max angular acceleration penalty ---
+  # toss 의 급격한 pitch back 차단. ang_vel callback fix (2026-06-22) 이후 활성 가능.
+  drop_angaccel_penalty_scale: 0.5
+  drop_angaccel_window_n: 5
 
   # --- d_impact shaping (Layer 3 addition) ---
   w_impact: 0.4
@@ -89,14 +107,14 @@ reward:
 
   # --- Terminal drop accuracy (Layer 4) ---
   k2_precision: 0.2            # Round 2: 0.5 → 0.2 (10m 구간 gradient 확보)
-  w_prediction: 20.0           # Issue #010: CCIP 예측-실제 일치도 보상 가중치
-  k_prediction: 0.1            # Issue #010: prediction gap 감쇠 (0.1 = 완만, gap 12m에서도 신호 유지)
+  w_prediction: 0.0            # v5 SDF fix: drop_error 이 진짜 ground impact 됐으므로 gap≈0 → reward 무의미. 0 으로 비활성.
+  k_prediction: 0.1            # (비활성. 잔존)
   w_drop_base: 100.0
   r_success_jackpot: 50.0      # Issue #003: 100 → 50 (스케일 축소)
-  success_threshold: 1.0            # Phase 1 redux v2: 5.0 → 1.0 (정밀 명중 강제)
-  jackpot_threshold: 0.3            # Phase 1 redux v2: 0.1 → 0.3 (10cm 너무 빡빡 → 30cm 도전 가능)
+  success_threshold: 2.0            # Phase 1 redux v3: v2 의 1.0 너무 빡빡 → 2.0 (curriculum gap 완화)
+  jackpot_threshold: 0.3            # 유지 (도전 목표)
   penalty_instability: 50.0
-  limit_ang_vel: 2.0
+  limit_ang_vel: 10.0   # 2026-06-22 ang_vel callback fix 후 false crash 방지
   limit_tilt: 0.26
 
   # --- Step 별 안전 검사 ---
@@ -105,7 +123,7 @@ reward:
 
   # --- Episode termination penalties ---
   drop_attempt_bonus: 30.0      # Issue #001+#003: 150 → 30 (precision 비중 상승)
-  k_drop_proximity: 0.15        # Round 2: 0.3 → 0.15 (10m 구간에서도 bonus 유지)
+  k_drop_proximity: 0.4         # Phase 1 redux v3: 0.15 → 0.4 (5m 환경에서 더 sharp gradient — 가까울수록 강한 신호)
   truncation_penalty: -15.0     # Issue #003: -30 → -15 (스케일 축소)
 
   # --- Layer 1 penalties ---
@@ -117,8 +135,9 @@ reward:
   # --- Hover 감지 (Round 5: 속도 기준 연속 정체) ---
   # Episode 종료 시 1회 페널티 (drop 시 제외) — per-step density 영향 없음
   hover_speed_threshold: 1.0           # m/s — 이 이하면 정지로 판단
-  hover_consecutive_threshold: 200     # step — 연속 정체 한계
-  penalty_hover: -15.0                 # 페널티 (잠시 hover OK, 지속만 BAD)
+  hover_consecutive_threshold: 150     # v5: 200→150 (저번 학습 호버 길었음 — α)
+  penalty_hover: -30.0                 # v5: -15→-30 (cost 명확화 — β)
+  hover_truncate_enabled: true         # v5 안전장치 δ: hover_consecutive_threshold 도달 시 episode 강제 종료
   # --- Drop 시점 고도 페널티 (Round 3): sigmoid bounded (지수 폐기, -6.77e9 폭주 방지) ---
   # penalty = -alt_penalty_max * sigmoid(alt_penalty_k * (alt - alt_penalty_mid))
   alt_penalty_max: 50.0         # 최대 페널티 절대값
@@ -128,7 +147,7 @@ reward:
 wandb:
   project: "drone-bombard-sac"
   entity: "nayoonho0922-seoul-national-university"
-  run_name: "phase1_redux_v2_tight_thresholds"
-  tags: ["sac", "spot-vm", "l4-gpu", "round1"]
+  run_name: "phase1_redux_v9a_payload_dist_angaccel"
+  tags: ["sac", "spot-vm", "l4-gpu", "v9a", "payload_dist", "drop_angaccel"]
   save_model_artifact: true
   log_freq: 1000

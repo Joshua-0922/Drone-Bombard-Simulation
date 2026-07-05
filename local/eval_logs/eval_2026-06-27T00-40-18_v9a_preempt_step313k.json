@@ -1,0 +1,23 @@
+{
+  "episodes": 1,
+  "drops": 1,
+  "success_2m": 0,
+  "jackpot_03m": 0,
+  "mean_err": 2.167870044708252,
+  "min_err": 2.167870044708252,
+  "max_err": 2.167870044708252,
+  "results": [
+    {
+      "ep": 1,
+      "steps": 52,
+      "trigger": "auto",
+      "drop_error": 2.167870044708252,
+      "d_xy": 1.749798591305938,
+      "reward": 25.437906447125087,
+      "truncate_reason": ""
+    }
+  ],
+  "model": "v9a_preempt_step313k.zip",
+  "timestamp": "2026-06-27T00-40-18",
+  "deterministic": true
+}

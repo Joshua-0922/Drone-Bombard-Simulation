@@ -1,0 +1,173 @@
+================================================================================
+ Meeting Notes — 2026-07-05 (RAD v1 Phase 1 학습 주간 종합)
+================================================================================
+세션 기간 : 2026-06-30 ~ 2026-07-05 (약 6일)
+프레임워크: RAD v1 (Phase 1)
+결과      : v1~v6 반복 시행 → 진짜 원인 확정 (curriculum stage 설계 결함)
+
+
+================================================================================
+ 1. 세션 요약
+================================================================================
+
+  RAD v1 Phase 1 학습을 300k step 완주 + sphere entry 성공률 90% 이상 달성이
+  목표였음. 6번의 시도 (v1~v6) 를 통해 self-healing 매커니즘 도입 + 진짜 원인
+  확정. 최종 결론: **curriculum stage 조건이 정책 시작 위치 (target 거리 5m) 를
+  반영 안 함**. Stage 재설계 필요.
+
+
+================================================================================
+ 2. v1 ~ v6 시행 이력
+================================================================================
+
+  ┌──────────────┬─────────────┬────────────────────────────────────────────────┐
+  │ Version      │ 결과        │ 주요 변경                                      │
+  ├──────────────┼─────────────┼────────────────────────────────────────────────┤
+  │ v1 (원본)    │ NaN abort   │ Original RAD v1 design 그대로 시작             │
+  │              │ at 62k      │                                                │
+  ├──────────────┼─────────────┼────────────────────────────────────────────────┤
+  │ v2 (self-   │ NaN abort   │ + A1: gradient clip (actor 20, critic 200)     │
+  │  healing)    │ at 171k     │ + B3: weight NaN 감지 + snapshot rollback      │
+  │              │             │ + 상세 metric (Q, weight/grad norm, log_prob)  │
+  ├──────────────┼─────────────┼────────────────────────────────────────────────┤
+  │ v3           │ Stage 1     │ + 5-stage curriculum (intro/close/target/      │
+  │ (curriculum) │ 정체 (75%)  │   partial/full)                                │
+  │              │             │ + advance 강화 (window 10k, threshold 0.95,    │
+  │              │             │   min_stage 10k)                               │
+  │              │             │ + regression (window success < 30% 시 이전     │
+  │              │             │   stage 복귀, cooldown 20k)                    │
+  ├──────────────┼─────────────┼────────────────────────────────────────────────┤
+  │ v4 (reward   │ stage1↔2    │ + reward magnitude 축소:                        │
+  │  축소)       │ cycle 반복  │   crash -50 → -20                              │
+  │              │             │   hover -30 → -10                              │
+  │              │             │   truncation -15 → -5                          │
+  │              │             │ + target_q_clip 500 → 200                      │
+  │              │             │ + max_consecutive_fast_resets 50 → 500         │
+  ├──────────────┼─────────────┼────────────────────────────────────────────────┤
+  │ v5 (stage    │ 여전 실패   │ + stage2_close 완화:                            │
+  │  완화)       │ (hover 65%) │   radius 5 → 5.5m                              │
+  │              │             │   z_min 0.15 → 0.08                            │
+  │              │             │   max_dist 40 → 50                             │
+  │              │             │   tilt 0.9 → 1.0                               │
+  ├──────────────┼─────────────┼────────────────────────────────────────────────┤
+  │ v6 (근본     │ stage3 진입 │ + spawn_yaw ±90° → ±45°                        │
+  │  접근)       │ 후 실패     │ + penalty_hover -10 → -30                      │
+  │              │ (cycle      │ + info['initial_target_dist'] log 신규         │
+  │              │  반복)      │   ← 근본 원인 파악의 결정적 도구               │
+  └──────────────┴─────────────┴────────────────────────────────────────────────┘
+
+
+================================================================================
+ 3. v6 진행 상세 (2026-07-04~05)
+================================================================================
+
+  Curriculum event 이력:
+    Step 14,011  Advance 1  stage1_intro → stage2_close  (window_success 0.95)
+    Step 27,813  Advance 2  stage2_close → stage3_target (window_success 0.95)
+    Step 37,828  Regress    stage3_target → stage2_close (window_success 0.00)
+    Step 52,138  Advance 3  stage2_close → stage3_target (window_success 0.95)
+    Step 62,214  Regress    stage3_target → stage2_close (window_success 0.00)
+
+  Stage3 두 번 도전 모두 완전 실패 (성공률 0%). 정책이 stage1/2 왕복 학습으로
+  는 stage3 넘길 능력 못 얻음.
+
+
+================================================================================
+ 4. 진짜 원인 (결정적 finding)
+================================================================================
+
+  Initial position log 로 실측한 fact:
+    - 정책 시작 시점 target xy 거리 = 5.10m (mean, min 5.00 ~ max 5.23)
+    - Drone spawn (0, 0, 0) → Target (4, 3, 0) 직선 거리 = 5.0m
+    - Cruise 로 이동 미미 (0.15m 정도)
+
+  Stage 조건 vs 시작 거리 매칭:
+    ┌─────────────┬────────┬──────────────────┬───────────────┐
+    │ Stage       │ Radius │ Spawn d²≈25      │ 학습 유도?    │
+    ├─────────────┼────────┼──────────────────┼───────────────┤
+    │ stage1_intro│ 6.0m   │ 안 (여유 11)     │ ✗ trivial     │
+    │ stage2_close│ 5.5m   │ 안 (여유 5.25)   │ ✗ trivial     │
+    │ stage3_target│ 4.53m │ 밖 (부족 4.5)    │ ✓ 유일 학습   │
+    └─────────────┴────────┴──────────────────┴───────────────┘
+
+  결론:
+    - Stage1/2 는 정책이 아무것도 안 해도 성공하는 조건 (trivial)
+    - 정책은 stage1/2 에서 이동 학습을 배우지 않음
+    - Stage3 에서 처음 이동 필요 → 능력 부재 → 완전 실패
+    - 실제 학습해야 할 이동거리 = 5.0m - 4.53m = 0.47m (매우 짧음)
+
+
+================================================================================
+ 5. 진단 궤적의 문제 (반성)
+================================================================================
+
+  이번 주 진단이 여러 번 바뀜:
+    1) "spawn 위치가 sphere 안" (이론 계산, fact 확인 X)
+    2) "spawn_yaw random 으로 시작 방향 다양" (이론 계산 오추정)
+    3) "cruise 안 됨. drone 이 spawn 그대로" (v6 log 관찰, 표현 오류)
+    4) "cruise 는 정상, 이동 거리만 짧음" (log 재확인)
+    5) "target_speed 상승" 제안 → 사용자 지적: v1~v5 도 동일. 다른 원인.
+    6) "curriculum stage 설계 결함" (최종 확정)
+
+  교훈: 그럴듯한 가설 하나 발견 → 즉시 "진짜 원인" 선언 패턴 반복.
+        Fact 확인이 결정적. 여러 가설 나열 + 배제 근거 명시 → 확답 지연이 좋음.
+
+
+================================================================================
+ 6. 개발된 인프라 (재사용 가능)
+================================================================================
+
+  6-1. Self-healing SAC (DampedEntropySAC 확장)
+    - A1: gradient clipping (actor max_norm=20, critic max_norm=200)
+    - B3: weight NaN detection + snapshot rollback
+    - 상세 metric (Q values, weight/grad norm, log_prob, reward batch stats)
+    - Metric: train/nan_rollback_count, actor_grad_clip_hit, critic_grad_clip_hit
+
+  6-2. Curriculum + Regression 시스템
+    - 5-stage 자동 progression
+    - Window-based success rate 판정 (10k window, 0.95 threshold)
+    - Regression: 이전 stage 자동 복귀 (30% threshold, 20k cooldown)
+    - Log: CURRICULUM_ADVANCE / CURRICULUM_REGRESS
+
+  6-3. Initial position 실측 도구
+    - Ep 첫 step 위치/속도/거리 정보를 info 에 저장
+    - Callback (TerminalTypeMonitor) 이 rolling stats (100 ep) → WandB
+    - Metric: env/initial_target_dist_3d_{mean,min,max}, initial_pos_{x,y,z}_*
+    - **근본 원인 파악의 결정적 도구**
+
+  6-4. Terminal type monitor
+    - 매 ep terminal_type 분류: crash / entry_success / entry_partial_fail /
+      bad_att_{ang_vel,inverted,tilt} / trunc_{timeout,out_of_range,overspeed,
+      max_altitude,hover_timeout,sphere_escape}
+    - Rolling window rate → WandB
+
+
+================================================================================
+ 7. 다음 단계 (사용자 결정 대기)
+================================================================================
+
+  옵션 1 (권고): Curriculum stage 재설계
+    Stage1: radius 4.80m (d²=23.04, spawn 겨우 밖)
+    Stage2: radius 4.65m (d²=21.62)
+    Stage3: radius 4.53m (d²=20.5, design 목표)
+    Stage4: radius 4.53m + [C1, C4, C5]
+    Stage5: radius 4.53m + [C1~C7]
+
+    - Stage1 부터 정책이 실제 이동 학습 강제
+    - 매 stage 갭 매우 작음 (~0.15m) → 완만한 학습
+    - Regression 필요 시 발동
+
+  옵션 2: Cycle 계속 관찰 (실용성 낮음)
+
+  옵션 3: 다른 근본 접근 (spawn 위치 변경 등)
+
+
+================================================================================
+ 8. 관련 이슈 / 문서
+================================================================================
+
+  - Issue #028: RAD Phase 1 학습 abort (진단 방향 정정 필요)
+  - Issue #029 (신규): Curriculum stage 조건이 spawn 위치 반영 안 함
+  - design/design_review_2026-07-05.md (신규): 이번 주 종합 + stage 재설계 안
+  - design/rad_v1_design.md: self-healing + curriculum + regression 도구 반영
+  - parameter_log.md: v1~v6 각 변경 entry

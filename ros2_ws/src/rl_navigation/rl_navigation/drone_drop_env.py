@@ -19,6 +19,7 @@ import signal
 import subprocess
 import threading
 import time
+from collections import deque
 
 import gymnasium as gym
 import numpy as np
@@ -63,8 +64,9 @@ class _RLBridgeNode(Node):
 
     def __init__(self, state_lock, obs_ready_event,
                  drop_error_event, drop_error_queue,
-                 px4_topic_prefix=''):
+                 px4_topic_prefix='', instance_id=0):
         super().__init__('drone_drop_rl_bridge')
+        self._instance_id = instance_id
 
         self._lock = state_lock
         self._obs_ready = obs_ready_event
@@ -136,6 +138,9 @@ class _RLBridgeNode(Node):
             Empty, '/payload/drop_cmd', 10)
         self.drop_raw_pub = self.create_publisher(
             Bool, '/drone/payload/drop_cmd_raw', 10)
+        # Issue #022 옵션 C — re-attach DetachableJoint without killing infra.
+        self.attach_pub = self.create_publisher(
+            Empty, '/payload/attach_cmd', 10)
 
         # VehicleCommand publisher — used to disarm PX4 between episodes.
         # Must share the same QoS as drone_controller's publisher so PX4
@@ -253,7 +258,11 @@ class _RLBridgeNode(Node):
         self.vel_pub.publish(twist)
 
     def publish_drop(self):
-        """Fire payload drop commands on both ROS2 and gz-transport channels."""
+        """Trigger payload drop via DetachableJoint detach.
+
+        Payload velocity is preserved by Gazebo physics on detach
+        (verified by minimal_test mtest2: 101.5% transfer ratio).
+        """
         self.detach_pub.publish(Empty())
         drop_msg = Bool()
         drop_msg.data = False   # False = drop event (inverted semantics)
@@ -346,6 +355,12 @@ class DroneDropEnv(gym.Env):
         self._cfg_target_x = cfg_env.get('target_enu_x', TARGET_ENU_X)
         # Method A: target Y shifts by 150m per instance to align with pre-spawned x_marker_N
         self._cfg_target_y = cfg_env.get('target_enu_y', TARGET_ENU_Y) + instance_id * 150.0
+        # v10a stage1: target z (호버링 위치). 3D 거리 계산용.
+        self._cfg_target_z = cfg_env.get('target_enu_z', 5.0)
+        # v10a stage1: 호버 도달 (단계 1 → 단계 2 전환) 거리
+        self._cfg_stage1_R = cfg_env.get('stage1_R', 2.0)
+        self._cfg_stage1_reach_bonus = cfg_env.get('stage1_reach_bonus', 100.0)
+        self._cfg_stage1_only = cfg_env.get('stage1_only', False)   # True = drop 비활성
         self._cfg_pos_scale = cfg_env.get('pos_scale', POS_SCALE)
         self._cfg_vel_scale = cfg_env.get('vel_scale', VEL_SCALE)
         self._cfg_ang_vel_scale = cfg_env.get('ang_vel_scale', ANG_VEL_SCALE)
@@ -401,7 +416,19 @@ class DroneDropEnv(gym.Env):
         # Round 5: Hover 감지 (속도 기준 연속 정체)
         self._cfg_hover_speed_threshold = r.get('hover_speed_threshold', 1.0)
         self._cfg_hover_consecutive_threshold = int(r.get('hover_consecutive_threshold', 200))
+        # v9a 처방 1: drop 시점 직전 N step 의 max angular acceleration penalty
+        self._cfg_drop_angaccel_penalty_scale = r.get('drop_angaccel_penalty_scale', 0.0)
+        self._cfg_drop_angaccel_window_n = int(r.get('drop_angaccel_window_n', 5))
+        # ang_vel history (drop 시점에 최근 N+1 step 의 차분으로 max ang_accel 계산)
+        self._ang_vel_history = deque(maxlen=self._cfg_drop_angaccel_window_n + 1)
         self._cfg_penalty_hover = r.get('penalty_hover', -15.0)
+        # v5 안전장치 δ: hover N step 도달 시 episode 강제 truncate (학습 시간 단축).
+        self._cfg_hover_truncate_enabled = bool(r.get('hover_truncate_enabled', False))
+        # v6 처방 A: hover drop 차단 (vel_xy < threshold 면 publish_drop 무시).
+        self._cfg_hover_drop_block_threshold = r.get('hover_drop_block_threshold', 0.5)
+        # v6 처방 C: invalid drop 페널티 (drop_error 가 임계 초과 시).
+        self._cfg_invalid_drop_threshold = r.get('invalid_drop_threshold', 50.0)
+        self._cfg_invalid_drop_penalty = r.get('invalid_drop_penalty', 50.0)
         # Drop 시점 고도 페널티 (Round 3): sigmoid bounded
         self._cfg_alt_penalty_max = r.get('alt_penalty_max', 50.0)
         self._cfg_alt_penalty_mid = r.get('alt_penalty_mid', 30.0)
@@ -460,6 +487,10 @@ class DroneDropEnv(gym.Env):
         self._consecutive_fast_resets = 0
         self._cfg_max_consecutive_fast_resets = int(cfg_env.get(
             'max_consecutive_fast_resets', 100))
+        # Issue #022 옵션 C 안전장치 B: safe drop path 누적 카운터.
+        # 50 회 누적 시 강제 _kill_infra (Gazebo leak 차단).
+        self._safe_drop_count = 0
+        self._safe_drop_count_max = 50
 
         # --- Start ROS2 ---
         if not rclpy.ok():
@@ -470,6 +501,7 @@ class DroneDropEnv(gym.Env):
             self._drop_error_event,
             self._drop_error_queue,
             px4_topic_prefix=self._px4_ns,
+            instance_id=self._instance_id,
         )
         self._spin_thread = threading.Thread(
             target=self._spin_loop, daemon=True, name='Thread-2 (spin)')
@@ -485,6 +517,14 @@ class DroneDropEnv(gym.Env):
     def reset(self, *, seed=None, options=None):
         """Reset simulation and return initial observation."""
         super().reset(seed=seed)
+
+        # FPS-breakdown probe (Issue #022): record per-phase wall time.
+        _probe_t0 = time.monotonic()
+        _probe = {
+            'kill_ep': 0.0, 'kill_infra': 0.0, 'start_infra': 0.0,
+            'gz_reset': 0.0, 'start_ep': 0.0, 'cruise': 0.0,
+            'cruise_retries': 0,
+        }
 
         # Guard against infinite recursion when CRUISE is permanently unreachable
         # (e.g. spin thread died). Allow at most 2 nested retries total.
@@ -547,7 +587,7 @@ class DroneDropEnv(gym.Env):
             time.sleep(1.0)
 
         # 2. Kill previous episode processes.
-        self._kill_episode()
+        _t = time.monotonic(); self._kill_episode(); _probe['kill_ep'] = time.monotonic() - _t
 
         # 3. Reset drone + payload to spawn position.
         #    If payload was dropped this episode, DetachableJoint is gone.
@@ -566,9 +606,15 @@ class DroneDropEnv(gym.Env):
             >= self._cfg_max_consecutive_fast_resets)
 
         if _prev_dropped or _forced_restart:
-            self._obs_ready.clear()  # ensure _start_infra() waits for fresh PX4 data
-            self._kill_infra()
-            self._start_infra()
+            # v7 (D1): 옵션 C safe drop path 비활성.
+            # 이유: DetachableJoint plugin 의 reattach 후 detach 가 silent fail.
+            # → safe path 의 attach 가 작동해도 다음 detach 무동작 (invalid 50-70%).
+            # 매 drop 마다 _kill_infra + _start_infra (38s) 로 fresh SDF attach 보장.
+            self._obs_ready.clear()
+            _t = time.monotonic(); self._kill_infra(); _probe['kill_infra'] = time.monotonic() - _t
+            _t = time.monotonic(); self._start_infra(); _probe['start_infra'] = time.monotonic() - _t
+            print(f'[GZ_SERVER_READY] reset_count={self._reset_count + 1}', flush=True)  # GUI relaunch trigger
+            self._safe_drop_count = 0
             self._consecutive_fast_resets = 0
             if _forced_restart and rclpy.ok():
                 self._node.get_logger().info(
@@ -576,11 +622,11 @@ class DroneDropEnv(gym.Env):
                     f' {self._cfg_max_consecutive_fast_resets}'
                     ' consecutive fast resets (no drop)')
         else:
-            self._gz_reset_poses()   # fast teleport (joint still intact)
+            _t = time.monotonic(); self._gz_reset_poses(); _probe['gz_reset'] = time.monotonic() - _t
             self._consecutive_fast_resets += 1
 
         # 4. Start fresh episode processes
-        self._start_episode()
+        _t = time.monotonic(); self._start_episode(); _probe['start_ep'] = time.monotonic() - _t
 
         # 6. Wait for CRUISE state (blocks until takeoff + climb complete).
         #    Tiered recovery on timeout:
@@ -591,7 +637,11 @@ class DroneDropEnv(gym.Env):
         #    Retries up to 3 times before giving up; this episode is never
         #    returned to SB3 so the replay buffer stays clean.
         for _cruise_attempt in range(3):
+            _t = time.monotonic()
             self._wait_for_cruise()
+            _probe['cruise'] += time.monotonic() - _t
+            if _cruise_attempt > 0:
+                _probe['cruise_retries'] = _cruise_attempt
             with self._state_lock:
                 _reached_cruise = (self._node.mission_state == 'CRUISE')
             if _reached_cruise:
@@ -622,6 +672,7 @@ class DroneDropEnv(gym.Env):
                 with self._state_lock:
                     self._node.mission_state = 'IDLE'
                 self._start_infra()
+                print(f'[GZ_SERVER_READY] reset_count={self._reset_count + 1} (retry)', flush=True)
                 self._start_episode()
         else:
             # All 3 attempts failed — attempt one full reset from scratch.
@@ -639,6 +690,8 @@ class DroneDropEnv(gym.Env):
             _post_cruise_v = float(np.linalg.norm(self._node.vel_enu))
             _post_cruise_ang_v = float(np.linalg.norm(self._node.ang_vel))
         self.d_xy_prev = self._compute_d_xy(pos)
+        # v9a: ang_vel history reset (drop 시점 ang_accel penalty 추적용)
+        self._ang_vel_history.clear()
 
         # Round 7 diagnostic: store reset diag for callback to read
         self._reset_count += 1
@@ -658,6 +711,22 @@ class DroneDropEnv(gym.Env):
         }
 
         obs = self._get_obs()
+
+        # FPS-breakdown probe (Issue #022): write per-reset breakdown.
+        _probe_total = time.monotonic() - _probe_t0
+        try:
+            with open('/tmp/fps_breakdown.csv', 'a') as _f:
+                if self._reset_count == 1:
+                    _f.write('ts,inst,ep_idx,path,total,kill_ep,kill_infra,start_infra,gz_reset,start_ep,cruise,cruise_retries\n')
+                _path = 'drop' if _prev_dropped else ('forced' if _forced_restart else 'fast')
+                _f.write(f"{time.time():.3f},{self._instance_id},{self._reset_count},{_path},"
+                         f"{_probe_total:.3f},{_probe['kill_ep']:.3f},{_probe['kill_infra']:.3f},"
+                         f"{_probe['start_infra']:.3f},{_probe['gz_reset']:.3f},"
+                         f"{_probe['start_ep']:.3f},{_probe['cruise']:.3f},"
+                         f"{_probe['cruise_retries']}\n")
+        except Exception:
+            pass
+
         return obs, {}
 
     def step(self, action):
@@ -692,8 +761,13 @@ class DroneDropEnv(gym.Env):
             pitch = self._node.pitch
             pix = self._node.pixel_coords.copy()
 
+        # v9a 처방 1: 매 step ang_vel history 에 push (drop 시점 max ang_accel penalty 추적용)
+        self._ang_vel_history.append(ang.copy())
+
         # --- 2D horizontal distance + CCIP predicted impact distance ---
         d_xy = self._compute_d_xy(pos)
+        # v10a stage1: 3D distance to (target_x, target_y, target_z=5 호버)
+        d_3d = self._compute_d_3d(pos)
         _, _, t_f, d_impact = self._predict_impact_point(pos, vel)
 
         # Round 5: Hover 추적 (속도 기준 연속 정체)
@@ -735,7 +809,12 @@ class DroneDropEnv(gym.Env):
         #              at various d_xy. Agent can't control → learns to fly only.
         random_drop = (self._step_count >= self._cfg_random_drop_start_step
                        and np.random.random() < self._cfg_random_drop_prob)
-        if (random_drop or d_impact <= self._cfg_auto_drop_threshold) and not self.dropped:
+        # === A: 호버 drop 차단 (v6 처방, v5 의 호버 drop 50% invalid 회피) ===
+        # drone 의 horizontal 속도가 너무 작으면 drop 명령 무시.
+        # 호버 drop 은 detection 실패 (99m default) 의 진짜 원인 진단 전 임시 우회.
+        _hover_drop_block = (math.sqrt(vel[0]**2 + vel[1]**2)
+                             < self._cfg_hover_drop_block_threshold)
+        if (random_drop or d_impact <= self._cfg_auto_drop_threshold) and not self.dropped and not _hover_drop_block:
             # ============================================================
             # Layer 4: Terminal drop accuracy reward (ACTUAL physics result)
             # Issue #014 해결: inline SDF + pre-spawn + PX4_GZ_MODEL_NAME
@@ -790,6 +869,27 @@ class DroneDropEnv(gym.Env):
                     or abs(pitch) > self._cfg_limit_tilt):
                 reward -= self._cfg_penalty_instability
                 info['instability_penalty'] = True
+
+            # v9a 처방 1: drop 시점 직전 N step 의 max angular acceleration penalty
+            # 측정 방법 E: deque 의 인접 step 간 diff magnitude max
+            # 사용자 의도: toss 의 pitch back (= 각속도의 갑작스러운 변화) 부드럽게 유도
+            max_ang_accel = 0.0
+            if (self._cfg_drop_angaccel_penalty_scale > 0
+                    and len(self._ang_vel_history) >= 2):
+                hist = list(self._ang_vel_history)
+                for i in range(1, len(hist)):
+                    accel = float(np.linalg.norm(hist[i] - hist[i-1]))
+                    if accel > max_ang_accel:
+                        max_ang_accel = accel
+                reward -= self._cfg_drop_angaccel_penalty_scale * max_ang_accel
+            info['drop_max_ang_accel'] = max_ang_accel
+
+            # === C: invalid drop 페널티 (v6 처방, drop_calculator timeout 회피 학습) ===
+            # drop_error 가 임계 초과 (예: 50m+) 이면 default 99m 또는 매우 멀리.
+            # 명시적 페널티로 정책이 invalid drop 회피 학습.
+            if d_error > self._cfg_invalid_drop_threshold:
+                reward -= self._cfg_invalid_drop_penalty
+                info['invalid_drop_penalty'] = True
 
             info['drop_error_actual_m'] = d_error
             info['is_success'] = bool(d_error <= self._cfg_success_threshold)
@@ -847,6 +947,16 @@ class DroneDropEnv(gym.Env):
             if truncate_reason:
                 info['truncate_reason'] = truncate_reason
 
+        # --- v10a stage1: 호버 도달 시 ep 종료 + bonus ---
+        # target (4, 3, 5) 까지 3D 거리가 stage1_R 이내면 단계 1 성공
+        if (not terminated and not truncated
+                and self._cfg_stage1_only
+                and d_3d < self._cfg_stage1_R):
+            reward += self._cfg_stage1_reach_bonus
+            terminated = True
+            info['stage1_reached'] = True
+            info['d_3d_at_reach'] = float(d_3d)
+
         # --- Truncation on step limit (timeout) ---
         if not terminated and not truncated and self._step_count >= self._cfg_max_steps:
             truncated = True
@@ -854,6 +964,15 @@ class DroneDropEnv(gym.Env):
                 # P8 (junsang_v4): yaml truncation_penalty 사용 (이전 hardcoded -80)
                 reward += self._cfg_truncation_penalty
             info['truncate_reason'] = 'timeout'
+
+        # --- v5 안전장치 δ: hover 강제 truncate ---
+        # _consecutive_still 가 threshold 도달 즉시 episode 종료.
+        # (기존 episode-end 페널티 로직과 합쳐져 페널티는 아래에서 한 번에 부여)
+        if (not terminated and not truncated
+                and self._cfg_hover_truncate_enabled
+                and self._consecutive_still > self._cfg_hover_consecutive_threshold):
+            truncated = True
+            info['truncate_reason'] = 'hover_timeout'
 
         # Round 5: Hover 페널티 — episode 종료 시 (drop 제외)
         # 연속 정체 step이 임계 초과 시 한 번에 -15
@@ -941,6 +1060,16 @@ class DroneDropEnv(gym.Env):
         d_impact = math.sqrt(dx * dx + dy * dy)
 
         return x_p, y_p, t_f, d_impact
+
+    def _compute_d_3d(self, pos):
+        """v10a stage1: 3D Euclidean distance to (target_x, target_y, target_z).
+
+        target_z = 5.0 (호버링 z) by default. 단계 1 의 호버 도달 검사용.
+        """
+        dx = float(pos[0]) - self._cfg_target_x
+        dy = float(pos[1]) - self._cfg_target_y
+        dz = float(pos[2]) - self._cfg_target_z
+        return math.sqrt(dx * dx + dy * dy + dz * dz)
 
     def _compute_d_xy(self, pos):
         """2D horizontal distance from drone to target (no kinematic prediction).
@@ -1392,6 +1521,12 @@ class DroneDropEnv(gym.Env):
             f'\n'
             f'- ros_topic_name: /payload/drop_cmd\n'
             f'  gz_topic_name: /{self._drop_topic}/drop\n'
+            f'  ros_type_name: std_msgs/msg/Empty\n'
+            f'  gz_type_name: gz.msgs.Empty\n'
+            f'  direction: ROS_TO_GZ\n'
+            f'\n'
+            f'- ros_topic_name: /payload/attach_cmd\n'
+            f'  gz_topic_name: /model/{self._gz_model_name}/detachable_joint/attach\n'
             f'  ros_type_name: std_msgs/msg/Empty\n'
             f'  gz_type_name: gz.msgs.Empty\n'
             f'  direction: ROS_TO_GZ\n'

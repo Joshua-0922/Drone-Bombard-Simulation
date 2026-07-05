@@ -1,0 +1,59 @@
+{
+  "episodes": 5,
+  "drops": 2,
+  "success_2m": 1,
+  "jackpot_03m": 0,
+  "mean_err": 1.794979453086853,
+  "min_err": 1.4371061325073242,
+  "max_err": 2.152852773666382,
+  "results": [
+    {
+      "ep": 1,
+      "steps": 1,
+      "trigger": "auto",
+      "drop_error": 1.4371061325073242,
+      "d_xy": 2.7731482160574714,
+      "reward": 83.78687489176268,
+      "truncate_reason": ""
+    },
+    {
+      "ep": 2,
+      "steps": 1,
+      "trigger": "auto",
+      "drop_error": 2.152852773666382,
+      "d_xy": 3.3212274637397154,
+      "reward": 71.82257010218818,
+      "truncate_reason": ""
+    },
+    {
+      "ep": 3,
+      "steps": 183,
+      "trigger": "none",
+      "drop_error": null,
+      "d_xy": 3.373013979679174,
+      "reward": 39.64446723424884,
+      "truncate_reason": "hover_timeout"
+    },
+    {
+      "ep": 4,
+      "steps": 593,
+      "trigger": "none",
+      "drop_error": null,
+      "d_xy": 14.37134165127358,
+      "reward": 52.41078490166154,
+      "truncate_reason": "hover_timeout"
+    },
+    {
+      "ep": 5,
+      "steps": 800,
+      "trigger": "none",
+      "drop_error": null,
+      "d_xy": 19.696424155982577,
+      "reward": -90.66836162658672,
+      "truncate_reason": "timeout"
+    }
+  ],
+  "model": "v8_peak_step217040_err0.87m.zip",
+  "timestamp": "2026-06-22T03-03-48",
+  "deterministic": true
+}

@@ -7,7 +7,7 @@
   - ../design/design_review.md              (현재 최종 설계)
   - ../parameter_log.md                     (parameter history)
   - ../meeting_notes/meeting_notes_2026-05-26.txt (최근 세션 정리)
-  - ../README_local_backup.md               (전체 폴더 navigator)
+  - ../README.md                            (전체 폴더 navigator)
   - wandb_metrics_guide.txt                 (metric 정의 및 해석)
   - 절대경로 base: /home/juns/Drone-Bombard-Simulation/local/
 

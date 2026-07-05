@@ -6,69 +6,97 @@
 
 # 1. Current State
 
-**업데이트:** 2026-04-16
+**업데이트:** 2026-07-05
 
-### 활성 보상 공식 (2026-03-22 패치, 미적용)
+### 현재 활성 framework
+**RAD v1 (Relative Approach Drop)** — Phase 1 학습 진행 중 (v6).
+- v8/v9a 와 완전 다른 framework (Round/redux 시리즈 patch 아님, 새 framework 의 v1)
+- Phase 1: Approach (sphere entry) → Phase 2: Drop (정밀 투하)
+- 관련 문서: [local/design/rad_v1_design.md](local/design/rad_v1_design.md), [local/design/design_review_2026-07-05.md](local/design/design_review_2026-07-05.md)
 
-| Layer | 공식 | 파라미터 |
-|-------|------|---------|
-| R1 Safety | `−10` if alt < 2 m; `−8` if speed > 20 m/s | step > 20 이후 |
-| R2 Stability | `−0.05 − 0.05‖ω‖² − 0.05‖Δa‖²` | w_time=0.05 (패치됨) |
-| R3 Distance | `1.0 × (d_prev − d_xy)` | 선형, 포화 없음 |
-| R3 Orient | `1.0 × cos θ × min(v_xy/2, 1)` | speed gate (안티-밀킹 패치) |
-| R4 Drop | `50·exp(−5·d_err) [+100 jackpot if d≤0.1m]` | auto-drop at d_xy≤0.5m |
-| Truncation | `−50` if step=500 and not dropped | 패치됨 |
+### v6 진행 상태
+- 62k+ step (2026-07-05 시점, 중단 결정 대기)
+- Stage3 진입 후 완전 실패 → 자동 재도전 cycle 반복
+- **진짜 원인 확정 (Issue #029)**: curriculum stage 조건이 spawn 위치 (target 거리 5m) 반영 안 함
+- 개입 결정: Stage 재설계 (v7 계획)
 
-### 학습 환경
-
+### 학습 환경 (RAD v1)
 | 파라미터 | 값 |
-|---------|-----|
-| Algorithm | SAC, `net_arch=[256,256]`, `device=cuda` |
-| `num_envs` | 1 (Gazebo lockstep 병목으로 고정) |
-| `total_timesteps` | 1,000,000 |
-| RTF | **2** (RTF dry-run 결과: RTF=2 최적, avg 59.5 fps) |
-| 예상 fps | **~60** |
+|---|---|
+| Algorithm | SAC (SB3) + custom DampedEntropySAC (self-healing 포함) |
+| Network | `net_arch=[256,256]`, `device=cuda` |
+| num_envs | 1 |
+| target_timesteps | 300k (진행 중 62k+) |
+| GPU | NVIDIA RTX 4060 Laptop (8GB VRAM) |
+| Container | drone-bombard-harmonic |
 
-### 체크포인트
+### Self-healing (v2 부터 활성)
+- **A1**: gradient clip (actor max_norm=20, critic max_norm=200)
+- **B3**: weight NaN 감지 + snapshot rollback
+- 실전: v2~v6 학습에서 nan_rollback_count = 0 (발동 안 함, A1 예방 지배적)
 
-- **보상 패치 전 마지막 정상:** `sac_drop_preempt.zip` (run `8otphxy8`, ~114K steps)
-- **다음 학습:** Fresh start 필요 (보상 공식 변경으로 재개 금지)
+### Curriculum + Regression (v3 부터 활성)
+- 5-stage (intro/close/target/partial/full)
+- Advance: window 10k step, threshold 0.95, min_stage 10k
+- Regression: window success < 0.3 시 이전 stage 복귀, cooldown 20k
+- 실전: v6 에서 Advance 3회, Regression 2회 정상 발동
+
+### Initial position 실측 도구 (v6 신규)
+- Env step() 첫 step 위치/속도/거리 저장
+- Callback rolling stats (100 ep) → WandB
+- **근본 원인 파악의 결정적 도구**
+- Metric: env/initial_target_dist_{3d,xy}_{mean,min,max}, initial_pos_{x,y,z}_*
 
 ---
 
 # 2. Recent Progress
 
-- **2026-04-16:** RTF dry-run 3종 완료 (RTF 1/2/4). **RTF=2 최적** (avg 59.5 fps, 61s/4Kstep). RTF=4는 Python 병목으로 역전. Exp 002 RTF=2로 결정.
-- **2026-04-16:** WandB API key 영구 연결 (`/opt/drone-bombard/.wandb.env`, `--env-file` 방식). Docker image `drone-bombard-px4built:latest` — PX4 빌드 + 커스텀 airframes 4016-4019 포함.
-- **2026-04-14:** Obsidian 연구 비서 시스템 초기화. `notes/` 구조 구축, CLAUDE.md + RL_Project_Log.md 간소화.
-- **2026-03-22:** 보상 해킹 분석 → 4개 anti-milking 패치 적용 (학습 대기 중).
-- **2026-03-20:** 선형 거리 보상 도입 (지수 포텐셜 교체), CRUISE retry, 3중 물리 폭발 방어.
-- **2026-03-20:** Method A (1-World-4-Payload) 아키텍처 완성 및 dry-run 통과 (31 fps).
-- **2026-03-19:** 자기관리 인프라 안정화 (z=0 스폰, COM_OF_LOSS_T=10s, fps=30-31).
+- **2026-07-05:** RAD v1 Phase 1 v6 진행 중. Initial pos log 로 진짜 원인 확정 — curriculum stage 조건이 spawn 위치 반영 안 함 (Issue #029). Stage 재설계 안 확정 (v7 대기). 문서 전면 업데이트.
+- **2026-07-04:** v5 (stage2 완화) 실패 → v6 (spawn_yaw ±45°, hover -30, initial pos log) 시작. Stage 2 통과 (v4/v5 stuck 지점 돌파). Stage 3 완전 실패.
+- **2026-07-03:** v3 (curriculum + regression) 도입, Stage 1 정체 → v4 (reward magnitude 축소) → Stage 1↔2 cycle 반복. Reward magnitude 축소 효과 (Q_target_std 289→166).
+- **2026-07-02:** v1 NaN abort 후 v2 self-healing 도입 (A1 gradient clip + B3 weight rollback + 상세 metric). v2 도 171k 에서 NaN abort 재현.
+- **2026-06-30:** RAD v1 (Relative Approach Drop) 새 framework design 완료 + v1 학습 시작. Phase 1 sphere entry + 7 조건 목표.
+- **2026-06-27:** v9a fine-tune 미달성 → v8 = best baseline 확정. 새 design framework 방향 결정.
+- **2026-06-22:** dgui (evaluate_gui.py) 도구 완성. ang_vel callback fix (Issue #024).
+- **2026-06-21:** Phase 1 redux v8 완성 (96bokgae, 303k, 80.6% success, best 0.07m).
 
 ---
 
-# 3. Remaining Tasks (Next Steps)
+# 3. Remaining Tasks
 
-- [ ] **Fresh 1M-step 학습 시작** — 보상 패치 이후 fresh start (run `exp_002`), **RTF=2**로 진행
-- [x] **RTF > 1 조사** — dry-run 완료. RTF=2 최적 확정.
-- [ ] **EvalCallback 추가** — 10K steps마다 deterministic 평가, `best_model.zip` 저장
-- [ ] **커스텀 SB3 policy** — PyTorch AMP (mixed precision)으로 L4 GPU 활용도 향상
-- [ ] **Phase 2 커리큘럼** — policy가 표적 도달 안정화 후 manual drop 재활성화
-- [ ] **PX4 로그 /dev/null 리다이렉트** — `/tmp/px4_{i}.log` 100+ MB 증가 방지
+### 즉시 (v7 stage 재설계)
+- [ ] v6 학습 종료 결정 (사용자 대기)
+- [ ] Curriculum yaml 재설계 반영:
+  - Stage1: radius 4.80m, 조건 없음, crash 완화
+  - Stage2: radius 4.65m, 조건 없음
+  - Stage3: radius 4.53m, 조건 없음
+  - Stage4: radius 4.53m + [C1, C4, C5]
+  - Stage5: radius 4.53m + [C1~C7]
+- [ ] v7 학습 시작 (300k)
+- [ ] Stage 진입 후 정책이 이동 학습하는지 initial log 로 확인
+- [ ] Stage 1 → 2 → 3 → 4 → 5 순차 진행 여부 관찰
+
+### 이후 (Phase 2 준비)
+- [ ] Phase 1 완료 시 policy checkpoint 저장
+- [ ] Phase 2 (Drop) 학습 설계 확정
+- [ ] Phase 2 curriculum 설계 (drop 정밀도 단계)
+- [ ] Phase 1 policy 를 checkpoint 로 사용해 Phase 2 warm start
+
+### 장기
+- [ ] Multi-env parallel training (fps 개선)
+- [ ] Curriculum 자동 조정 (진행 상태에 따라 dynamic threshold)
+- [ ] Reward shaping 재검토 (dense signal 강화)
 
 ---
 
-# 4. Training History
+# 4. Training History (추가만 가능)
 
-> **전체 히스토리:** `notes/experiments/training_history.md`
-> **개별 실험 노트:** `notes/experiments/exp_NNN_*.md`
-
-최근 주요 runs:
-
-| 날짜 | Run ID | Steps | 요약 |
-|------|--------|-------|------|
-| 2026-03-20 | 8otphxy8 | 114K | 선형 거리 보상 + CRUISE retry. 마지막 정상 베이스라인. |
-| 2026-03-22 | — | — | 보상 패치 적용 (학습 없음). Fresh start 대기 중. |
-| 2026-04-16 | mtx7ud6o/x8jq9fsy/u8w3xn0w | 5500×3 | RTF 1/2/4 dry-run. RTF=2 최적 (59.5 fps). |
-| _TBD_ | exp_002 | — | 보상 패치 후 Fresh 1M-step 학습, RTF=2 |
+| Version | 시기 | 결과 | 주요 변경 |
+|---|---|---|---|
+| RAD v1 Phase 1 v1 (g8mvzniw) | 2026-06-30~07-02 | NaN abort at 62k | Original RAD v1 design 그대로 |
+| RAD v1 Phase 1 v2 | 2026-07-02 | NaN abort at 171k | + Self-healing (A1 grad clip + B3 weight rollback + 상세 metric) |
+| RAD v1 Phase 1 v3 | 2026-07-03 | Stage 1 정체 (75%) | + 5-stage curriculum + regression, advance 강화 |
+| RAD v1 Phase 1 v4 | 2026-07-03 | Stage 1↔2 cycle 반복 | + Reward magnitude 축소 (crash -20, hover -10, trunc -5, q_clip 200, fast_reset 500) |
+| RAD v1 Phase 1 v5 | 2026-07-04 | Stage 2 hover 65% 실패 | + Stage 2 완화 (radius 5→5.5m, z_min 0.15→0.08, tilt 0.9→1.0) |
+| RAD v1 Phase 1 v6 | 2026-07-04~05 | Stage 3 완전 실패 (cycle 반복), 진짜 원인 확정 | + spawn_yaw ±45°, penalty_hover -30, initial pos log 신규 |
+| **RAD v1 Phase 1 v7** (계획) | 2026-07-05~ | TBD | + Stage 재설계 (radius 4.80→4.65→4.53m gradient, spawn 5m 반영) |

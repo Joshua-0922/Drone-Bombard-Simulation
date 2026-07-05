@@ -2,6 +2,7 @@
 import rclpy
 from rclpy.node import Node
 import math
+import time
 
 from std_msgs.msg import Bool, Float32
 from nav_msgs.msg import Odometry
@@ -46,6 +47,7 @@ class DropCalculatorNode(Node):
         if not msg.data and not self.is_falling and not self.has_scored:
             self.get_logger().warn("Referee: Drop detected! Tracking payload...")
             self.is_falling = True
+            self._drop_t = time.time()
 
     def check_impact(self):
         if not self.is_falling:

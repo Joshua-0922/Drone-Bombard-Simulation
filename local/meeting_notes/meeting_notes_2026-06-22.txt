@@ -1,0 +1,284 @@
+================================================================================
+ Drone-Bombard-Simulation 작업 정리 — 2026-06-22
+ 세션 기간 : 2026-06-21 ~ 2026-06-22
+ 직전 노트 : meeting_notes_2026-06-05.txt (이후 v5~v8 라운드는 master.txt 참조)
+ 핵심 변화 : v8 평가 도구 (dgui) 개발 → ang_vel callback bug 발견/fix → v9a 처방 결정 → 학습 시작
+================================================================================
+
+
+********************************************************************************
+*  PART 1 — Phase 1 redux v8 (96bokgae) 결과 정리
+********************************************************************************
+
+  v8 학습 완료 (2026-06-19 ~ 06-21, 52 시간):
+    run_name: phase1_redux_v8_no_invalid_penalty
+    wandb run: 96bokgae
+    303,801 timesteps, 8,736 episodes
+    3,342 drops / 2,694 successes (80.6%)
+    13 jackpots (≤ 0.3m)
+    mean drop_err: 1.85m
+    BEST drop: 0.07m (drop_0588_step157201)
+
+  핵심 처방 (v7 대비):
+    invalid_drop_penalty: 50 → 0     ← v7 의 drop 0 원인 제거
+    invalid_drop_threshold: 50 → 95   ← 99m default 만 잡음
+
+  v8 의 D1 처방:
+    매 drop 후 _kill_infra + _start_infra (38s) — fresh SDF attach 보장
+    → DetachableJoint plugin 의 reattach 후 detach silent fail 우회
+    옵션 C (safe attach) 비활성
+
+  v8 backup:
+    경로: local/backups/phase1_redux_v8_2026-06-21/ (8.6 GB)
+    내용: models/ (6.2MB), success_replay/ (8.1GB), drop_episodes/ (28MB),
+          wandb/ (421MB), code_snapshot/ (180KB), logs/, README.md
+
+
+********************************************************************************
+*  PART 2 — dgui 도구 개발
+********************************************************************************
+
+  목적: v8 학습된 모델을 GUI 로 시각 검증
+
+  파일: local/scripts/evaluate_gui.py
+  config: local/eval_config.yaml
+  모델: ros2_ws/eval_models/ (host = container bind mount)
+  결과: local/eval_logs/eval_<ts>_<model>.json (자동 저장)
+  alias: ~/.bashrc 의 'dgui'
+
+  단계적 처방 history:
+
+  D-1 (강제 _kill_infra):
+    문제: 학습은 매 drop 후 _kill_infra 보장. evaluate 시 drop 0 인 경우 vel 잔존 +
+          payload reattach silent fail.
+    fix: inline script 에서 매 ep 직전
+         env._consecutive_fast_resets = env._cfg_max_consecutive_fast_resets
+         → reset 안에서 _forced_restart=True 자동 trigger → 학습 D1 path 그대로.
+
+  M-1 (tmux 우회):
+    문제: tmux capture-pane 의 wrap 으로 trace 잘림. 실제 hang 아닌데 hang 으로 추정.
+    fix: tmux 대신 subprocess.Popen + stdout=PIPE 으로 직접 stream.
+
+  B (env GZ_SERVER_READY marker):
+    문제: GUI 가 cruise 도달 후에야 launch → spawn / ARM / TAKEOFF 못 봄.
+    fix: drone_drop_env.py 의 reset() 안 _start_infra() 직후 print marker.
+         host 가 marker 보면 즉시 launch_gui.
+
+  settle 5s:
+    G 처방 (settle 2s) 시도 → 5 ep success 33% 의 variability.
+    settle 5s 복원 → 100% success.
+
+  H 처방 (watcher backoff 25s):
+    문제: GUI watcher 가 _kill_infra → _start_infra 사이 server 없을 때
+          GUI 죽은 거 감지 → relaunch → 또 죽음 → loop.
+    fix: launch 직후 25s 동안 watcher skip.
+
+  E 처방 (강제 set 제거) — 폐기:
+    시도: 매 ep 강제 _kill_infra 제거. drop 없는 ep 후 fast reset.
+    문제: fast reset 의 _gz_reset_poses 가 비행 중 drone teleport 못함 → spawn drift
+          누적 (EP4 spawn=(-1.76, 2.14, 7.25)).
+    폐기. 매 ep _kill_infra 강제 유지.
+
+  Camera mode (follow / origin / default):
+    interactive 묻기 (dgui 단독 호출 시).
+    gz service /gui/follow 또는 /gui/move_to.
+    fallback: SDF camera_pose 변경 (gazebo_models/worlds/x_marker_world.sdf):
+      기존: 15 6 5 0 0.7 2.35 (NW 방향, drone 안 보임)
+      새로: 5 -5 5 0 0.615 2.356 (SE 방향, drone spawn 쪽 looking)
+
+  v8 모델 3 개 백업:
+    v8_peak_step217040_err0.87m.zip      ← peak window best (80% success 모델)
+    v8_best_step157201_err0.07m.zip      ← global best single drop (jackpot)
+    v8_final_step303801.zip               ← 학습 종료 시점 (cumulative 80.6%)
+
+  검증:
+    v8_peak 5 ep: 5/5 = 100% success, mean 1.72m
+    v8_best 5 ep: 5/5 = 100% success, mean 1.82m
+
+
+********************************************************************************
+*  PART 3 — ang_vel callback bug 발견 + fix (Issue #024)
+********************************************************************************
+
+  발견 동기: v9 처방 (drop ang_vel penalty) 검증 위해 v8 의 drop_episodes 분석.
+
+  충격 결과:
+    v8 학습 500 ep sample 의 obs[:, 6:9] (ang_vel 부분):
+      mean: 0.000000
+      max:  0.000000
+      >0 인 비율: 0.00%
+    → 모든 step 의 ang_vel obs 가 정확히 0.
+
+  root cause:
+    PX4 의 /opt/PX4-Autopilot/src/modules/uxrce_dds_client/dds_topics.yaml 에서
+    vehicle_angular_velocity 가 PX4 default 에서 주석 처리:
+
+    ```yaml
+    #  - topic: /fmu/out/vehicle_angular_velocity    ← 주석
+    #    type: px4_msgs::msg::VehicleAngularVelocity
+      - topic: /fmu/out/vehicle_attitude            ← 활성
+      - topic: /fmu/out/vehicle_local_position
+      - topic: /fmu/out/vehicle_status
+    ```
+
+    PX4 maintainers 의 의도적 disable (quaternion derivative 라 redundant).
+
+  의미:
+    v8 학습 전체가 ang_vel obs 없이 진행됨에도 80% success 달성.
+    정책이 다른 obs (pos, vel, CCIP) 만으로 toss 학습.
+
+  Fix:
+    1. dds_topics.yaml 의 두 줄 uncomment
+    2. PX4 rebuild (make px4_sitl_default, ~15분)
+    3. hyperparams.yaml: limit_ang_vel 2.0 → 10.0 (실측 4.89 rad/s, false crash 방지)
+    4. install/share sync
+
+  검증 (v8 5 ep 평가):
+    EP1: 1.82m ✓, max ang_vel 2.66
+    EP2: 1.87m ✓, max ang_vel 2.31
+    EP3: 1.95m ✓, max ang_vel 2.48
+    EP4: 1.65m ✓, max ang_vel 2.36
+    EP5: 1.96m ✓, max ang_vel 2.13
+    → 5/5 = 100% success ✓ (v8 정책 영향 미미)
+
+  측정된 toss dynamics:
+    spawn (drone 정지): 0.05 ~ 0.25 rad/s
+    toss pitch back peak: 2.1 ~ 2.7 rad/s (5 ep 평균), 최대 4.89 rad/s
+    drop 직전: < 0.5 rad/s (drone 자연 안정화)
+
+  Backup:
+    - container: /tmp/ang_vel_fix_backup/dds_topics.yaml
+    - host: local/backups/hyperparams_v8_pre_angvel_fix_20260622_042523.yaml
+
+
+********************************************************************************
+*  PART 4 — v8 toss 전략 분석 (Issue #026)
+********************************************************************************
+
+  사용자 GUI 시각 검증으로 정책 행동 발견:
+    1. drone 이 (0, 0, 0.24) spawn → cruise alt 5m
+    2. 정책이 cruise 명령 (NW) 무시 + target (4, 3) NE 방향 비행
+    3. drone 이 marker 를 지나친 위치 (예: (5, 4)) 까지 감
+    4. 그 위치에서 멈춤 + 몸을 marker 방향으로 기울임 (pitch back)
+    5. detach → payload 가 forward momentum 으로 marker 향해 toss
+    → 모든 ep 일관 = 정책 완전 수렴
+
+  사용자 평가:
+    "이게 나쁜건 아닌데 우리가 막연하게 생각하는 그런 방향은 아니잖아?"
+    "이렇게라도 학습이 되었다는 점은 고무적이야"
+
+  사용자 두 가설:
+    가설 1 — 탐험 부족 (local optimum): 부분 정확
+    가설 2 — 환경이 두 행동 (hover-drop vs toss) 구분 못 함: 가장 본질 (root cause)
+
+  잘못된 1차 진단 (정정):
+    내가 처음 "hover_drop_block_threshold = 0.0 이 hover-drop 차단" 이라고
+    잘못 분석. yaml comment: "0 = 비활성 (모든 drop 허용)". hover-drop 허용됨.
+
+  진짜 root cause:
+    1. auto_drop_threshold = 2.0 (ballistic CCIP-based 자동 drop)
+    2. sparse reward (terminal drop_err 만)
+    3. target NE vs cruise NW
+    4. detach 후 ep 즉시 종료 (payload trajectory 평가 X)
+
+
+********************************************************************************
+*  PART 5 — v9 처방 결정 (사용자 의도)
+********************************************************************************
+
+  사용자 처방 1 — drop 시점 drone 각속도 변화 penalty:
+    "drop 시의 드론의 각속도 변화에만 제한이 있으면 될 거 같아"
+    의도: toss 의 급격한 pitch back 차단, 정책이 부드러운 drop 학습
+
+    측정 방법 결정 (E):
+      drop trigger 시 직전 5 step (`drop_angaccel_window_n=5`) 의
+      인접 ang_vel diff magnitude 의 max (`drop_angaccel_penalty_scale=0.5`)
+
+    구현 (drone_drop_env.py):
+      ```python
+      from collections import deque
+      self._ang_vel_history = deque(maxlen=6)
+      # step() 매 step: self._ang_vel_history.append(ang.copy())
+      # drop trigger 시:
+      hist = list(self._ang_vel_history)
+      max_ang_accel = max(||hist[i] - hist[i-1]|| for i in range(1, len(hist)))
+      reward -= drop_angaccel_penalty_scale * max_ang_accel
+      ```
+
+    prerequisite: Issue #024 (ang_vel callback fix)
+
+  사용자 처방 2 — payload distance reward:
+    "payload 가 처음부터 끝까지 가까워 지면 가산점, 멀어지면 패널티"
+
+    분석 결과: 기존 r3_dist (w_dist * (d_xy_prev - d_xy)) 와 본질적으로 동일.
+    - attached 동안 drone == payload (offset 0.14m 작음)
+    - detach 후 ep 즉시 종료 → payload ballistic 추적 안 됨 (Issue #027)
+
+    선택: 옵션 A — w_dist scale 증가 (1.0 → 1.5)
+      - 단순, 효과 명확
+      - monotonic distance reduction 강화
+
+    폐기: 옵션 B (detach 후 payload tracking) — 큰 변경, Issue #027 별도 안건
+
+  scale 결정:
+    payload_distance_reward_scale (= w_dist) = 1.5
+    drop_angaccel_penalty_scale = 0.5
+    drop_angaccel_window_n = 5
+
+  학습 step:
+    100k (의도) → train_sac 의 timesteps=400000 (= v8 의 303k + 100k 추가)
+
+
+********************************************************************************
+*  PART 6 — v9a 학습 시작
+********************************************************************************
+
+  run_name: phase1_redux_v9a_payload_dist_angaccel
+  wandb run: zjexq20k
+
+  학습 명령:
+    ros2 run rl_navigation train_sac \
+        --resume /workspace/ros2_ws/eval_models/v8_peak_step217040_err0.87m.zip \
+        --timesteps 400000
+
+  - warm start: v8_peak (num_timesteps = 217,040)
+  - fresh replay buffer: _replay.pkl 없음 → 자동 새 buffer
+  - reset_num_timesteps=False → counter 유지
+
+  시작: 2026-06-22 18:41 UTC
+
+  첫 ep 결과:
+    drop_0001_step217201_err1.94m, rew=72.0, 161 steps
+    → 정상 시작
+
+
+********************************************************************************
+*  PART 7 — 다음 작업
+********************************************************************************
+
+  v9a 학습 monitor (예상 18시간)
+  완료 후:
+    - peak window + best 모델 백업
+    - dgui 평가 (사용자 의도 검증)
+    - 결과 보고 다음 처방 결정 (사용자 가 직접 결정)
+
+
+================================================================================
+ 메모
+================================================================================
+
+  파일 변경:
+    - drone_drop_env.py: deque 추가, _ang_vel_history, drop trigger 후 ang_accel penalty,
+      reset() 의 _start_infra() 직후 [GZ_SERVER_READY] marker (dgui 용)
+    - hyperparams.yaml: w_dist 1.5, drop_angaccel_*, limit_ang_vel 10, run_name v9a
+    - PX4 dds_topics.yaml: vehicle_angular_velocity uncomment + rebuild
+    - x_marker_world.sdf: camera_pose 변경
+    - local/scripts/evaluate_gui.py: (신규) dgui 도구
+    - local/eval_config.yaml: (신규)
+    - ros2_ws/eval_models/: (신규) 모델 3 개 + README
+    - ~/.bashrc: alias dgui 추가
+    - ros2_ws/.gitignore: eval_models/ 추가
+
+  자율 진행 (사용자 수면 중) 시간:
+    2026-06-22 04:25 ~ 04:50 (25분)
+    - PX4 rebuild 15분 + 평가 10분
