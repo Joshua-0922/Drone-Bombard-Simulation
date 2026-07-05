@@ -370,6 +370,28 @@ PPO는 체계적 착취로 나타난다. 종단 보상은 farming 스트림 총�
 - rollout 지표가 나쁠 때 **deterministic eval로 정책 평균과 노이즈를 분리**한 뒤 판단하라
   — exp_013에선 둘 다 36%로 같았다(σ-불변 계측과 정합).
 
+## Rule 19 — 런타임 물리 프로퍼티 오버라이드 금지: 컨트롤러가 읽는 값 == solver 값을 계측으로 증명하라
+
+> **상세:** [[research/isaac_inertia_ctrl_mismatch]] (2026-07-05 `_diag_inertia.py` 계측)
+
+**(a) 물리 프로퍼티(질량·관성·COM)는 스폰타임 USD authoring으로만 설정.** 런타임 뷰 API
+(`set_masses`/`set_inertias`)는 두 종류의 불일치를 만든다: ① **1-substep 지연 소비** —
+solver가 새 값을 첫 sim step까지 안 받아 stale 값에 wrench가 적분됨(+8.4 m/s 속도킥,
+[[isaac_mass_override_reset_bug]]); ② **뷰 캐시 ≠ solver ≠ 컨트롤러 3자 분열** — exp_013은
+`set_inertias`가 "전파 안 된다"는 잘못된 믿음 위에서 컨트롤러가 override 이전 값(1.66e-5)으로
+토크를 사이징했지만, 계측 결과 solver는 x500 값(0.0217)을 실제로 받고 있었다 → **rate loop
+~1300× 저토크**인 자세-마비 plant에서 학습 전체가 진행됨.
+
+**(b) hover 게이트는 회전 plant 버그를 못 잡는다** (토크 ≈ 0 지점). plant 수정 후에는
+**토크 응답 계측을 게이트에 추가**: 알려진 순수 토크 인가 → $I_{est}=\tau/\alpha$ vs
+`get_inertias()` 일치 확인 (`isaac_lab/_diag_inertia.py` 재사용, ~3분).
+
+**(c) plant 동역학을 바꾸는 수정 후 구 체크포인트 성능은 무효 — fresh start.** 정책은 보상만이
+아니라 **plant의 버그에도 overfit**한다: exp_013 정책은 저토크 plant의 굼뜬 자세를 전제로
+|ω| 한계(2.0) 직하에서 살았고, 일관 plant에선 중앙값 1.5 s 만에 68%가 bad_attitude로 죽는다
+(프롭스핀 A/B로 로터 무관 실증). "교정된 plant에서 구 정책 성능 하락"은 회귀가 아니라
+**정상** — 판단 기준은 fresh 학습 커브다.
+
 ---
 
 > **Phase 1 전체 계획:** [[research/phase1_plan]] — CCIP 기반 자율 접근, 8주, 14개 실험

@@ -37,6 +37,24 @@ type: research
 
 ---
 
+## 2026-07-05 실행 현황 (exp_014 세션)
+
+- **#0 완료** (커밋 `cd0c617`): 스폰타임 `UsdPhysics.MassAPI` authoring + 로터스핀
+  리셋 재주입 제거. `--zero-actions` **PASS** (0.18-0.22 m). ⚠️ **추가 대발견**: 구
+  런타임 `set_inertias`는 사실 **전파되고 있었다** → exp_013은 rate loop ~1300×
+  저토크 plant에서 학습됨. 수정판은 x500 inertia authoring + 컨트롤러 동일값 읽기로
+  최초의 일관 plant (커밋 `7d0e9b6`, [[research/isaac_inertia_ctrl_mismatch]]).
+  **구 체크포인트는 새 plant에서 무효** (Rule 19c).
+- **#1 구현** (커밋 `5343e38`): slant-range conf 감쇠 `g=clamp(1-(slant-5)·0.1, 0.1, 1)`,
+  `range_falloff_enabled` cfg 게이트. **실 YOLO 캘리브레이션은 컨테이너 annotator
+  버그로 차단**(stock 카메라 예제도 동일 크래시) — 커브는 분석적 후보값이며
+  `yolo_eval.py --calibrate` 하네스는 수리 완료(X-마커·카메라 spawn·스윕 하드닝),
+  이미지 수정 후 재캘리브레이션 필수. 검증: [[experiments/exp_014_A2_visionrange]].
+- **#2(reward_success)·#3(entropy_coef)는 사용자 지시로 이번 세션 불변** — 다음 페이즈.
+- 신규 관측 도구: `Episode_Metric/action_sat_frac` (raw |a|>1 비율, 커밋 `7657df4`).
+
+---
+
 ## 판정 요지 (사용자 질문에 대한 답)
 
 1. **수렴했는가?** — plateau 수렴(iter ~700 이후 flat, last200 Δreward −3.6)이지만

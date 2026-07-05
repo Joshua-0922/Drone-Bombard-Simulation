@@ -6,9 +6,25 @@
 
 # 1. Current State
 
-**업데이트:** 2026-07-03
+**업데이트:** 2026-07-05
 
-> **🔀 병행 트랙 (2026-07-03 저녁): Isaac Lab exp_013 — 첫 프로덕션 PPO 학습 완주·진단 완료** —
+> **🔀 병행 트랙 (2026-07-05): Isaac Lab exp_014 — plant 수정 + 비전 거리감쇠 → eval 100.0% (202/202)** —
+> `feat/isaac-env-migration`. 확정 버그 2건 수정(속도킥→스폰타임 `UsdPhysics.MassAPI` authoring,
+> 로터 ±200 rad/s 리셋 재주입 제거) + `--zero-actions` 게이트 PASS(11.9m→0.2m). 수정 검증 중
+> **inertia 대반전 계측**: `set_inertias`는 solver에 전파되고 있었음 → **exp_013은 rate loop
+> ~1300× 저토크 plant에서 학습된 것**(구 정책은 plant-overfit로 무효, **Rule 19** 신설,
+> [[research/isaac_inertia_ctrl_mismatch]]). probe 3종(재평가/궤적판독/보상반사실) 수렴으로
+> A1 생략 → A2(slant-range conf 감쇠) 400 iters: **R_alt=0.0000**(climb 창발 150-199 →
+> 50 iter 내 기각), success 99.85%, **noise_std 0.80 안정(폭주 없음 — 18b 재해석: σ 폭주도
+> plant 아티팩트)**. A0′(감쇠 OFF 대조): R_alt 0.0365, success 96.5% → 지배 요인=plant 일관성,
+> 감쇠=꼬리 제거+YOLO parity(유지). **deterministic 200-ep eval = 100.0%, d_xy_min 0.665m,
+> drop_impact_error 4.59m** (exp_013: 36%/1.4m/24m). 실 YOLO 캘리브레이션은 컨테이너
+> annotator 버그로 차단(하네스 수리 완료, 커브는 분석값 calibration-pending).
+> **reward_success·entropy_coef 불변(사용자 지시)** — 다음 페이즈에서 재평가(σ 안정이라
+> entropy 0 근거 약화). 다음 후보: success_radius 0.8→0.5 커리큘럼, 임무 지표(drop error) 트랙.
+> → [[experiments/exp_014_A2_visionrange]] / [[sessions/session_2026-07-05]]
+
+> **(이전 2026-07-03) Isaac Lab exp_013 — 첫 프로덕션 PPO 학습 완주·진단 완료** —
 > `feat/isaac-env-migration` 브랜치. 2048 envs×1000 iters(65.5M steps, 43분, wandb `wcjklw7a`)
 > → **deterministic 200-ep eval = 36%**, d_xy_min 1.4m plateau(게이트 0.8 밖). 기동 직후
 > **비전 사멸 버그**(`_update_vision` env-origin 프레임 혼용 → 벡터화 시 conf≡0; `yolo_eval.py`
@@ -159,3 +175,4 @@
 | 2026-07-03 | isaac_migration_phase2 (`feat/isaac-env-migration`, 병행 트랙) | 0 (코드만) | **Isaac Lab env+PPO 이식.** v13/v15 parity, `pytest test_math.py` 29/29 통과, L4 VM 미기동. jekyun SAC 학습과 별개 브랜치/워크트리. → [[experiments/exp_012_isaac_migration_phase2]] |
 | 2026-07-03 | exp013_v1_baseline (Isaac PPO, 병행 트랙, 중단 @iter 106) | ~7M steps | **비전 사멸 버그 발견·중단.** `rew_vision`≡0.0000 → `_update_vision` env-origin 프레임 혼용(2048-env grid에서 타겟 항상 프레임 밖). 수정+수치검증(visible 0%→63%). → [[errors/err_20260703_vision_env_origin_frame]] |
 | 2026-07-03 | **exp013_v2_visionfix (wcjklw7a, Isaac PPO, 병행 트랙)** | 65.5M steps (1000 iters 완주) | **첫 완주 + deterministic 200-ep eval = 36%.** plateau @iter 700, d_xy_min 1.4m 정체. 실패: max_alt 33%(상승 farming, Rule 17)+crash 27%. farmer(+225)>finisher(+121) 불균형(Rule 18a), noise_std 0.8→3.92 폭주(Rule 18b). **사후 --zero-actions FAIL(11.9m): 리셋 속도킥 활성 — run 오염, max_alt 1차 용의자.** 다음=exp_014(0순위 킥 수정 → conf 거리감쇠+success 300+entropy 0, fresh). → [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] / [[research/isaac_ppo_tuning_recommendations]] |
+| 2026-07-05 | **exp014 A2 (v3qk07pg) + A0′ (azoc1xp0), Isaac PPO, 병행 트랙** | 각 26.2M steps (400 iters) | **plant 수정 + 비전 거리감쇠 → deterministic 200-ep eval = 100.0% (202/202), d_xy_min 0.665m.** 수정: ①킥→스폰타임 MassAPI authoring(게이트 11.9m FAIL→0.2m PASS) ②로터 스핀 리셋 재주입 제거 ③**inertia 대반전**: `set_inertias`는 전파되고 있었음 — exp_013은 rate loop ~1300× 저토크 plant(Rule 19, 구 정책 plant-overfit로 무효). A2: R_alt=0.0000(climb 창발→기각 시그니처), noise_std 0.80 안정(폭주 없음). A0′ 대조: R_alt 0.0365 → 지배 요인=plant 일관성, 감쇠=꼬리 제거+YOLO parity(유지). 실 YOLO 캘리브레이션은 이미지 annotator 버그로 차단(하네스 수리 완료). reward_success·entropy 불변(다음 페이즈). → [[experiments/exp_014_A2_visionrange]] / [[research/isaac_inertia_ctrl_mismatch]] |

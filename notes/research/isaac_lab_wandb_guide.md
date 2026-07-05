@@ -83,6 +83,7 @@ Gazebo Rule 9(`ep_len` 붕괴로 인한 `ep_rew_mean` 착시)의 Isaac 대응: P
 | `Episode_Metric/drop_impact_error_m` | 종료 시점 상태로 계산한 CCIP 탄도 예측 오차(analytic, `ballistic_impact`) — Gazebo Rule 12에서 지적된 "CEP 비실재" 문제가 Isaac에선 **해결됨**: 실제 조인트 투하가 아니라 스크립트 CCIP 메트릭이지만 항상 유효한 값을 emit한다 |
 | `Episode_Metric/d_xy_min` | 에피소드 중 최근접 거리의 평균 — success_rate가 낮아도 이 값이 꾸준히 줄면 "잘 접근은 하는데 못 끝맺음"(정책 미성숙) 신호, Gazebo Rule 9 패턴과 유사 |
 | `Episode_Diag/overshoot_flythrough` | **비종단** 진단(반경 1.2m 기준) — `Episode_Termination/overshoot`(반경 0.6m, 종단)보다 항상 크거나 같아야 정상. 이 값만 높고 종단 overshoot는 낮으면 "성공 반경 근처를 스치듯 지나가지만 아직 트랩엔 안 걸림" — 커리큘럼으로 `success_radius`를 조일 준비가 됐다는 신호일 수 있음 |
+| `Episode_Metric/action_sat_frac` (07-05 추가) | **클립 전 raw 정책 액션** 성분 중 \|a\|>1 비율의 에피소드 평균 — 정책 평균의 rail-riding(포화)을 유일하게 직접 보는 지표 (exp_013 사후 계측: σ=0에서 77%). 지속 >0.5면 bang-bang 평균 — Rule 18(b) 부수발견 참조. 학습 중 추세 감시용 |
 
 ---
 

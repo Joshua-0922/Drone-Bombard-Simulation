@@ -76,3 +76,4 @@ local/backups/
 isaac_lab/_recordings/
 isaac_lab/logs/
 *.mp4
+isaac_lab/_probe_out/

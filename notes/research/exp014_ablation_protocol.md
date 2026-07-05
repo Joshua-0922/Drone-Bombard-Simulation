@@ -1,9 +1,20 @@
 ---
 date: 2026-07-04
+updated: 2026-07-05
 tags: [research, isaac-lab, ablation, experiment-design, ppo, vision]
-status: designed
+status: executed
 type: research
 ---
+
+> **2026-07-05 실행 결과** ([[experiments/exp_014_A2_visionrange]]): cheap probes
+> P1/P2/P3 실행 → 세 probe 수렴(§4 예측대로) → **A1 arm 생략, A2 직행**. 단,
+> 실행 중 **inertia 대발견**([[research/isaac_inertia_ctrl_mismatch]])으로 이 문서의
+> 전제 두 가지가 수정됨: ① "A1 diff에서 inertia는 native 유지"는 무의미했음 —
+> exp_013 solver inertia는 처음부터 x500 0.0217이었다(전파 안 된 것은 컨트롤러의
+> 읽기 쪽). ② P1(구 정책 × 수정 plant)은 "불변이면 킥-무관"을 예측했으나 실제로는
+> **정책의 plant-overfit**(bad_attitude 68%)이 지배 — 그럼에도 climb 잔존(22-27%,
+> +3 m/s 명령 rail)으로 물리 배제 결론은 그대로 성립. A0′(수정 plant, 감쇠 없음)가
+> 새 기준선으로 필요해짐 — A2 붕괴 확인 시 실행.
 
 # exp_014 ablation 설계 — max_altitude 33%의 원인 분리 (physics-kick vs climb-and-farm)
 

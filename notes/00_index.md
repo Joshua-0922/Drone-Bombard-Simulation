@@ -12,9 +12,13 @@ type: index
 
 ---
 
-## 현재 상태 (2026-07-03)
+## 현재 상태 (2026-07-05)
 
-- **병행 트랙 — Isaac Lab migration (`feat/isaac-env-migration` 브랜치, `/opt/drone-bombard/isaac-worktree`):** **exp_013 — 첫 프로덕션 PPO 학습 완주 + 진단 완료 (2026-07-03).** 2048 envs×1000 iters(65.5M steps, 43분, wandb `wcjklw7a`) → **deterministic 200-ep eval = 36%**, d_xy_min 1.4m plateau. 시작 직후 **비전 사멸 버그**(env-origin 프레임 혼용, [[errors/err_20260703_vision_env_origin_frame]]) 발견·수정 후 재기동. 실패 원인 3종 규명: ①analytic conf 거리감쇠 누락→고도 상승 farming(max_alt 33%, Rule 17) ②farmer(+225)>finisher(+121) 보상 불균형(Rule 18a) ③noise_std 0.8→3.92 폭주(Rule 18b). **07-04 forensics 재정정: 리셋 속도킥은 프로세스당 1회(첫 물리 substep, m_eff=0.02504kg 계측 확정)로 실증 — 학습 오염 사실상 없음, max_alt 27-43%는 iter ~200 창발 학습된 attractor(비전 farming 1차 가설 복권), 36% 수치 유효.** entropy 실측: 실행 속도 궤적 σ-불변(vel-Δ σ3.9/det=1.01×) → 공짜 entropy 확정. **다음: exp_014 = conf 거리감쇠 + reward_success 300 + entropy_coef 0 + 킥 위생수정, fresh ([[research/exp014_ablation_protocol]] 참조).** 온보딩 문서 3종(`isaac_lab_reward_tuning`/`wandb_guide`/`experiment_workflow`) 신설. 상세: [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] / [[research/isaac_ppo_tuning_recommendations]].
+- **병행 트랙 — Isaac Lab (`feat/isaac-env-migration`): exp_014 완료 — plant 수정 + 비전 거리감쇠 → deterministic 200-ep eval 100.0% (202/202), d_xy_min 0.665 m (exp_013: 36%/1.4 m).**
+  - **plant 수정 3종** (커밋 `cd0c617`/`7d0e9b6`): ①속도킥 → 스폰타임 `UsdPhysics.MassAPI` authoring (`--zero-actions` 11.9 m FAIL→0.2 m PASS) ②로터 ±200 rad/s 리셋 재주입 제거 ③**inertia 대반전** — `set_inertias`는 solver에 전파되고 있었음(`_diag_inertia.py` 계측): **exp_013은 rate loop ~1300× 저토크 plant에서 학습**, 구 정책은 plant-overfit(재평가 bad_att 68%) → [[research/isaac_inertia_ctrl_mismatch]] / Rule 19 신설.
+  - **exp_014 A2** (감쇠 ON, `v3qk07pg`): R_alt(300-400)=**0.0000**, success 99.85%, noise_std 0.80 안정(폭주 없음 — Rule 18b 재해석: σ 폭주도 plant 아티팩트). climb 창발(iter 150-199, 27.8%) 후 50 iter 내 완전 기각. **A0′** (감쇠 OFF 대조, `azoc1xp0`): R_alt 0.0365, success 96.5% → **지배 요인 = plant 일관성, 감쇠 = 잔여 꼬리 제거 + YOLO parity(유지)**. 상세: [[experiments/exp_014_A2_visionrange]].
+  - 실 YOLO 캘리브레이션은 컨테이너 annotator 버그로 차단(하네스는 수리 완료, 커브는 분석값 — calibration-pending). reward_success·entropy_coef 불변(다음 페이즈, [[research/isaac_ppo_tuning_recommendations]]).
+- (이전) **exp_013 — 첫 프로덕션 PPO 학습 완주 + 진단 완료 (2026-07-03).** 2048 envs×1000 iters(65.5M steps, 43분, wandb `wcjklw7a`) → **deterministic 200-ep eval = 36%**, d_xy_min 1.4m plateau. 시작 직후 **비전 사멸 버그**(env-origin 프레임 혼용, [[errors/err_20260703_vision_env_origin_frame]]) 발견·수정 후 재기동. 실패 원인 3종 규명: ①analytic conf 거리감쇠 누락→고도 상승 farming(max_alt 33%, Rule 17) ②farmer(+225)>finisher(+121) 보상 불균형(Rule 18a) ③noise_std 0.8→3.92 폭주(Rule 18b). **07-04 forensics 재정정: 리셋 속도킥은 프로세스당 1회(첫 물리 substep, m_eff=0.02504kg 계측 확정)로 실증 — 학습 오염 사실상 없음, max_alt 27-43%는 iter ~200 창발 학습된 attractor(비전 farming 1차 가설 복권), 36% 수치 유효.** entropy 실측: 실행 속도 궤적 σ-불변(vel-Δ σ3.9/det=1.01×) → 공짜 entropy 확정. **다음: exp_014 = conf 거리감쇠 + reward_success 300 + entropy_coef 0 + 킥 위생수정, fresh ([[research/exp014_ablation_protocol]] 참조).** 온보딩 문서 3종(`isaac_lab_reward_tuning`/`wandb_guide`/`experiment_workflow`) 신설. 상세: [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] / [[research/isaac_ppo_tuning_recommendations]].
 - **메인 트랙 — SAC (jekyun 브랜치, Gazebo/PX4):**
 
 ## 현재 상태 (2026-07-01)
@@ -157,7 +161,8 @@ type: index
 - [[research/isaac_lab_wandb_guide]] — Isaac Lab WandB 메트릭 가이드. `Episode_Termination/*`·`Episode_Reward/*` 등 신규 네임스페이스, Gazebo 트랙과 대조표. 첫 실 학습 전이라 rsl_rl 표준 키(§5)는 미검증 표시.
 - [[research/isaac_lab_experiment_workflow]] — Isaac Lab 실험 실행 절차 (dry-run 사다리, fresh/resume 판단, WandB run 관리, 실험 로깅).
 - [[research/isaac_ppo_tuning_recommendations]] — exp_013 결론: 무엇을 바꿔야 하는가 (conf 거리감쇠·reward_success 300·entropy 0 우선; 스폰 고도는 유지). Rule 17·18의 근거 문서.
-- [[research/exp014_ablation_protocol]] — exp_014 ablation 설계(07-04): 킥 vs attractor 원인 분리 arms/임계값/무학습 probes. forensics로 킥은 프로세스당 1회로 실증(기각), attractor 1차 가설.
+- [[research/exp014_ablation_protocol]] — exp_014 ablation 설계(07-04): 킥 vs attractor 원인 분리 arms/임계값/무학습 probes. 07-05 실행 완료 — probe 수렴으로 A1 생략, A2+A0′ 실행.
+- [[research/isaac_inertia_ctrl_mismatch]] — **(07-05) set_inertias는 solver에 전파된다(계측 ×1031) — exp_013은 rate loop ~1300× 저토크 plant에서 학습.** 구 정책 plant-overfit 실증(bad_att 68%), 런타임 물리 오버라이드 금지 + 토크 응답 게이트 (Rule 19).
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
@@ -174,6 +179,7 @@ type: index
 - [[experiments/exp_011_wobble_lpf_reward_damping]] — RL wobble = smoothness-control 문제 확정. LPF A/B(jerk RMS −45%) + 보상 댐핑(B+C) → v15 fresh 기동.
 - [[experiments/exp_012_isaac_migration_phase2]] — Isaac Lab env+PPO 이식. v13/v15 상수 parity 이식, `pytest test_math.py` 29/29 통과, L4 VM 미기동.
 - [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] — Isaac 첫 완주 PPO(65.5M steps) + eval 36%. 비전 사멸 버그 수정, 상승-farming attractor·보상 불균형·noise_std 폭주 규명 → Rule 17·18.
+- [[experiments/exp_014_A2_visionrange]] — **(07-05) plant 수정(킥·로터·inertia) + 비전 거리감쇠 → eval 100.0%(202/202).** A2 R_alt=0.0000(창발-기각 시그니처), A0′ 대조로 귀속 분리(지배=plant 일관성, 감쇠=꼬리 제거+parity). noise_std 안정 → Rule 18b 재해석.
 
 ### 에러 (errors/)
 - [[errors/err_20260703_vision_env_origin_frame]] — Isaac `_update_vision` world/env-local 프레임 혼용 → 벡터화 학습 비전 완전 사멸. "정확히 0.0000인 보상 성분 = 채널 사멸 신호" 규칙.
@@ -183,6 +189,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-07-05]] — plant 수정 실행 + inertia 대반전(Rule 19) + exp_014 A2/A0′: eval 36%→100%, R_alt 0, noise_std 안정. 캘리브레이션은 이미지 버그로 차단
 - [[daily/daily_2026-07-04]] — exp_013 forensics: 킥=프로세스당 1회 확정(m_eff 계측), max_alt=학습된 attractor 재귀속, entropy σ-불변 실측, eval 8ep 해명, exp_014 ablation 설계
 - [[daily/daily_2026-07-03]] — Isaac Lab migration Phase 2: env+PPO 코드 이식, 워크트리 분리, test_math.py 29/29 통과, Rule 16 신규
 - [[daily/daily_2026-06-23]] — v14 plateau stop @196.5K → 195K eval 65%(v13 회귀, final-approach stagnation) + soft reset 장기검증(Rule 14 완료) + 비디오 캡처
