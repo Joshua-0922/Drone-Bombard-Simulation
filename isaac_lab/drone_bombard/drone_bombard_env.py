@@ -297,36 +297,43 @@ class DroneBombardEnv(DirectRLEnv):
             k: torch.zeros(N, device=device)
             for k in ("rew_ctrl", "rew_dist", "rew_orient", "rew_proximity", "rew_vision", "rew_vel")
         }
+        # Per-episode sum of the per-step fraction of RAW policy action
+        # components outside [-1, 1] (measured before the env clips). The
+        # clip hides mean-saturation from every downstream signal — exp_013
+        # forensics measured raw |a|=2.6 with 77% of components beyond the
+        # rail even at sigma=0, invisible in any logged metric until now.
+        self._action_sat_sum = torch.zeros(N, device=device)
 
         self._robot: Articulation = self.scene["robot"]
 
         # Body index for wrench application (Crazyflie's main link is "body").
         self._body_id = self._robot.find_bodies("body")[0]
 
-        # Override the root body's mass/inertia to the measured x500 values so
-        # the velocity controller (which sizes thrust off mass) drives an
-        # x500-like plant rather than the 27 g Crazyflie shell. Must happen
-        # AFTER super().__init__() — root_physx_view is only valid once the
-        # sim is playing. Best-effort: if the API differs, fall back to the
-        # asset's actual mass so the controller stays self-consistent.
-        # Read the body's REAL PhysX inertia BEFORE any override. get_inertias
-        # returns the cached SET value after set_inertias, and set_inertias does
-        # NOT propagate to the simulated body (unlike set_masses) — so we must
-        # read it first, and the rate loop must use this real value.
+        # Mass/inertia are authored at SPAWN time on the USD body prim (see
+        # _author_body_mass_props in _setup_scene) — there is no runtime
+        # set_masses() override anymore. The old runtime path left one physics
+        # substep in which the solver still integrated the native 25 g body
+        # against a hover wrench sized for 2.17 kg: a one-off +8.4 m/s vertical
+        # kick on the process's first sim step (exp_013 §4d forensics).
+        # get_inertias/get_masses here read back what USD authored, so the
+        # controller and the solver agree from substep 0.
         #
-        # Why it matters: the rate loop applies torque = I_ctrl*(k_rate*rate_err),
-        # giving closed loop dw/dt = (I_ctrl/I_body)*k_rate*rate_err — stable only
-        # when I_ctrl == I_body. Using the cfg inertia (0.0217) against the body's
-        # real ~1.7e-5 inertia was a ~1300x over-torque -> instant spin-out on any
-        # maneuver (hover was fine only because torque ~= 0 there). (Plant-fidelity
-        # follow-up: make the inertia override actually stick for true x500
-        # rotational dynamics — see notes/research/isaac_velocity_controller.md.)
+        # Rate-loop invariant: torque = I_ctrl*(k_rate*rate_err), closed loop
+        # dw/dt = (I_ctrl/I_body)*k_rate*rate_err — stable only when
+        # I_ctrl == I_body, hence I_ctrl must always be the REAL plant inertia.
+        # Using the cfg x500 inertia (0.0217) against the body's real ~1.7e-5
+        # was a ~1300x over-torque -> instant spin-out on any maneuver.
         bidx = self._body_id[0] if isinstance(self._body_id, (list, tuple)) else int(self._body_id)
         body_I = self._robot.root_physx_view.get_inertias()[0, bidx].reshape(-1).clone()
         self._inertia_diag = torch.stack([body_I[0], body_I[4], body_I[8]]).to(self.device)
 
-        self._apply_body_mass_override()
         self._ctrl_mass = float(self._robot.root_physx_view.get_masses()[0].sum())
+        if self._ctrl_mass < 1.0:
+            raise RuntimeError(
+                f"spawn-time mass authoring did not reach PhysX (total mass "
+                f"{self._ctrl_mass:.4f} kg — expected ~{self.cfg.asset.loaded_mass:.2f} kg). "
+                "The controller would fly the native 28 g Crazyflie shell; aborting."
+            )
         self._max_thrust = self.cfg.asset.thrust_to_weight_unloaded * self._ctrl_mass * 9.81
         self._k_rate = torch.tensor(self.cfg.controller.k_rate, device=self.device)
         print(f"[DroneBombardEnv] control mass={self._ctrl_mass:.3f}kg max_thrust={self._max_thrust:.2f}N "
@@ -425,6 +432,7 @@ class DroneBombardEnv(DirectRLEnv):
     # Action pipeline
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor):
+        self._action_sat_sum += (actions.abs() > 1.0).float().mean(dim=-1)
         clipped = torch.clamp(actions, -1.0, 1.0)
         limited = rate_limit_action(clipped, self._prev_action, self.cfg.action.rate_limit)
 
@@ -772,6 +780,8 @@ class DroneBombardEnv(DirectRLEnv):
         self._hold_remaining[env_ids] = 0
         self._payload_attached[env_ids] = True
 
+        self._action_sat_sum[env_ids] = 0.0
+
         self._drag_coef[env_ids] = sample_drag_coefficient(self.cfg.drop, n, device)
         self._wind_xy[env_ids] = sample_wind(self.cfg.drop, n, device)
 
@@ -795,6 +805,10 @@ class DroneBombardEnv(DirectRLEnv):
         return {
             "done_flags": {k: v[env_ids].clone() for k, v in self._done_flags.items()},
             "overshoot_flythrough": self._overshoot_flythrough[env_ids].clone(),
+            "action_sat_frac": (
+                self._action_sat_sum[env_ids]
+                / self.episode_length_buf[env_ids].clamp(min=1).float()
+            ).clone(),
             "final_d_xy": self._d_xy_prev[env_ids].clone(),
             "d_xy_min": self._d_xy_min[env_ids].clone(),
             "episode_sums": {k: v[env_ids].clone() for k, v in self._episode_sums.items()},
@@ -838,6 +852,8 @@ class DroneBombardEnv(DirectRLEnv):
         log["Episode_Termination/timeout_near_miss"] = (
             f["timeout"] & (snap["final_d_xy"] < 2.0)
         ).float().mean().item()
+
+        log["Episode_Metric/action_sat_frac"] = snap["action_sat_frac"].mean().item()
 
         impact = self._predicted_impact_from_snapshot(snap)
         impact_error = torch.linalg.norm(impact - snap["target_xy"], dim=-1)
