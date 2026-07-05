@@ -150,10 +150,13 @@ def run_policy(env, policy_path, episodes=10):
     n_done = 0
     cause_counts = {c: 0 for c in causes}
     # d_xy readings taken after env.step() are post-reset (DirectRLEnv resets
-    # done envs inside step), so terminal distances must come from the env's
-    # own pre-reset snapshot, surfaced via extras["log"] — weighted by the
-    # size of each reset batch.
-    dxy_min_wsum, drop_err_wsum, near_miss_wsum, log_w = 0.0, 0.0, 0.0, 0
+    # done envs inside step), so terminal state must come from the env's own
+    # pre-reset snapshot. _last_final_snapshot carries the per-episode arrays
+    # for each reset batch (extras["log"] only has batch means) — accumulate
+    # them so the summary can report full distributions, not just means.
+    ep = {k: [] for k in ("d_xy_min", "released", "release_impact_err",
+                          "aim_err_min", "terminal_impact_err", "final_speed_xy")}
+    near_miss_wsum, log_w = 0.0, 0
     while n_done < episodes:
         with torch.inference_mode():
             action = policy(obs)
@@ -166,18 +169,43 @@ def run_policy(env, policy_path, episodes=10):
             for c in causes:
                 cause_counts[c] += int(f[c][done].sum().item())
             log = info.get("log", {}) if isinstance(info, dict) else {}
-            if "Episode_Metric/d_xy_min" in log:
-                dxy_min_wsum += float(log["Episode_Metric/d_xy_min"]) * n
-                drop_err_wsum += float(log.get("Episode_Metric/drop_impact_error_m", 0.0)) * n
-                near_miss_wsum += float(log.get("Episode_Termination/timeout_near_miss", 0.0)) * n
-                log_w += n
+            near_miss_wsum += float(log.get("Episode_Termination/timeout_near_miss", 0.0)) * n
+            log_w += n
+            snap = getattr(env.unwrapped, "_last_final_snapshot", None)
+            if snap is not None:
+                u = env.unwrapped
+                terminal_impact = u._predicted_impact_from_snapshot(snap)
+                ep["terminal_impact_err"].append(
+                    torch.linalg.norm(terminal_impact - snap["target_xy"], dim=-1).cpu())
+                ep["d_xy_min"].append(snap["d_xy_min"].cpu())
+                ep["released"].append(snap["released"].cpu())
+                ep["release_impact_err"].append(snap["release_impact_err"].cpu())
+                ep["aim_err_min"].append(snap["aim_err_min"].cpu())
+                ep["final_speed_xy"].append(
+                    torch.linalg.norm(snap["final_vel_xy"], dim=-1).cpu())
     print(f"[policy] episodes={n_done} success_rate={cause_counts['success']/max(n_done,1):.2%}")
     print(f"[policy] termination causes: " + ", ".join(
         f"{c}={cause_counts[c]}" for c in causes if cause_counts[c] > 0))
-    if log_w:
-        print(f"[policy] mean d_xy_min={dxy_min_wsum/log_w:.3f} m | "
-              f"mean drop_impact_error={drop_err_wsum/log_w:.3f} m | "
-              f"timeout_near_miss_rate={near_miss_wsum/log_w:.2%}")
+    if ep["d_xy_min"]:
+        cat = {k: torch.cat(v) for k, v in ep.items()}
+        released = cat["released"].bool()
+        rel_rate = released.float().mean().item()
+
+        def stats(t):
+            if t.numel() == 0:
+                return "n/a"
+            q = torch.quantile(t, torch.tensor([0.5, 0.9]))
+            return f"mean={t.mean():.3f} med={q[0]:.3f} p90={q[1]:.3f} max={t.max():.3f}"
+
+        print(f"[policy] d_xy_min: {stats(cat['d_xy_min'][torch.isfinite(cat['d_xy_min'])])} m")
+        print(f"[policy] release_rate={rel_rate:.2%} ({int(released.sum())}/{released.numel()})"
+              f" | drop_impact_error@release: {stats(cat['release_impact_err'][released])} m")
+        print(f"[policy] aim_err_min (per-episode min CCIP error): "
+              f"{stats(cat['aim_err_min'][torch.isfinite(cat['aim_err_min'])])} m")
+        print(f"[policy] drop_impact_error_terminal (legacy, at episode end): "
+              f"{stats(cat['terminal_impact_err'])} m")
+        print(f"[policy] final_speed_xy at termination: {stats(cat['final_speed_xy'])} m/s")
+        print(f"[policy] timeout_near_miss_rate={near_miss_wsum/max(log_w,1):.2%}")
 
 
 def main():

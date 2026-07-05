@@ -112,6 +112,13 @@ entropy_coef 0.005 그대로인데도 폭주 없음. 일관 plant에선 노이�
 지표(투하 정확도)는 `drop_impact_error_m` 재평가와 성공 반경 커리큘럼(0.8→0.5)
 후 판단할 것. 또한 이 수치는 일관 plant의 효과가 겹쳐 있다 — 분리는 §5 A0′.
 
+> **(07-05 후속 규명 — exp_016)**: eval의 `drop_impact_error_m` **4.59 m는 투하
+> 오차가 아니라 지표 의미론 버그**였다. Phase 1엔 릴리스 트리거가 없고, 지표가
+> d_xy-성공 종단 스냅샷(잔여속도 ~3.0 m/s 포함)의 탄도 예측을 보고 = 속도 캐리
+> 3.0×1.53 s ≈ 4.6 m. 올바른 CCIP referee(≤0.2 m 트리거)로 재평가: 발화 시
+> 0.137 m, 단 release_rate 6%(CCIP 스윕 최근접 med 0.755 m ≈ 경로 cross-track).
+> → [[research/ccip_release_decoupling]] / [[experiments/exp_016_ccip_release_reeval]] (Rule 21)
+
 ## 5. A0′ 대조군 — 일관 plant + 감쇠 없음 (400 iters, seed 42, wandb `azoc1xp0`)
 
 A2의 R_alt를 exp_013 기준선(~0.39)과 비교할 때 plant도 함께 바뀌었으므로(inertia

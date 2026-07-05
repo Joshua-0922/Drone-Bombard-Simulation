@@ -8,7 +8,25 @@
 
 **업데이트:** 2026-07-05
 
-> **🔀 병행 트랙 (2026-07-05): Isaac Lab exp_015 — Phase별 순차 커리큘럼 코드 완료 (미학습)** —
+> **🔀 병행 트랙 (2026-07-05 저녁): Isaac Lab exp_016 — "success 100% vs drop_impact_error 4.59 m" 디커플링 규명·수정 (Rule 21)** —
+> `feat/isaac-env-migration`. **진단(적대 검증 5/5 확정)**: Phase 1엔 릴리스 트리거가 존재하지
+> 않았고(`DropCfg.release_tolerance=0.2`는 정의만 되고 미사용 — v15 `drop_calculator_node`의
+> CCIP ≤0.2 m 트리거 의도가 이식에서 소실), `drop_impact_error_m`은 **d_xy≤0.8 성공-종단
+> 스냅샷**(잔여속도 포함)의 탄도 예측 = **속도 캐리** $v\cdot(\sqrt{2H/g}+0.1)$ = 3.0 m/s ×
+> 1.53 s ≈ 4.6 m. `final_speed_xy` 계측(2.99 m/s)으로 산수 봉합. **수정**: 스크립티드 CCIP
+> referee(매 policy step, |예측착탄−타겟|≤0.2 m ∧ alt>1 m 최초 충족 시 래치) — **지표 전용,
+> 보상/종단/RNG 무접촉(학습 동역학 bit-identical)**. `drop_impact_error_m`=릴리스 시점 재정의,
+> 구 지표 `drop_impact_error_terminal_m` 보존, `release_rate`/`aim_err_min_m`/`final_speed_xy`
+> 신설. **A2 재평가(6407f8d 백포트, 200-ep deterministic)**: 구 지표 4.649 m 재현 ✓, **새 지표
+> 발화 시 0.137 m(10 Hz)/0.172 m(100 Hz referee), 단 release_rate 6.0%/11.5%** — CCIP 스윕
+> 최근접 med 0.755 m ≈ d_xy_min 0.665 m: **근접(d_xy) 보상으로 학습한 정책은 0.2 m 릴리스
+> 윈도우를 거의 못 통과(cross-track 지배, 샘플링 아님)**. exp_013의 24 m도 동일 의미론(실패
+> 지배 극단값) — 디커플링은 exp_012 지표 도입부터 구조적, plant 수정이 노출시킨 것. **진짜
+> 투하 능력은 exp_015 Phase 2(릴리스 조건부 보상)가 학습해야 하며, 본 수정으로 Phase 1↔2
+> `drop_impact_error_m` 의미론이 정렬됨.**
+> → [[experiments/exp_016_ccip_release_reeval]] / [[research/ccip_release_decoupling]] / Rule 21
+
+> **(이전 2026-07-05): Isaac Lab exp_015 — Phase별 순차 커리큘럼 코드 완료 (미학습)** —
 > `feat/isaac-env-migration`. 이미지의 3단계 커리큘럼(접근/nominal → CCIP+Residual/정지타겟 →
 > 이동타겟)을 env + `train.py`로 **완전 구현**. ① **action 4→6** (`[0:4]` 속도 setpoint +
 > `[4:6]` CCIP 착탄점 residual δx/δy) — 전 페이즈 6-dim 고정으로 `runner.load()` warm-start
@@ -195,3 +213,4 @@
 | 2026-07-03 | **exp013_v2_visionfix (wcjklw7a, Isaac PPO, 병행 트랙)** | 65.5M steps (1000 iters 완주) | **첫 완주 + deterministic 200-ep eval = 36%.** plateau @iter 700, d_xy_min 1.4m 정체. 실패: max_alt 33%(상승 farming, Rule 17)+crash 27%. farmer(+225)>finisher(+121) 불균형(Rule 18a), noise_std 0.8→3.92 폭주(Rule 18b). **사후 --zero-actions FAIL(11.9m): 리셋 속도킥 활성 — run 오염, max_alt 1차 용의자.** 다음=exp_014(0순위 킥 수정 → conf 거리감쇠+success 300+entropy 0, fresh). → [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] / [[research/isaac_ppo_tuning_recommendations]] |
 | 2026-07-05 | **exp014 A2 (v3qk07pg) + A0′ (azoc1xp0), Isaac PPO, 병행 트랙** | 각 26.2M steps (400 iters) | **plant 수정 + 비전 거리감쇠 → deterministic 200-ep eval = 100.0% (202/202), d_xy_min 0.665m.** 수정: ①킥→스폰타임 MassAPI authoring(게이트 11.9m FAIL→0.2m PASS) ②로터 스핀 리셋 재주입 제거 ③**inertia 대반전**: `set_inertias`는 전파되고 있었음 — exp_013은 rate loop ~1300× 저토크 plant(Rule 19, 구 정책 plant-overfit로 무효). A2: R_alt=0.0000(climb 창발→기각 시그니처), noise_std 0.80 안정(폭주 없음). A0′ 대조: R_alt 0.0365 → 지배 요인=plant 일관성, 감쇠=꼬리 제거+YOLO parity(유지). 실 YOLO 캘리브레이션은 이미지 annotator 버그로 차단(하네스 수리 완료). reward_success·entropy 불변(다음 페이즈). → [[experiments/exp_014_A2_visionrange]] / [[research/isaac_inertia_ctrl_mismatch]] |
 | 2026-07-05 | isaac_phased_curriculum (`feat/isaac-env-migration`, 병행 트랙) | 0 (코드만, 미학습) | **Phase별 순차 커리큘럼 구현.** 이미지 3단계(접근/nominal → CCIP+Residual/정지 → 이동타겟) 완전 구현: action 4→6(δ residual), phase 노브+파생 플래그, 릴리스 이벤트(nominal CCIP+δ 트리거 → 실제 DR 낙하 착탄오차 터미널 보상), drag/wind DR, Gauss-Markov 이동타겟+lead, `train.py --phases 1,2,3` 서브프로세스 오케스트레이터(6-dim 고정 → warm-start 무손실). Phase 1=exp_014 baseline 동작 동일. **`py_compile` 12파일 통과; `pytest`(+8 신규)·본 학습은 L4/컨테이너 대기.** → [[experiments/exp_015_phased_curriculum]] / [[research/phased_curriculum]] / Rule 20 |
+| 2026-07-05 | **exp016 CCIP 릴리스 referee 재평가 (eval-only, A2 ckpt, 병행 트랙)** | 0 (200-ep deterministic eval) | **디커플링 규명: 4.59m = 지표 의미론 버그(릴리스 트리거 부재, 성공-종단 속도 캐리).** CCIP referee(≤0.2m) 수정 후: 발화 시 0.137m, release_rate 6%/11.5%(10/100Hz), aim_err_min med 0.755m ≈ d_xy_min(cross-track 지배). 구 지표 4.649m 재현. 보상/종단 bit-identical. Rule 21. → [[experiments/exp_016_ccip_release_reeval]] / [[research/ccip_release_decoupling]] |

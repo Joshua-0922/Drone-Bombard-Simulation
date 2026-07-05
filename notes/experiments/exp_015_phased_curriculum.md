@@ -3,7 +3,7 @@ date: 2026-07-05
 tags: [experiment, isaac-lab, ppo, curriculum, ccip, residual, domain-randomization, moving-target]
 status: active
 type: experiments
-wandb_run: N/A (code only — not yet trained; L4 VM required)
+wandb_run: N/A (스모크 검증 완료 2026-07-05 — 3페이즈+오케스트레이터 실학습 루프 통과; 본 학습 미실행)
 ---
 
 # exp_015 — Phase별 순차 커리큘럼 학습 (CCIP+Residual → 이동타겟)
@@ -68,15 +68,40 @@ exp_014까지의 Phase 1(접근/nominal release, 정지타겟)은 eval 100%로 �
 - `isaac_lab/tests/test_math.py`: 신규 순수-torch 유닛테스트 8종(time_to_fall/nominal/residual/
   GM/impact·lead 보상/drag 브랜치).
 
-## 4. 검증
+## 4. 검증 (2026-07-05 완료 ✅)
 
-- **로컬 `py_compile` 전체 통과**(math_utils, domain_rand, env, train, 보조 5종, test 포함 12파일).
-- **`pytest test_math.py`는 이 dev 박스에서 미실행** — torch 미설치(GPU driver 지원 밖, Docker
-  daemon 미기동, pip 부트스트랩 차단). 신규 테스트 산식은 손계산으로 자기일치 확인. **컨테이너/
-  L4에서 실행 필요**(exp_012 워크플로와 동일):
-  ```bash
-  pytest isaac_lab/tests/test_math.py -v   # 38 tests (기존 30 + 신규 8)
-  ```
+- **`pytest test_math.py` 38/38 PASS** — CPU torch(2.12.1+cpu) venv 로컬 실행. 기존 30 + 신규 8
+  (time_to_fall/predict_impact_nominal/apply_ccip_residual/step_target_velocity ×2/impact·lead 보상/
+  drag 브랜치) 전부 통과.
+- **로컬 `py_compile` 전체 통과**(math_utils, domain_rand, env, train, 보조 5종 포함 9파일).
+- **Isaac Sim + Isaac Lab 실학습 스모크 3페이즈 전부 통과** (`isaac-verify` 컨테이너,
+  `isaac-lab-local:580`, NVIDIA L4, headless):
+  | 테스트 | 명령 | 결과 |
+  |---|---|---|
+  | Phase 1 | `--phase 1 --num_envs 16 --max_iterations 2` | ✅ model_0/1/final.pt + tfevents 생성 |
+  | Phase 2 (warm-start) | `--phase 2 ... --resume <p1 final>` | ✅ `model_2.pt`(iter 카운터 2에서 이어짐=warm-start 무손실 로드 증명) + final |
+  | Phase 3 (warm-start) | `--phase 3 --num_envs 32 --max_iterations 3 --resume <p2 final>` | ✅ `Learning iteration 2/5`, `[Done]`, 신규 지표 로깅 확인 |
+  | Orchestrator | `--phases 1,2 --phase_iterations 1,1` | ✅ 서브프로세스 체이닝, `[INFO] Warm-starting from <p1 final>`, `Curriculum complete`, 두 final.pt 생성 |
+- **오케스트레이터 전체 커리큘럼 1→2→3 자동 전환 검증 완료** (`--phases 1,2,3
+  --phase_iterations 20,20,20 --num_envs 64 --headless`, `isaac-verify`, ORCH_EXIT=0, ~3분):
+  - Phase 1→2→3 세 페이즈 모두 진입(`[Orchestrator] === Phase N (N/3) ===`)
+  - 체이닝: Phase 2 `Warm-starting from ...phase1_final.pt`, Phase 3 `...phase2_final.pt`
+  - 각 페이즈 `[Done] Phase N final model ... saved` + `_phase{1,2,3}_final.pt` 3개 생성
+  - `[Orchestrator] Curriculum complete. Final checkpoint: ...phase3_final.pt`
+  - **페이즈별 지표 분기 실증**: Phase 1 = `drop_impact_error_m`만(해석적 CCIP, release 없음),
+    Phase 2 = `release_rate`(0~1.0)+`drop_impact_error_m`(실제 DR 낙하), Phase 3 = 거기에
+    `lead_error_m`(0.11~0.49) 추가. → `release_enabled`/`moving_target_enabled` 파생 플래그가
+    페이즈마다 올바르게 동작함을 확인.
+- **신규 env 로직 실증 (Phase 3 단독 스모크 로그)**: `release_rate` 0→**1.0**→0(릴리스 이벤트 발화),
+  `drop_impact_error_m` 3.85/6.82/2.50(실제 낙하 착탄오차 산출), `lead_error_m` 0.098/0.44/0.43
+  (이동타겟 lead 지표 로깅). 미학습 상태라 mean reward는 음수(정상 — release miss 페널티).
+- **구조적 한계(문서화)**: `run_orchestrator`가 서브프로세스 cmd에 `--livestream`/`PUBLIC_IP`를
+  **전달하지 않음** → 오케스트레이터 전체 커리큘럼은 headless 전용, 화면 스트리밍 불가.
+  화면 관찰이 필요하면 단일 `--phase N --livestream 1`로 실행해야 함(후속: 오케스트레이터에
+  livestream passthrough 추가 가능).
+- **비고**: 이 dev 박스 host python엔 torch/pytest 부재 → pytest는 CPU torch venv를 임시 부트스트랩해
+  실행(테스트 후 정리). 실학습 검증은 컨테이너 안 `isaaclab.sh -p`로 수행(로그 경로는 컨테이너
+  write 권한상 `/tmp/...` 사용).
 
 ## 5. L4 VM 실행 절차 (문서화 — 미실행)
 

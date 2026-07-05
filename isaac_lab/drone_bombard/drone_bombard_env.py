@@ -409,6 +409,12 @@ class DroneBombardEnv(DirectRLEnv):
         self._release_impact_err = torch.zeros(N, device=device)
         self._release_aim_xy = torch.zeros(N, 2, device=device)
         self._release_target_xy = torch.zeros(N, 2, device=device)
+        # Per-episode minimum CCIP aim error |predicted_impact - target| (all
+        # phases). Diagnoses 10 Hz trigger discretization: at approach speed v
+        # the predicted impact point sweeps ~v*0.1 m per policy step, so the
+        # release window can be crossed between two evaluations — release_rate
+        # then under-reports while this stays just above the tolerance.
+        self._aim_err_min = torch.full((N,), float("inf"), device=device)
 
         self._episode_sums = {
             k: torch.zeros(N, device=device)
@@ -773,7 +779,8 @@ class DroneBombardEnv(DirectRLEnv):
         """Run once per policy step, at the top of ``_get_dones`` (which the
         DirectRLEnv contract guarantees fires before ``_get_rewards``). Moves
         the target (Phase 3) and evaluates the payload-release trigger
-        (Phase 2+). No-op in Phase 1."""
+        (Phase 2+). In Phase 1 it runs the scripted CCIP release referee —
+        metric-only, no reward/termination effect."""
         self._just_released = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         if self.cfg.moving_target_enabled:
@@ -787,6 +794,58 @@ class DroneBombardEnv(DirectRLEnv):
 
         if self.cfg.release_enabled:
             self._evaluate_release()
+        else:
+            self._evaluate_scripted_release_metric()
+
+    def _evaluate_scripted_release_metric(self):
+        """Phase-1 scripted CCIP referee (v15 ``drop_calculator_node`` parity)
+        — METRIC ONLY, zero reward/termination effect. Latches ``_released`` /
+        ``_release_impact_err`` at the first step the nominal predicted impact
+        point comes within ``drop.release_tolerance`` (0.2 m) of the target,
+        i.e. where the Gazebo referee would actually have dropped the payload.
+
+        Rationale (exp_014 forensics): Phase-1 ``drop_impact_error_m`` used to
+        be computed from the SUCCESS-termination state (d_xy <= 0.8), where
+        the policy still carries ~3 m/s of approach velocity — the ballistic
+        prediction then adds v*(t_fall+delay) ~ 4.6 m of carry, decoupling the
+        metric from the 100% d_xy success. The release decision was never
+        supposed to fire on raw d_xy; it fires on CCIP aim error (see
+        research/ccip_release_decoupling). ``_just_released`` is deliberately
+        NOT set — that flag feeds the Phase-2+ termination/terminal-reward
+        paths, which stay untouched in Phase 1."""
+        pc = self.cfg.phase_cfg
+        dc = self.cfg.drop
+        pos = self._robot.data.root_pos_w - self.scene.env_origins
+        vel = self._robot.data.root_lin_vel_w
+        pos_xy = pos[:, :2]
+        vel_xy = vel[:, :2]
+        altitude = pos[:, 2]
+
+        pred_impact = predict_impact_nominal(pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity)
+        aim_err = torch.linalg.norm(pred_impact - self._target_xy, dim=-1)
+        self._aim_err_min = torch.minimum(self._aim_err_min, aim_err)
+
+        fire = (
+            (~self._released)
+            & (altitude > pc.min_release_altitude)
+            & (aim_err <= dc.release_tolerance)
+        )
+        if not bool(torch.any(fire)):
+            return
+
+        # Real impact under episode physics. Phase 1 has zero drag/wind, so
+        # this equals the nominal prediction — kept as ballistic_impact for
+        # semantic parity with the Phase-2 path (impact_err is always the
+        # real-physics miss).
+        real_impact = ballistic_impact(
+            pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity, self._drag_coef, self._wind_xy
+        )
+        real_err = torch.linalg.norm(real_impact - self._target_xy, dim=-1)
+
+        self._released = self._released | fire
+        self._release_impact_err = torch.where(fire, real_err, self._release_impact_err)
+        self._release_aim_xy = torch.where(fire.unsqueeze(-1), pred_impact, self._release_aim_xy)
+        self._release_target_xy = torch.where(fire.unsqueeze(-1), self._target_xy, self._release_target_xy)
 
     def _evaluate_release(self):
         """Evaluate the scripted CCIP release trigger for the envs that have
@@ -818,6 +877,7 @@ class DroneBombardEnv(DirectRLEnv):
         target_at_impact = self._target_xy + self._target_vel_xy * t_impact.unsqueeze(-1)
 
         aim_err = torch.linalg.norm(pred_impact - target_at_impact, dim=-1)
+        self._aim_err_min = torch.minimum(self._aim_err_min, aim_err)
         fire = (
             (~self._released)
             & (altitude > pc.min_release_altitude)
@@ -1044,6 +1104,7 @@ class DroneBombardEnv(DirectRLEnv):
         self._release_impact_err[env_ids] = 0.0
         self._release_aim_xy[env_ids] = 0.0
         self._release_target_xy[env_ids] = 0.0
+        self._aim_err_min[env_ids] = float("inf")
 
         self._action_sat_sum[env_ids] = 0.0
 
@@ -1092,6 +1153,7 @@ class DroneBombardEnv(DirectRLEnv):
             "release_impact_err": self._release_impact_err[env_ids].clone(),
             "release_aim_xy": self._release_aim_xy[env_ids].clone(),
             "release_target_xy": self._release_target_xy[env_ids].clone(),
+            "aim_err_min": self._aim_err_min[env_ids].clone(),
         }
 
     def _predicted_impact_from_snapshot(self, snap: dict) -> torch.Tensor:
@@ -1118,6 +1180,10 @@ class DroneBombardEnv(DirectRLEnv):
     def _log_reset_extras(self, env_ids: torch.Tensor, snap: dict | None):
         if snap is None:
             return
+        # Expose the per-episode terminal arrays to eval harnesses (play.py
+        # accumulates distributions from this; the wandb log below only
+        # carries batch means).
+        self._last_final_snapshot = snap
         f = snap["done_flags"]
         log = self.extras.setdefault("log", {})
         for cause in ("success", "crash", "overspeed", "bad_attitude", "out_of_range", "max_altitude", "overshoot", "stagnation", "timeout"):
@@ -1143,11 +1209,30 @@ class DroneBombardEnv(DirectRLEnv):
                     )
                     log["Episode_Metric/lead_error_m"] = lead_err.mean().item()
         else:
-            # Phase 1: the analytic CCIP prediction from the terminal state
-            # (no real release event in the approach task).
+            # Phase 1: scripted CCIP referee (v15 drop_calculator parity —
+            # see _evaluate_scripted_release_metric). drop_impact_error_m is
+            # the miss at the RELEASE event; the legacy terminal-instant
+            # blind-drop prediction moves to drop_impact_error_terminal_m
+            # (it reads ~v*(t_fall+delay) of approach-velocity carry at the
+            # d_xy-success snapshot, NOT drop accuracy — exp_014's 4.59 m).
+            released = snap["released"]
+            log["Episode_Metric/release_rate"] = released.float().mean().item()
+            if bool(released.any()):
+                log["Episode_Metric/drop_impact_error_m"] = (
+                    snap["release_impact_err"][released].mean().item()
+                )
             impact = self._predicted_impact_from_snapshot(snap)
             impact_error = torch.linalg.norm(impact - snap["target_xy"], dim=-1)
-            log["Episode_Metric/drop_impact_error_m"] = impact_error.mean().item()
+            log["Episode_Metric/drop_impact_error_terminal_m"] = impact_error.mean().item()
+
+        aim_min = snap["aim_err_min"]
+        finite_aim = torch.isfinite(aim_min)
+        log["Episode_Metric/aim_err_min_m"] = (
+            aim_min[finite_aim].mean().item() if bool(finite_aim.any()) else 0.0
+        )
+        log["Episode_Metric/final_speed_xy"] = (
+            torch.linalg.norm(snap["final_vel_xy"], dim=-1).mean().item()
+        )
 
         d_xy_min = snap["d_xy_min"]
         log["Episode_Metric/d_xy_min"] = d_xy_min[torch.isfinite(d_xy_min)].mean().item() if torch.isfinite(d_xy_min).any() else 0.0
