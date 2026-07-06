@@ -8,7 +8,28 @@
 
 **업데이트:** 2026-07-06
 
-> **🔀 병행 트랙 (2026-07-06): Isaac Lab exp_017 Stage A — 밀집 CCIP 조준 보상, 판정 (b) 정체 (Rule 22)** —
+> **🔀 병행 트랙 (2026-07-06, Stage B): Isaac Lab exp_018 — 릴리스-종단 구조로 release_rate 5.5% → 100% (Rule 23)** —
+> `feat/isaac-env-migration`. exp_017(판정 b) 직후 사용자 지시 실행: ①근접 종단(d_xy≤0.8) →
+> **릴리스-발화 종단**(`DroneBombardEnvCfg.release_terminal`, 기본 False=레거시 bit-identical;
+> 실패 게이트 7종·타임아웃 불변 — 적대 검증 byte-미접촉 확인) ②aim_err 보상 **nominal CCIP
+> 전용** 명문화(트리거는 residual-포함 유지, 보상 양은 미포함 — reward-hacking 차단)
+> ③Stage-A 보상 탐색 재실행(단일 노브·소폭). **결과(전 런 v1 warm-start, 400 iters, det
+> 200-ep)**: **B0(xt0hrr1c, 보상=Stage A v1 그대로, 종단만 교체): 학습 내 release_rate
+> 23→99.6% 단조 상승**(Stage A의 12→3.7% 단조 하락 정확히 반전 — 잘림이 지배 요인이었음을
+> 인과 확정), **det 100.00%, drop err 0.125 m**(max 0.198), 호버-드롭 수렴(종단 속도 med
+> 0.11 m/s). 스윕: B1(w=1.5) 100%, B3(w=0) 100% — **aim 항은 종단 구조에서 사실상 잉여**
+> (자동 발화 referee가 탐험 노이즈를 +100 샘플러로 전환 — Stage A의 노이즈 증폭·γ-할인
+> 문제 둘 다 역전), B2(knee 0.75)만 근소 열화(98.5%). farm 시그니처 0(ep_len 52→36 감소
+> 수렴, stagnation/timeout/overshoot 전 구간 0). **4-lens 적대 검증이 done-flag alias 버그
+> 사전 발견**(`success = _just_released` alias를 `_reset_idx`가 in-place clear → eval이
+> success 0%로 보고할 뻔; `.clone()` 수정, 학습/wandb는 무영향) — Rule 23d. ckpt 4종:
+> 컨테이너 `exp018_{B0,B1,B2,B3}_final.pt` + 호스트 `/opt/drone-bombard/checkpoints/exp018/`.
+> **Stage C(DR drag/wind + residual, 별도 지시 대기) warm-start = `exp018_B0_final.pt`.**
+> Phase-2 본선 이식 시 주의: release_tolerance 0.5(Phase 2 기본) vs 0.2(referee), 호버-드롭
+> 프로파일의 바람 강건성은 미검(Phase 2 설계 의도 그 자체).
+> → [[experiments/exp_018_release_terminal]] / [[research/release_terminal_stageB]] / Rule 23
+
+> **(이전 2026-07-06, Stage A): Isaac Lab exp_017 — 밀집 CCIP 조준 보상, 판정 (b) 정체 (Rule 22)** —
 > `feat/isaac-env-migration`. exp_016의 release_rate 6% 갭에 대한 **보상-변경-단독** 개입(사용자
 > 제약: 종단/성공 게이트·entropy_coef·비전 캘리브레이션 불변, DR/residual은 Stage B로).
 > **구현**: referee와 동일 aim_err의 dense 항 $w_{aim}(1-\tanh(e_{aim}/s))$ —
@@ -239,3 +260,4 @@
 | 2026-07-05 | isaac_phased_curriculum (`feat/isaac-env-migration`, 병행 트랙) | 0 (코드만, 미학습) | **Phase별 순차 커리큘럼 구현.** 이미지 3단계(접근/nominal → CCIP+Residual/정지 → 이동타겟) 완전 구현: action 4→6(δ residual), phase 노브+파생 플래그, 릴리스 이벤트(nominal CCIP+δ 트리거 → 실제 DR 낙하 착탄오차 터미널 보상), drag/wind DR, Gauss-Markov 이동타겟+lead, `train.py --phases 1,2,3` 서브프로세스 오케스트레이터(6-dim 고정 → warm-start 무손실). Phase 1=exp_014 baseline 동작 동일. **`py_compile` 12파일 통과; `pytest`(+8 신규)·본 학습은 L4/컨테이너 대기.** → [[experiments/exp_015_phased_curriculum]] / [[research/phased_curriculum]] / Rule 20 |
 | 2026-07-05 | **exp016 CCIP 릴리스 referee 재평가 (eval-only, A2 ckpt, 병행 트랙)** | 0 (200-ep deterministic eval) | **디커플링 규명: 4.59m = 지표 의미론 버그(릴리스 트리거 부재, 성공-종단 속도 캐리).** CCIP referee(≤0.2m) 수정 후: 발화 시 0.137m, release_rate 6%/11.5%(10/100Hz), aim_err_min med 0.755m ≈ d_xy_min(cross-track 지배). 구 지표 4.649m 재현. 보상/종단 bit-identical. Rule 21. → [[experiments/exp_016_ccip_release_reeval]] / [[research/ccip_release_decoupling]] |
 | 2026-07-06 | **exp017 Stage A — 밀집 CCIP 조준 보상 (750gpldr/6z0gpnhy/fv5qqmtz, Isaac PPO, 병행 트랙)** | 3 runs (P1 400 + v1 400 + v2 600 iters, 2048 envs) | **보상-변경-단독은 release_rate 못 올림 — 판정 (b), Rule 22.** det 200-ep: 기준선 2.5% → v1(w=1) 5.5%(aim 0.889m·speed 2.72, 방향 실재·p≈0.13) → v2(w=2/knee 1.0) 3.5% 회귀. P1 기준선 학습 내 12→3.7% 단조 하락(근접 최적화가 릴리스 능력 파괴). 원인=γ-할인 완주 보너스·CCIP 노이즈 증폭(×1.53s)·성공 조기 종단. 5-lens 사전 검증, farm 0. ckpt 3종 분리 보존(+호스트 백업) — 차기 warm-start=stageA(v1). → [[experiments/exp_017_stageA_aim_reward]] / [[research/ccip_aim_reward_stageA]] |
+| 2026-07-06 | **exp018 Stage B — 릴리스-종단 이벤트 (xt0hrr1c/0ns10yso/4vaodj0o/kk06wsbx, Isaac PPO, 병행 트랙)** | 4 runs × 400 iters (전부 v1 warm-start) | **릴리스-종단 구조 → det release_rate 100.00%, drop err 0.125 m (Rule 23).** 종단 교체 단독(B0)으로 5.5%→100%(학습 내 23→99.6% 단조 상승 — Stage A 하락 반전, Rule 22a 인과 확정). aim 보상 노브 불감(w 0/1.5 100%, knee 0.75만 98.5%) — 자동 발화 referee가 노이즈를 +100 샘플러로 전환. done-flag alias 버그 사전 수정(eval success 0% 위험). 호버-드롭 수렴(종단 속도 0.11 m/s). **Stage C warm-start = exp018_B0_final.pt.** → [[experiments/exp_018_release_terminal]] / [[research/release_terminal_stageB]] |

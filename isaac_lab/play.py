@@ -26,6 +26,10 @@ parser.add_argument("--zero-actions", action="store_true")
 parser.add_argument("--scripted", action="store_true")
 parser.add_argument("--step-response", action="store_true")
 parser.add_argument("--episodes", type=int, default=10)
+parser.add_argument("--release-terminal", action="store_true",
+                    help="Evaluate under the Stage-B (exp_018) release-as-terminal semantics — "
+                         "must match how the policy was trained, or proximity termination "
+                         "truncates the loiter behavior being measured.")
 parser.add_argument("--out-csv", type=str, default="/workspace/logs/isaac_lab/step_response.csv")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -210,6 +214,8 @@ def run_policy(env, policy_path, episodes=10):
 
 def main():
     env_cfg = parse_env_cfg(args_cli.task, num_envs=args_cli.num_envs)
+    if args_cli.release_terminal:
+        env_cfg.release_terminal = True
     env = gym.make(args_cli.task, cfg=env_cfg)
     env = RslRlVecEnvWrapper(env)
 

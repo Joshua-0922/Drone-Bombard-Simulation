@@ -471,6 +471,36 @@ knee를 넓히면 소득은 늘지만 **행동 불변의 수동 소득**이 될 
 
 ---
 
+## Rule 23 — 임무 이벤트는 종단 이벤트로 만들라; 자동 발화 referee가 노이즈를 발견 메커니즘으로 바꾼다
+
+> **상세:** [[research/release_terminal_stageB]] / [[experiments/exp_018_release_terminal]] (2026-07-06)
+
+**(a) Rule 22a의 인과 확정.** 동일 보상·동일 warm-start에서 **종단만** 근접(d_xy≤0.8)에서
+릴리스-발화로 교체 → det release_rate 5.5%→**100%**, 학습 내 추세 단조 하락(12→3.7%)이
+단조 상승(23→99.6%)으로 반전. 조기 종단이 조준 구간을 잘라먹는 것이 지배 요인이었다.
+이벤트 능력이 목표라면 그 이벤트가 에피소드를 끝내고 주보상을 지급하게 하라.
+
+**(b) 자동 발화 트리거는 탐험 노이즈를 그래디언트 평탄화기에서 +100 샘플러로 바꾼다.**
+릴리스가 정책 액션이 아니라 조건 충족 시 자동 발화이므로, 정책은 "임계 직상 유지"를 할 수
+없다 — 노이즈로 0.2 m를 우연히 찍으면 즉시 종단 보상이 샘플링된다. Stage A에서 dense
+그래디언트를 죽이던 CCIP 노이즈 증폭(×1.5 s)이 Stage B에선 발견 메커니즘이 됐고, 사전
+경제 분석이 경고한 배회-farm 정지-hazard 균형(소득>1.84/step → never-fire)도 같은 이유로
+물리적으로 미발현(ep_len 52→36 감소 수렴).
+
+**(c) 이벤트가 종단이 되면 그 이벤트를 겨냥한 dense shaping은 거의 잉여.** w_aim
+0/1.0/1.5 전부 100%·~0.13 m(mid-training 가속 정도의 차이). 쓸 거면 좁은 knee 유지 —
+넓히면(0.5→0.75) 근-윈도 기울기가 희석돼 근소 열화(98.5%, 종단 속도 0.30 m/s).
+
+**(d) done-flag를 reset이 in-place 변조하는 버퍼의 alias로 캐시하지 말라.** `success =
+self._just_released`(alias) → `_reset_idx`의 in-place clear가 step() 반환 전에
+`_done_flags`를 지워 **평가 하니스가 완벽한 정책을 success 0%로 보고**할 뻔함(wandb는
+스냅샷 clone이라 면역). 종단 플래그 캐시는 `.clone()`으로. (적대 검증이 학습 전 발견.)
+
+**(e) 지표 의미론:** 발화=종단 모드에선 release_rate ≡ success rate. 비종단 래치
+시절(exp_016/017의 6%/5.5%)과 수치 직접 비교 금지.
+
+---
+
 > **Phase 1 전체 계획:** [[research/phase1_plan]] — CCIP 기반 자율 접근, 8주, 14개 실험
 
 ---
@@ -490,4 +520,5 @@ knee를 넓히면 소득은 늘지만 **행동 불변의 수동 소득**이 될 
 | fps 급감 | CRUISE 타임아웃 (65 s 대기) 또는 ODE 크래시 | 로그에서 "Timed out waiting for CRUISE" 확인 |
 | **드론이 마커 거울상으로 비행** (East 부호 반전) | East 타겟이 -11(거울)로 설정됨. PX4 East = +Gazebo_East (반전 없음)인데 반전 가정함 | `target_ned_y=+11`, `cruise_speed_y=-1`, `target_enu_x=+11`. ⚠️ d_xy 로그는 거울상 자기일치로 속임 → `gz model -p` ground-truth 검증 필수. 상세: [[coordinate-frames]] / [[research/ekf_east_reversal]] (06-12 진단 RETRACTED) |
 | YOLO 탐지 무효 (silent) | ultralytics Boxes boolean 인덱싱 silent fail | `detections[:0]` 정수 슬라이스로 대체 |
+| **eval success 0% (학습/wandb는 정상)** | done-flag가 `_just_released` 등 reset이 in-place 변조하는 버퍼의 **alias**로 캐시됨 — `_reset_idx`가 step() 반환 전에 지움 | 종단 플래그 캐시는 `.clone()` (Rule 23d) → [[research/release_terminal_stageB]] |
 | 이중 YOLO 노드 실행 | 수동 기동 + env 기동 중복 | env가 YOLO를 `_infra_procs`로 관리; 추가 수동 기동 금지 |

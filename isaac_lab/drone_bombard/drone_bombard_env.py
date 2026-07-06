@@ -324,6 +324,19 @@ class DroneBombardEnvCfg(DirectRLEnvCfg):
     moving_target_enabled: bool = False
     release_enabled: bool = False
 
+    # Stage B (exp_018): scripted-release-as-terminal for Phase 1. When True,
+    # the Phase-1 CCIP referee's fire event ENDS the episode as the success
+    # condition (replacing d_xy<=success_radius proximity success) — the drone
+    # may loiter near the target, still collecting the dense per-step rewards,
+    # until it aims well enough to release or a failure gate/timeout fires.
+    # All failure gates (crash/overspeed/bad_attitude/out_of_range/
+    # max_altitude/overshoot/stagnation) and the timeout path are UNTOUCHED.
+    # Deliberately independent of ``phase`` (NOT derived in __post_init__):
+    # Phase 2+ has its own release termination via release_enabled, and this
+    # knob must not drag in the Phase-2 residual/DR machinery. Default False
+    # = the exp_014/exp_017 legacy proximity task, bit-identical.
+    release_terminal: bool = False
+
     sim: SimulationCfg = SimulationCfg(dt=1.0 / 100.0, render_interval=decimation)
 
     scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=2048, env_spacing=16.0, replicate_physics=True)
@@ -798,7 +811,8 @@ class DroneBombardEnv(DirectRLEnv):
         DirectRLEnv contract guarantees fires before ``_get_rewards``). Moves
         the target (Phase 3) and evaluates the payload-release trigger
         (Phase 2+). In Phase 1 it runs the scripted CCIP release referee —
-        metric-only, no reward/termination effect."""
+        metric-only by default; terminal when ``cfg.release_terminal`` is set
+        (Stage B, exp_018)."""
         self._just_released = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
         if self.cfg.moving_target_enabled:
@@ -816,11 +830,27 @@ class DroneBombardEnv(DirectRLEnv):
             self._evaluate_scripted_release_metric()
 
     def _evaluate_scripted_release_metric(self):
-        """Phase-1 scripted CCIP referee (v15 ``drop_calculator_node`` parity)
-        — METRIC ONLY, zero reward/termination effect. Latches ``_released`` /
-        ``_release_impact_err`` at the first step the nominal predicted impact
-        point comes within ``drop.release_tolerance`` (0.2 m) of the target,
-        i.e. where the Gazebo referee would actually have dropped the payload.
+        """Phase-1 scripted CCIP referee (v15 ``drop_calculator_node`` parity).
+        Latches ``_released`` / ``_release_impact_err`` at the first step the
+        nominal predicted impact point comes within ``drop.release_tolerance``
+        (0.2 m) of the target, i.e. where the Gazebo referee would actually
+        have dropped the payload.
+
+        Two modes (cfg.release_terminal):
+          * False (default): METRIC ONLY — zero reward/termination effect,
+            bit-identical to the exp_014/exp_017 proximity task.
+          * True (Stage B, exp_018): the fire event also raises
+            ``_just_released``, which ``_get_dones`` turns into the terminal
+            success condition (release-as-terminal-event).
+
+        DELIBERATE (reward-hacking guard): ``aim_err`` here — the quantity
+        both this trigger and the dense aim reward (``_aim_err_last`` ->
+        ``rew_aim``) consume — is computed from ``predict_impact_nominal``
+        ONLY, i.e. the physically-grounded ballistic prediction from the
+        drone's actual position/velocity. It must NEVER include the learned
+        residual or any other unconstrained policy output the policy could
+        shift without flying differently (see the matching guard in
+        ``_evaluate_release``).
 
         Rationale (exp_014 forensics): Phase-1 ``drop_impact_error_m`` used to
         be computed from the SUCCESS-termination state (d_xy <= 0.8), where
@@ -828,9 +858,10 @@ class DroneBombardEnv(DirectRLEnv):
         prediction then adds v*(t_fall+delay) ~ 4.6 m of carry, decoupling the
         metric from the 100% d_xy success. The release decision was never
         supposed to fire on raw d_xy; it fires on CCIP aim error (see
-        research/ccip_release_decoupling). ``_just_released`` is deliberately
-        NOT set — that flag feeds the Phase-2+ termination/terminal-reward
-        paths, which stay untouched in Phase 1."""
+        research/ccip_release_decoupling). In metric-only mode (the default)
+        ``_just_released`` is deliberately NOT set — that flag feeds the
+        termination path, which stays untouched unless ``cfg.release_terminal``
+        opts in (see the Two modes paragraph above)."""
         pc = self.cfg.phase_cfg
         dc = self.cfg.drop
         pos = self._robot.data.root_pos_w - self.scene.env_origins
@@ -849,6 +880,12 @@ class DroneBombardEnv(DirectRLEnv):
             & (altitude > pc.min_release_altitude)
             & (aim_err <= dc.release_tolerance)
         )
+        if self.cfg.release_terminal:
+            # Stage B: the fire event terminates the episode via _get_dones.
+            # (_advance_phase_dynamics zeroed _just_released at the top of
+            # this step; in metric-only mode the flag is left untouched so
+            # the legacy proximity task stays bit-identical.)
+            self._just_released = fire
         if not bool(torch.any(fire)):
             return
 
@@ -888,8 +925,8 @@ class DroneBombardEnv(DirectRLEnv):
         altitude = pos[:, 2]
 
         # On-board prediction: nominal CCIP + learned residual (metres).
-        pred_impact = predict_impact_nominal(pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity)
-        pred_impact = apply_ccip_residual(pred_impact, self._residual_action, pc.residual_scale)
+        pred_nominal = predict_impact_nominal(pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity)
+        pred_impact = apply_ccip_residual(pred_nominal, self._residual_action, pc.residual_scale)
 
         # Aim point = target position at the predicted impact time (lead).
         t_impact = time_to_fall(altitude, dc.gravity) + dc.release_delay
@@ -897,7 +934,17 @@ class DroneBombardEnv(DirectRLEnv):
 
         aim_err = torch.linalg.norm(pred_impact - target_at_impact, dim=-1)
         self._aim_err_min = torch.minimum(self._aim_err_min, aim_err)
-        self._aim_err_last = aim_err
+        # DELIBERATE (reward-hacking guard, exp_018): the dense aim reward
+        # (_aim_err_last -> rew_aim) is fed the NOMINAL-only error — never the
+        # residual-corrected one. The residual is an unconstrained policy
+        # output; paying reward on a quantity the policy can shift by
+        # +/-residual_scale without flying differently would let it farm
+        # rew_aim while flying anywhere. The release TRIGGER (fire) stays
+        # residual-inclusive by design — biasing the release decision is the
+        # residual's job — and aim_err_min keeps diagnosing that trigger
+        # quantity. The lead target is env-computed (not policy-controllable),
+        # so it remains part of the reward quantity.
+        self._aim_err_last = torch.linalg.norm(pred_nominal - target_at_impact, dim=-1)
         fire = (
             (~self._released)
             & (altitude > pc.min_release_altitude)
@@ -975,9 +1022,32 @@ class DroneBombardEnv(DirectRLEnv):
             # proximity alone no longer terminates (the drone must linger and
             # drop, not just fly close).
             success = self._just_released & (self._release_impact_err <= pc.success_impact_radius)
-            released_this_step = self._just_released
+            # clone: _reset_idx zeroes _just_released in-place for done envs
+            # BEFORE step() returns — an alias here would silently flip the
+            # cached _done_flags entries that post-step readers (play.py
+            # cause counting) consume.
+            released_this_step = self._just_released.clone()
+        elif self.cfg.release_terminal:
+            # Stage B (exp_018): Phase-1 scripted release as the terminal
+            # success event. The payload is spent on release, so ANY referee
+            # fire ends the episode; under nominal ballistics (zero drag/
+            # wind) the real impact equals the aim point, so a fire
+            # (aim_err <= 0.2 m) IS a successful drop. Proximity no longer
+            # terminates — the drone may loiter near the target, still paid
+            # by the dense terms, until it aims well enough to release. The
+            # failure gates computed above are shared and untouched (the
+            # stagnation guard doubles as the loiter cap: ~150 steps of no
+            # d_xy progress after arrival still truncates).
+            # clone (NOT an alias): _reset_idx sets _just_released[env_ids] =
+            # False in-place before step() returns, which would zero the
+            # cached _done_flags["success"]/["released"] for exactly the
+            # fired envs — post-step readers (play.py) would then count every
+            # release-success as no-cause. wandb was immune (snapshot clones
+            # pre-reset) but the eval harness was not.
+            success = self._just_released.clone()
+            released_this_step = success
         else:
-            # Phase 1: proximity success (validated exp_014 approach task).
+            # Phase 1 legacy: proximity success (validated exp_014 approach task).
             success = d_xy <= rc.success_radius
             released_this_step = torch.zeros_like(success)
 
@@ -1044,9 +1114,10 @@ class DroneBombardEnv(DirectRLEnv):
 
         # Dense CCIP aim shaping (all phases; exact zeros when w_aim == 0,
         # the default — Phase-1 reward parity is preserved unless train.py
-        # opts in). _aim_err_last is this step's referee aim error; in Phase 1
-        # residual_enabled gates the residual out upstream, so this is the
-        # pure nominal |predicted_impact - target|.
+        # opts in). _aim_err_last is this step's NOMINAL-only CCIP error —
+        # both referee paths stash |predict_impact_nominal - aim_point|,
+        # never a residual-corrected value (see the reward-hacking guard
+        # comments in _evaluate_scripted_release_metric/_evaluate_release).
         rew_aim = aim_error_reward(self._aim_err_last, rc.w_aim, rc.aim_reward_scale)
         reward = reward + rew_aim
         self._episode_sums["rew_aim"] += rew_aim

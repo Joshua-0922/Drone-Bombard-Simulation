@@ -250,9 +250,13 @@ def aim_error_reward(aim_err: torch.Tensor, w_aim: float, reward_scale: float) -
     """Dense per-step shaping on the CCIP predicted-impact error (exp_017
     Stage A): ``w_aim * (1 - tanh(aim_err / reward_scale))``.
 
-    ``aim_err`` is the same |predicted_impact - aim_point| the scripted
-    release referee evaluates each policy step (nominal ballistics; the
-    Phase-2+ residual/lead enter through the caller's aim_err, not here), so
+    ``aim_err`` is the NOMINAL-only |predict_impact_nominal - aim_point| the
+    env stashes each policy step (``_aim_err_last``). DELIBERATE: callers
+    must never feed a residual-corrected error here — the residual is an
+    unconstrained policy output, and rewarding a quantity the policy can
+    shift without flying differently is a reward-hacking channel (exp_018;
+    the Phase-2+ release TRIGGER stays residual-inclusive, only the reward
+    quantity is nominal-only). The env-computed lead aim_point is fine. So
     the policy is rewarded every step for holding the predicted impact point
     on the target — the release capability that raw d_xy proximity never
     asked for (see research/ccip_release_decoupling: a proximity-optimal

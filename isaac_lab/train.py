@@ -63,6 +63,9 @@ parser.add_argument("--w_aim", type=float, default=None,
                          "cfg value (0.0 = term off, exp_014 Phase-1 reward parity). exp_017 Stage A.")
 parser.add_argument("--aim_reward_scale", type=float, default=None,
                     help="tanh knee (metres) for the aim-error reward (reward.aim_reward_scale).")
+parser.add_argument("--release_terminal", action="store_true",
+                    help="Phase 1 Stage B (exp_018): the scripted CCIP referee's fire event ends the "
+                         "episode as success (replaces d_xy proximity success; failure gates unchanged).")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -111,6 +114,8 @@ def run_orchestrator(phases: list[int]) -> int:
             cmd += ["--w_aim", str(args_cli.w_aim)]
         if args_cli.aim_reward_scale is not None:
             cmd += ["--aim_reward_scale", str(args_cli.aim_reward_scale)]
+        if args_cli.release_terminal:
+            cmd += ["--release_terminal"]
         if prev_ckpt:
             cmd += ["--resume", prev_ckpt]
 
@@ -170,6 +175,8 @@ def main():
         env_cfg.reward.w_aim = args_cli.w_aim
     if args_cli.aim_reward_scale is not None:
         env_cfg.reward.aim_reward_scale = args_cli.aim_reward_scale
+    if args_cli.release_terminal:
+        env_cfg.release_terminal = True
 
     # --- agent cfg ---
     agent_cfg: DroneBombardPPORunnerCfg = DroneBombardPPORunnerCfg()
