@@ -6,9 +6,33 @@
 
 # 1. Current State
 
-**업데이트:** 2026-07-05
+**업데이트:** 2026-07-06
 
-> **🔀 병행 트랙 (2026-07-05 저녁): Isaac Lab exp_016 — "success 100% vs drop_impact_error 4.59 m" 디커플링 규명·수정 (Rule 21)** —
+> **🔀 병행 트랙 (2026-07-06): Isaac Lab exp_017 Stage A — 밀집 CCIP 조준 보상, 판정 (b) 정체 (Rule 22)** —
+> `feat/isaac-env-migration`. exp_016의 release_rate 6% 갭에 대한 **보상-변경-단독** 개입(사용자
+> 제약: 종단/성공 게이트·entropy_coef·비전 캘리브레이션 불변, DR/residual은 Stage B로).
+> **구현**: referee와 동일 aim_err의 dense 항 $w_{aim}(1-\tanh(e_{aim}/s))$ —
+> `RewardCfg.w_aim`(기본 0.0=off, exp_014 parity)·`aim_reward_scale`, train.py `--w_aim` 주입,
+> `math_utils.aim_error_reward`+테스트(40/40). **5-lens 사전 적대 검증**: parity(w=0
+> bit-identical)/timing/plumbing(rsl_rl warm-start=N iters 추가 실행 실증)/physics(CCIP-hold
+> v=d/T가 0.2 m 윈도 26–28 연속 스텝 유지 실현가능) 생존; pathology가 w=2 duty-cycle 펌프
+> PV(~137–180 vs 완주 ~149, γ=0.995) 경고 → **w=1 헤지 개시** + farm 모니터.
+> **결과(3 runs, warm-start 체인 399→1399, det 200-ep)**: ① P1 6-dim 기준선 신규
+> 학습(750gpldr; exp_015는 스모크만·exp_014 ckpt는 4-dim): 학습 내 release_rate 12→3.7%
+> **단조 하락**(근접 최적화가 릴리스 능력 능동 파괴), det 2.5%. ② v1(6z0gpnhy, w=1/knee
+> 0.5 m): det **5.5%**, aim_err_min med 1.146→**0.889 m**, final_speed 3.35→**2.72 m/s** —
+> 방향 실재(단 release_rate 차이는 n=200 p≈0.13), 학습 내 지표는 σ-지터에 가려 평탄(Rule
+> 22c). ③ v2(fv5qqmtz, w=2/knee 1.0, 600 it): **회귀**(3.5%/1.096 m/3.45 m/s) — rew_aim
+> 8×는 행동 불변의 수동 소득, σ 1.18→1.55. **원인 3종(구조적)**: γ-할인 +100이 모든 감속
+> 벌함 · CCIP가 탐험 노이즈를 ×1.53 s 증폭(그래디언트 평탄화, entropy 불변 제약) · 성공
+> 조기 종단이 조준 구간 제거. farm 시그니처 0. **결론: 릴리스는 dense 사이드 보상이 아니라
+> Phase 2 릴리스-종단 구조로 학습(별도 지시 대기). w_aim은 Phase 2+ 그대로 이월 금지
+> (residual 채굴 경로).** ckpt 3종 분리 보존: 컨테이너
+> `/workspace/logs/isaac_lab/drone_bombard/exp017_{phase1,stageA,stageA2}_final.pt` + 호스트
+> 백업 `/opt/drone-bombard/checkpoints/exp017/` — **차기 warm-start 소스 = stageA(v1) 권장**.
+> → [[experiments/exp_017_stageA_aim_reward]] / [[research/ccip_aim_reward_stageA]] / Rule 22
+
+> **(이전 2026-07-05 저녁): Isaac Lab exp_016 — "success 100% vs drop_impact_error 4.59 m" 디커플링 규명·수정 (Rule 21)** —
 > `feat/isaac-env-migration`. **진단(적대 검증 5/5 확정)**: Phase 1엔 릴리스 트리거가 존재하지
 > 않았고(`DropCfg.release_tolerance=0.2`는 정의만 되고 미사용 — v15 `drop_calculator_node`의
 > CCIP ≤0.2 m 트리거 의도가 이식에서 소실), `drop_impact_error_m`은 **d_xy≤0.8 성공-종단
@@ -214,3 +238,4 @@
 | 2026-07-05 | **exp014 A2 (v3qk07pg) + A0′ (azoc1xp0), Isaac PPO, 병행 트랙** | 각 26.2M steps (400 iters) | **plant 수정 + 비전 거리감쇠 → deterministic 200-ep eval = 100.0% (202/202), d_xy_min 0.665m.** 수정: ①킥→스폰타임 MassAPI authoring(게이트 11.9m FAIL→0.2m PASS) ②로터 스핀 리셋 재주입 제거 ③**inertia 대반전**: `set_inertias`는 전파되고 있었음 — exp_013은 rate loop ~1300× 저토크 plant(Rule 19, 구 정책 plant-overfit로 무효). A2: R_alt=0.0000(climb 창발→기각 시그니처), noise_std 0.80 안정(폭주 없음). A0′ 대조: R_alt 0.0365 → 지배 요인=plant 일관성, 감쇠=꼬리 제거+YOLO parity(유지). 실 YOLO 캘리브레이션은 이미지 annotator 버그로 차단(하네스 수리 완료). reward_success·entropy 불변(다음 페이즈). → [[experiments/exp_014_A2_visionrange]] / [[research/isaac_inertia_ctrl_mismatch]] |
 | 2026-07-05 | isaac_phased_curriculum (`feat/isaac-env-migration`, 병행 트랙) | 0 (코드만, 미학습) | **Phase별 순차 커리큘럼 구현.** 이미지 3단계(접근/nominal → CCIP+Residual/정지 → 이동타겟) 완전 구현: action 4→6(δ residual), phase 노브+파생 플래그, 릴리스 이벤트(nominal CCIP+δ 트리거 → 실제 DR 낙하 착탄오차 터미널 보상), drag/wind DR, Gauss-Markov 이동타겟+lead, `train.py --phases 1,2,3` 서브프로세스 오케스트레이터(6-dim 고정 → warm-start 무손실). Phase 1=exp_014 baseline 동작 동일. **`py_compile` 12파일 통과; `pytest`(+8 신규)·본 학습은 L4/컨테이너 대기.** → [[experiments/exp_015_phased_curriculum]] / [[research/phased_curriculum]] / Rule 20 |
 | 2026-07-05 | **exp016 CCIP 릴리스 referee 재평가 (eval-only, A2 ckpt, 병행 트랙)** | 0 (200-ep deterministic eval) | **디커플링 규명: 4.59m = 지표 의미론 버그(릴리스 트리거 부재, 성공-종단 속도 캐리).** CCIP referee(≤0.2m) 수정 후: 발화 시 0.137m, release_rate 6%/11.5%(10/100Hz), aim_err_min med 0.755m ≈ d_xy_min(cross-track 지배). 구 지표 4.649m 재현. 보상/종단 bit-identical. Rule 21. → [[experiments/exp_016_ccip_release_reeval]] / [[research/ccip_release_decoupling]] |
+| 2026-07-06 | **exp017 Stage A — 밀집 CCIP 조준 보상 (750gpldr/6z0gpnhy/fv5qqmtz, Isaac PPO, 병행 트랙)** | 3 runs (P1 400 + v1 400 + v2 600 iters, 2048 envs) | **보상-변경-단독은 release_rate 못 올림 — 판정 (b), Rule 22.** det 200-ep: 기준선 2.5% → v1(w=1) 5.5%(aim 0.889m·speed 2.72, 방향 실재·p≈0.13) → v2(w=2/knee 1.0) 3.5% 회귀. P1 기준선 학습 내 12→3.7% 단조 하락(근접 최적화가 릴리스 능력 파괴). 원인=γ-할인 완주 보너스·CCIP 노이즈 증폭(×1.53s)·성공 조기 종단. 5-lens 사전 검증, farm 0. ckpt 3종 분리 보존(+호스트 백업) — 차기 warm-start=stageA(v1). → [[experiments/exp_017_stageA_aim_reward]] / [[research/ccip_aim_reward_stageA]] |

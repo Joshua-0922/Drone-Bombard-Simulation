@@ -246,6 +246,25 @@ def lead_prediction_reward(
     return w_lead * torch.exp(-lead_err / reward_scale)
 
 
+def aim_error_reward(aim_err: torch.Tensor, w_aim: float, reward_scale: float) -> torch.Tensor:
+    """Dense per-step shaping on the CCIP predicted-impact error (exp_017
+    Stage A): ``w_aim * (1 - tanh(aim_err / reward_scale))``.
+
+    ``aim_err`` is the same |predicted_impact - aim_point| the scripted
+    release referee evaluates each policy step (nominal ballistics; the
+    Phase-2+ residual/lead enter through the caller's aim_err, not here), so
+    the policy is rewarded every step for holding the predicted impact point
+    on the target — the release capability that raw d_xy proximity never
+    asked for (see research/ccip_release_decoupling: a proximity-optimal
+    path's closest CCIP approach equals its cross-track error, hence
+    release_rate@0.2m of only ~6%). Smooth and bounded like the other
+    Layer-3 terms: ~w_aim inside ~reward_scale/3 metres, ~0 beyond
+    ~3*reward_scale. ``w_aim == 0`` returns exact zeros (term off), and
+    ``aim_err == inf`` (pre-first-evaluation sentinel) maps to exactly 0.
+    """
+    return w_aim * (1.0 - torch.tanh(aim_err / reward_scale))
+
+
 def compute_reward(
     d_xy: torch.Tensor,
     d_xy_prev: torch.Tensor,

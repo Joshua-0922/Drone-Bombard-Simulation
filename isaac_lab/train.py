@@ -58,6 +58,11 @@ parser.add_argument("--phase_iterations", type=str, default="",
 parser.add_argument("--final_out", type=str, default=None,
                     help="If set (single-phase mode), also save the final model to this exact path "
                          "(used by the orchestrator to chain warm-starts).")
+parser.add_argument("--w_aim", type=float, default=None,
+                    help="Dense CCIP aim-error reward weight (reward.w_aim). Default None keeps the "
+                         "cfg value (0.0 = term off, exp_014 Phase-1 reward parity). exp_017 Stage A.")
+parser.add_argument("--aim_reward_scale", type=float, default=None,
+                    help="tanh knee (metres) for the aim-error reward (reward.aim_reward_scale).")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -102,6 +107,10 @@ def run_orchestrator(phases: list[int]) -> int:
             cmd += ["--max_iterations", str(phase_iters[i])]
         elif args_cli.max_iterations is not None:
             cmd += ["--max_iterations", str(args_cli.max_iterations)]
+        if args_cli.w_aim is not None:
+            cmd += ["--w_aim", str(args_cli.w_aim)]
+        if args_cli.aim_reward_scale is not None:
+            cmd += ["--aim_reward_scale", str(args_cli.aim_reward_scale)]
         if prev_ckpt:
             cmd += ["--resume", prev_ckpt]
 
@@ -157,6 +166,10 @@ def main():
     env_cfg.scene.num_envs = args_cli.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else "cuda:0"
     env_cfg.seed = args_cli.seed
+    if args_cli.w_aim is not None:
+        env_cfg.reward.w_aim = args_cli.w_aim
+    if args_cli.aim_reward_scale is not None:
+        env_cfg.reward.aim_reward_scale = args_cli.aim_reward_scale
 
     # --- agent cfg ---
     agent_cfg: DroneBombardPPORunnerCfg = DroneBombardPPORunnerCfg()

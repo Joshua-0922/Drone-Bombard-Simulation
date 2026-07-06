@@ -521,5 +521,25 @@ def test_reward_heading_disabled_contributes_zero_even_with_motion():
     assert bd["rew_orient"] == pytest.approx(0.0, abs=1e-9)
 
 
+def test_aim_error_reward_mapping():
+    aim_err = torch.tensor([0.0, 0.5, 2.0])
+    r = mu.aim_error_reward(aim_err, 2.0, 0.5)
+    assert r[0].item() == pytest.approx(2.0, abs=1e-6)  # perfect aim -> full weight
+    assert r[1].item() == pytest.approx(2.0 * (1.0 - math.tanh(1.0)), abs=1e-6)
+    assert r[2].item() < 0.1  # ~0 beyond ~3*scale
+    # monotonically decreasing in aim error
+    assert r[0] > r[1] > r[2]
+
+
+def test_aim_error_reward_off_and_sentinel():
+    aim_err = torch.tensor([0.0, 0.5, float("inf")])
+    # w_aim=0 -> exact zeros (Phase-1 reward parity default)
+    assert torch.equal(mu.aim_error_reward(aim_err, 0.0, 0.5), torch.zeros(3))
+    # inf sentinel (pre-first-evaluation) -> exactly 0 even with the term on
+    r = mu.aim_error_reward(aim_err, 2.0, 0.5)
+    assert r[2].item() == 0.0
+    assert torch.isfinite(r).all()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

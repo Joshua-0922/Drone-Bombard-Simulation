@@ -62,6 +62,7 @@ from .math_utils import (
     step_target_velocity,
     impact_terminal_reward,
     lead_prediction_reward,
+    aim_error_reward,
     compute_reward,
     overshoot_guard,
     stagnation_guard,
@@ -122,6 +123,17 @@ class DroneBombardRewardCfg:
     reward_success: float = 100.0
 
     success_radius: float = 0.8  # curriculum-tighten -> 0.5 once success_rate is stable
+
+    # Dense CCIP aim-error shaping (exp_017 Stage A). Every policy step:
+    #   w_aim * (1 - tanh(aim_err / aim_reward_scale))
+    # where aim_err is the release referee's |predicted_impact - aim_point|
+    # (nominal ballistics — see _advance_phase_dynamics). Layered ON TOP of
+    # w_dist (coarse "get close") as the fine "aim accurately" signal; touches
+    # no termination/success gate. Default w_aim=0.0 keeps the term exactly
+    # off — the validated exp_014 Phase-1 reward is unchanged unless train.py
+    # opts in via --w_aim.
+    w_aim: float = 0.0
+    aim_reward_scale: float = 0.5  # metres (tanh knee; reward ~0 beyond ~1.5 m)
 
 
 @configclass
@@ -415,10 +427,16 @@ class DroneBombardEnv(DirectRLEnv):
         # release window can be crossed between two evaluations — release_rate
         # then under-reports while this stays just above the tolerance.
         self._aim_err_min = torch.full((N,), float("inf"), device=device)
+        # This step's CCIP aim error, written by _advance_phase_dynamics at
+        # the top of _get_dones — the same dones-before-rewards DirectRLEnv
+        # contract _done_flags relies on — and consumed by _get_rewards for
+        # the dense aim shaping (w_aim). inf until the first evaluation, which
+        # aim_error_reward maps to exactly 0.
+        self._aim_err_last = torch.full((N,), float("inf"), device=device)
 
         self._episode_sums = {
             k: torch.zeros(N, device=device)
-            for k in ("rew_ctrl", "rew_dist", "rew_orient", "rew_proximity", "rew_vision", "rew_vel")
+            for k in ("rew_ctrl", "rew_dist", "rew_orient", "rew_proximity", "rew_vision", "rew_vel", "rew_aim")
         }
         # Per-episode sum of the per-step fraction of RAW policy action
         # components outside [-1, 1] (measured before the env clips). The
@@ -824,6 +842,7 @@ class DroneBombardEnv(DirectRLEnv):
         pred_impact = predict_impact_nominal(pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity)
         aim_err = torch.linalg.norm(pred_impact - self._target_xy, dim=-1)
         self._aim_err_min = torch.minimum(self._aim_err_min, aim_err)
+        self._aim_err_last = aim_err
 
         fire = (
             (~self._released)
@@ -878,6 +897,7 @@ class DroneBombardEnv(DirectRLEnv):
 
         aim_err = torch.linalg.norm(pred_impact - target_at_impact, dim=-1)
         self._aim_err_min = torch.minimum(self._aim_err_min, aim_err)
+        self._aim_err_last = aim_err
         fire = (
             (~self._released)
             & (altitude > pc.min_release_altitude)
@@ -1022,6 +1042,15 @@ class DroneBombardEnv(DirectRLEnv):
             # Phase 1: proximity success bonus (validated exp_014 approach task).
             reward = reward + f["success"].float() * rc.reward_success
 
+        # Dense CCIP aim shaping (all phases; exact zeros when w_aim == 0,
+        # the default — Phase-1 reward parity is preserved unless train.py
+        # opts in). _aim_err_last is this step's referee aim error; in Phase 1
+        # residual_enabled gates the residual out upstream, so this is the
+        # pure nominal |predicted_impact - target|.
+        rew_aim = aim_error_reward(self._aim_err_last, rc.w_aim, rc.aim_reward_scale)
+        reward = reward + rew_aim
+        self._episode_sums["rew_aim"] += rew_aim
+
         conf_zero = conf <= 0.0
         reward = reward + conf_zero.float() * rc.penalty_target_lost  # 0.0 in v13/v15, kept for parity
 
@@ -1105,6 +1134,7 @@ class DroneBombardEnv(DirectRLEnv):
         self._release_aim_xy[env_ids] = 0.0
         self._release_target_xy[env_ids] = 0.0
         self._aim_err_min[env_ids] = float("inf")
+        self._aim_err_last[env_ids] = float("inf")
 
         self._action_sat_sum[env_ids] = 0.0
 
