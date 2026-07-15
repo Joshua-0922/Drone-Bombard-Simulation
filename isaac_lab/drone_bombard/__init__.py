@@ -4,7 +4,7 @@ import gymnasium as gym
 
 from . import agents
 from .drone_bombard_env import DroneBombardEnv, DroneBombardEnvCfg
-from .v11_env import DroneBombardV11Env, DroneBombardV11Cfg
+from .v11_env import DroneBombardV11Env, DroneBombardV11Cfg, DroneBombardV12Cfg
 
 gym.register(
     id="Isaac-DroneBombard-Direct-v0",
@@ -33,7 +33,19 @@ gym.register(
     },
 )
 
+gym.register(
+    # v12: v11 + random marker inside a 5 m disk around the 20 m point.
+    # Same env class (DroneBombardV11Env); only the cfg toggles marker_random.
+    id="Isaac-DroneBombard-V12-Direct-v0",
+    entry_point="drone_bombard.v11_env:DroneBombardV11Env",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": DroneBombardV12Cfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
+    },
+)
+
 __all__ = [
     "DroneBombardEnv", "DroneBombardEnvCfg",
-    "DroneBombardV11Env", "DroneBombardV11Cfg",
+    "DroneBombardV11Env", "DroneBombardV11Cfg", "DroneBombardV12Cfg",
 ]

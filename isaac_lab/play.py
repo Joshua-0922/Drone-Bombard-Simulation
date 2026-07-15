@@ -214,6 +214,14 @@ def run_policy(env, policy_path, episodes=10):
 
 def main():
     env_cfg = parse_env_cfg(args_cli.task, num_envs=args_cli.num_envs)
+    # Chase camera locked on the drone so --policy playback is actually visible
+    # in the livestream/GUI (default world camera stares at the ground grid and
+    # the drone flies off-frame at ~10 m altitude).
+    env_cfg.viewer.origin_type = "asset_root"
+    env_cfg.viewer.asset_name = "robot"
+    env_cfg.viewer.env_index = 0
+    env_cfg.viewer.eye = (-8.0, -8.0, 4.0)
+    env_cfg.viewer.lookat = (0.0, 0.0, 0.0)
     if args_cli.release_terminal:
         env_cfg.release_terminal = True
     env = gym.make(args_cli.task, cfg=env_cfg)

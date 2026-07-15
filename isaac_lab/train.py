@@ -70,6 +70,10 @@ parser.add_argument("--v11_test", action="store_true",
                     help="Isaac-v11 relaxed test env: single integrated phase, fixed marker ahead in "
                          "the cruise direction, policy drop_signal + release envelope, nominal physics. "
                          "Uses DroneBombardV11Cfg + Isaac-DroneBombard-V11-Direct-v0 (ignores --phase).")
+parser.add_argument("--v12", action="store_true",
+                    help="v11 first expansion: random marker inside a 5 m disk around the 20 m point "
+                         "(drone still cruises +X, steers to it). DroneBombardV12Cfg + "
+                         "Isaac-DroneBombard-V12-Direct-v0 (ignores --phase).")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -160,7 +164,7 @@ from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: E402
 
 import drone_bombard  # noqa: F401,E402 - registers the task
 from drone_bombard.drone_bombard_env import DroneBombardEnvCfg  # noqa: E402
-from drone_bombard.v11_env import DroneBombardV11Cfg  # noqa: E402
+from drone_bombard.v11_env import DroneBombardV11Cfg, DroneBombardV12Cfg  # noqa: E402
 from drone_bombard.agents.rsl_rl_ppo_cfg import DroneBombardPPORunnerCfg  # noqa: E402
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -172,7 +176,11 @@ def main():
 
     # --- env cfg (built directly — the path proven by verify_one_episode.py) ---
     task = args_cli.task
-    if args_cli.v11_test:
+    if args_cli.v12:
+        # v11 first expansion: random marker inside a disk (marker_random=True).
+        task = "Isaac-DroneBombard-V12-Direct-v0"
+        env_cfg = DroneBombardV12Cfg()
+    elif args_cli.v11_test:
         # Isaac-v11 relaxed test: separate env class + cfg, single integrated
         # phase (no --phase, no residual/DR/moving/vision — all kept inert).
         task = "Isaac-DroneBombard-V11-Direct-v0"
@@ -198,7 +206,7 @@ def main():
     agent_cfg.logger = args_cli.logger
     agent_cfg.wandb_project = args_cli.wandb_project
     agent_cfg.run_name = args_cli.run_name if args_cli.run_name else (
-        "v11" if args_cli.v11_test else f"phase{phase}")
+        "v12" if args_cli.v12 else "v11" if args_cli.v11_test else f"phase{phase}")
 
     log_root = os.path.abspath(os.path.join(args_cli.log_root, agent_cfg.experiment_name))
     log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")

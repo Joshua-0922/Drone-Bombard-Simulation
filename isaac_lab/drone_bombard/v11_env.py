@@ -61,6 +61,12 @@ class DroneBombardV11Cfg(DroneBombardEnvCfg):
     cruise_dir_deg: float = 0.0    # cruise heading in world frame (deg). 0 = +x (East)
     v11_spawn_alt: float = 10.0    # fixed spawn altitude (m)
 
+    # --- v12 expansion: random marker inside a disk (toggle; v11 keeps False) ---
+    # False -> fixed marker marker_dist ahead (v11). True -> marker center sampled
+    # (area-uniform) inside a disk of radius marker_spawn_radius around that point.
+    marker_random: bool = False
+    marker_spawn_radius: float = 5.0
+
     # --- release envelope (doc 53 §6) ---
     release_radius: float = 1.0
     release_alt_min: float = 3.0
@@ -86,6 +92,16 @@ class DroneBombardV11Cfg(DroneBombardEnvCfg):
     v11_no_drop_penalty: float = -30.0
     v11_crash_penalty: float = -50.0
     v11_out_of_range_penalty: float = -30.0
+
+
+@configclass
+class DroneBombardV12Cfg(DroneBombardV11Cfg):
+    """v12 = first expansion of v11: random marker inside a 5 m disk around the
+    fixed 20 m point (method A — drone still cruises +X and steers to it).
+    Everything else (drop_signal, release envelope, nominal physics, inert
+    DR/residual/moving/vision hooks) is identical to v11."""
+    marker_random: bool = True
+    marker_spawn_radius: float = 5.0
 
 
 class DroneBombardV11Env(DroneBombardEnv):
@@ -199,7 +215,18 @@ class DroneBombardV11Env(DroneBombardEnv):
         n = len(env_ids)
         device = self.device
 
-        marker = (self._cruise_unit * self.cfg.marker_dist).unsqueeze(0).expand(n, 2)
+        # Marker center: marker_dist ahead along the cruise direction.
+        center = (self._cruise_unit * self.cfg.marker_dist).unsqueeze(0).expand(n, 2)
+        if self.cfg.marker_random:
+            # v12: sample the marker center (area-uniform) inside a disk of radius
+            # marker_spawn_radius around that point. The drone still spawns cruising
+            # along the cruise direction, so it must steer to the off-axis marker.
+            r = self.cfg.marker_spawn_radius * torch.sqrt(torch.rand(n, device=device))
+            theta = torch.rand(n, device=device) * (2.0 * math.pi)
+            offset = torch.stack([r * torch.cos(theta), r * torch.sin(theta)], dim=-1)
+            marker = center + offset
+        else:
+            marker = center
         self._target_xy[env_ids] = marker
 
         root = self._robot.data.default_root_state[env_ids].clone()
@@ -217,7 +244,8 @@ class DroneBombardV11Env(DroneBombardEnv):
         self._robot.write_root_velocity_to_sim(root[:, 7:13], env_ids)
 
         self._wants_drop[env_ids] = False
-        d0 = torch.full((n,), float(self.cfg.marker_dist), device=device)  # spawn is marker_dist from marker
+        # spawn is at local (0,0), so distance to marker = |marker| (per env).
+        d0 = torch.linalg.norm(marker, dim=-1)
         self._d_xy_prev[env_ids] = d0
         self._d_impact_prev[env_ids] = d0
 
