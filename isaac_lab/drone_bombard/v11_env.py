@@ -221,6 +221,28 @@ class DroneBombardV11Env(DroneBombardEnv):
         self._d_xy_prev[env_ids] = d0
         self._d_impact_prev[env_ids] = d0
 
+        # --- cruise handoff: seed the controller at the cruise setpoint ---
+        # The drone spawns already moving at cruise_speed. super() zeroed the
+        # velocity LPF (_v_filt) and _prev_action, so without this the step-1
+        # controller setpoint would be a random policy command -> a ~cruise_speed
+        # velocity error -> an aggressive corrective tilt that trips bad_attitude
+        # and kills the episode on step 1. Seeding _prev_action (so the
+        # rate-limited step-1 command stays near cruise) and _v_filt (the actual
+        # world-frame setpoint the snap re-applies) makes the handoff smooth:
+        # "receive a drone already cruising, hold unless commanded otherwise".
+        a = self.cfg.action
+        cruise_vx = self._cruise_unit[0] * self.cfg.cruise_speed
+        cruise_vy = self._cruise_unit[1] * self.cfg.cruise_speed
+        self._prev_action[env_ids, 0] = torch.clamp(cruise_vx / a.vx_scale, -1.0, 1.0)
+        self._prev_action[env_ids, 1] = torch.clamp(cruise_vy / a.vy_scale, -1.0, 1.0)
+        self._prev_action[env_ids, 2] = 0.0
+        self._prev_action[env_ids, 3] = 0.0
+        self._prev_action[env_ids, 4:6] = 0.0
+        self._v_filt[env_ids, 0] = cruise_vx
+        self._v_filt[env_ids, 1] = cruise_vy
+        self._v_filt[env_ids, 2] = 0.0
+        self._v_filt[env_ids, 3] = 0.0
+
     # ------------------------------------------------------------------
     # Dones: drop_signal + release-envelope -> release-terminal + landing
     # ------------------------------------------------------------------
