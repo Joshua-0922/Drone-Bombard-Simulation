@@ -4,7 +4,10 @@ import gymnasium as gym
 
 from . import agents
 from .drone_bombard_env import DroneBombardEnv, DroneBombardEnvCfg
-from .v11_env import DroneBombardV11Env, DroneBombardV11Cfg, DroneBombardV12Cfg
+from .v11_env import (
+    DroneBombardV11Env, DroneBombardV11Cfg, DroneBombardV12Cfg,
+    DroneBombardV13Env, DroneBombardV13Cfg,
+)
 
 gym.register(
     id="Isaac-DroneBombard-Direct-v0",
@@ -45,7 +48,21 @@ gym.register(
     },
 )
 
+gym.register(
+    # v13: v12 + partial observability. Blind +X cruise until within reveal_radius
+    # (horizontal) of the random marker; marker obs masked + penalized until then.
+    # Uses DroneBombardV13Env (25-D obs, reward gated on detection).
+    id="Isaac-DroneBombard-V13-Direct-v0",
+    entry_point="drone_bombard.v11_env:DroneBombardV13Env",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": DroneBombardV13Cfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
+    },
+)
+
 __all__ = [
     "DroneBombardEnv", "DroneBombardEnvCfg",
     "DroneBombardV11Env", "DroneBombardV11Cfg", "DroneBombardV12Cfg",
+    "DroneBombardV13Env", "DroneBombardV13Cfg",
 ]

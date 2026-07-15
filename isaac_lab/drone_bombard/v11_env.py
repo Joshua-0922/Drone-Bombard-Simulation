@@ -104,6 +104,21 @@ class DroneBombardV12Cfg(DroneBombardV11Cfg):
     marker_spawn_radius: float = 5.0
 
 
+@configclass
+class DroneBombardV13Cfg(DroneBombardV12Cfg):
+    """v13 = v12 + partial observability ("reveal"). The drone cruises +X BLIND
+    (marker position masked from the obs) until it comes within reveal_radius
+    (HORIZONTAL d_xy) of the randomly-spawned marker; only then is the marker
+    position revealed. NOT latched — if it later leaves the radius the info is cut
+    off again, and a per-step penalty applies whenever the marker is not detected
+    (forcing the drone to acquire AND keep contact). A 25th obs channel carries the
+    detected flag; marker-dependent rewards are gated on detection so the reward
+    never leaks the hidden marker position."""
+    observation_space = 25            # 24 + detected flag
+    reveal_radius: float = 7.0        # horizontal d_xy (m) within which the marker is seen
+    v13_undetected_penalty: float = -0.2  # per-step reward while marker not detected
+
+
 class DroneBombardV11Env(DroneBombardEnv):
     cfg: DroneBombardV11Cfg
 
@@ -377,6 +392,76 @@ class DroneBombardV11Env(DroneBombardEnv):
         r = r + f["crash"].float() * cfg.v11_crash_penalty
         r = r + f["out_of_range"].float() * cfg.v11_out_of_range_penalty
         r = r + f["timeout"].float() * cfg.v11_no_drop_penalty  # timed out without releasing
+
+        self._d_xy_prev = d_xy
+        self._d_impact_prev = d_impact
+        return torch.nan_to_num(r, nan=0.0)
+
+
+class DroneBombardV13Env(DroneBombardV11Env):
+    """v13: partial-observability "reveal" on top of v12's random marker.
+
+    Blind +X cruise until the drone is within cfg.reveal_radius (horizontal) of
+    the marker; only then are the marker-relative obs channels un-masked. NOT
+    latched (leaving the radius re-masks them), with a per-step penalty whenever
+    the marker is undetected. A 25th obs channel is the detected flag, and every
+    marker-dependent reward term is gated on detection so the reward can never
+    leak the hidden marker position.
+    """
+    cfg: DroneBombardV13Cfg
+
+    def __init__(self, cfg: DroneBombardV13Cfg, render_mode: str | None = None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
+        self._detected = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+
+    def _get_observations(self) -> dict:
+        # Reuse v11's 24-D obs, then mask the marker-dependent channels when the
+        # marker is not detected and append the detected flag (-> 25-D).
+        obs24 = super()._get_observations()["policy"]
+        det = self._current_d_xy() <= self.cfg.reveal_radius
+        self._detected = det
+        m = det.float().unsqueeze(-1)
+        mask = torch.ones_like(obs24)
+        # channels: 0,1 = rel_x/rel_y ; 13,14 = ccip_err x/y ; 15 = d_impact
+        mask[:, [0, 1, 13, 14, 15]] = m
+        obs = torch.cat([obs24 * mask, m], dim=-1)
+        return {"policy": obs}
+
+    def _get_rewards(self) -> torch.Tensor:
+        cfg = self.cfg
+        _, _, ang, roll, pitch, _ = self._kinematics()
+        f = self._done_flags
+        d_impact = self._d_impact
+        d_xy = self._current_d_xy()
+        det = (d_xy <= cfg.reveal_radius).float()  # marker detected this step?
+
+        # --- marker-independent shaping (always active) ---
+        r = -cfg.v11_w_ang_vel * (ang * ang).sum(dim=-1)
+        r = r - cfg.v11_w_tilt * (roll * roll + pitch * pitch)
+        r = r - cfg.v11_w_action_smooth * (self._delta_action * self._delta_action).sum(dim=-1)
+        r = r - cfg.v11_w_time
+        # per-step penalty whenever the marker is NOT detected (acquire + keep contact)
+        r = r + (1.0 - det) * cfg.v13_undetected_penalty
+
+        # --- marker-dependent shaping, GATED on detection (no position leak) ---
+        progress = cfg.v11_w_progress * (self._d_xy_prev - d_xy)
+        ccip = cfg.v11_w_ccip * torch.exp(-cfg.v11_k_ccip * d_impact)
+        r = r + det * (progress + ccip)
+        r = r + det * f["gate_open"].float() * cfg.v11_gate_reward
+        r = r + det * (self._wants_drop & f["gate_open"]).float() * cfg.v11_drop_signal_reward
+
+        # landing terminal (release fires only inside the envelope => detected)
+        landing_err = self._release_impact_err
+        landing_reward = torch.where(
+            landing_err <= cfg.v11_success_radius,
+            torch.full_like(landing_err, cfg.v11_reward_success),
+            cfg.v11_reward_success * torch.exp(-cfg.v11_k_landing * landing_err),
+        )
+        r = r + f["released"].float() * landing_reward
+
+        r = r + f["crash"].float() * cfg.v11_crash_penalty
+        r = r + f["out_of_range"].float() * cfg.v11_out_of_range_penalty
+        r = r + f["timeout"].float() * cfg.v11_no_drop_penalty
 
         self._d_xy_prev = d_xy
         self._d_impact_prev = d_impact
