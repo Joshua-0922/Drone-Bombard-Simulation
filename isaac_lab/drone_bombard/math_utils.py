@@ -382,3 +382,48 @@ def stagnation_guard(
     """Fires once ``step_in_ep >= window`` and progress over the trailing
     ``window`` steps is below ``min_progress`` metres."""
     return (step_in_ep >= window) & ((d_xy_past - d_xy_now) < min_progress)
+
+
+def release_gate(
+    d_impact: torch.Tensor,
+    altitude: torch.Tensor,
+    speed_xy: torch.Tensor,
+    vz: torch.Tensor,
+    roll: torch.Tensor,
+    pitch: torch.Tensor,
+    ang_vel_norm: torch.Tensor,
+    payload_attached: torch.Tensor,
+    release_radius: float,
+    alt_min: float,
+    alt_max: float,
+    max_speed: float,
+    max_vz: float,
+    max_tilt: float,
+    max_ang_vel: float,
+) -> torch.Tensor:
+    """Release-envelope gate for the v11 policy-``drop_signal`` model
+    (Isaac-v11 spec, doc 53 §6). Returns a per-env bool mask that is True only
+    when the drone is in a state where a released payload can plausibly land on
+    target: the CCIP predicted-impact error is within ``release_radius``, the
+    altitude is inside [alt_min, alt_max], and speed/vertical-speed/tilt/
+    angular-rate are all under their caps, with the payload still attached.
+
+    Pure torch (no isaaclab dependency) so it is unit-tested in
+    ``tests/test_math.py``. The env combines this with the policy's
+    ``action[4] > 0.5`` drop-intent: fire only when BOTH hold. A drop-intent
+    with the gate closed is a NO-OP with NO penalty (Gazebo v7 lesson — a
+    penalty on gate-closed intent teaches drop avoidance; doc 53 §6.2).
+    ``payload_attached`` is passed as a float/bool tensor and treated
+    truthily so drop cannot re-fire after release.
+    """
+    return (
+        (d_impact <= release_radius)
+        & (altitude >= alt_min)
+        & (altitude <= alt_max)
+        & (speed_xy <= max_speed)
+        & (vz.abs() <= max_vz)
+        & (roll.abs() <= max_tilt)
+        & (pitch.abs() <= max_tilt)
+        & (ang_vel_norm <= max_ang_vel)
+        & (payload_attached > 0)
+    )

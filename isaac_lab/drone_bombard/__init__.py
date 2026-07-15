@@ -4,6 +4,7 @@ import gymnasium as gym
 
 from . import agents
 from .drone_bombard_env import DroneBombardEnv, DroneBombardEnvCfg
+from .v11_env import DroneBombardV11Env, DroneBombardV11Cfg
 
 gym.register(
     id="Isaac-DroneBombard-Direct-v0",
@@ -19,4 +20,20 @@ gym.register(
     },
 )
 
-__all__ = ["DroneBombardEnv", "DroneBombardEnvCfg"]
+gym.register(
+    # Isaac-v11 relaxed test: single integrated phase, fixed marker ahead in the
+    # cruise direction, policy drop_signal + release envelope, nominal physics.
+    # See drone_bombard/v11_env.py and final_integrated_document_set/53.
+    id="Isaac-DroneBombard-V11-Direct-v0",
+    entry_point="drone_bombard.v11_env:DroneBombardV11Env",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": DroneBombardV11Cfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
+    },
+)
+
+__all__ = [
+    "DroneBombardEnv", "DroneBombardEnvCfg",
+    "DroneBombardV11Env", "DroneBombardV11Cfg",
+]

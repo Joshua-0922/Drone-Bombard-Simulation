@@ -541,5 +541,70 @@ def test_aim_error_reward_off_and_sentinel():
     assert torch.isfinite(r).all()
 
 
+# =====================================================================
+# Release envelope gate (v11 policy-drop_signal model, doc 53 §6)
+# =====================================================================
+
+def _gate(**kw):
+    """Evaluate release_gate on a single env, defaulting to a state INSIDE
+    the doc-53 envelope; override individual fields via kwargs."""
+    d = dict(d_impact=0.5, altitude=5.0, speed_xy=1.0, vz=0.5,
+             roll=0.0, pitch=0.0, ang_vel_norm=1.0, payload_attached=1.0)
+    d.update(kw)
+    t = lambda x: torch.tensor([x], dtype=torch.float32)
+    return mu.release_gate(
+        t(d["d_impact"]), t(d["altitude"]), t(d["speed_xy"]), t(d["vz"]),
+        t(d["roll"]), t(d["pitch"]), t(d["ang_vel_norm"]), t(d["payload_attached"]),
+        release_radius=1.0, alt_min=3.0, alt_max=8.0, max_speed=5.0,
+        max_vz=3.0, max_tilt=0.35, max_ang_vel=4.0,
+    )[0].item()
+
+
+def test_release_gate_open_inside_envelope():
+    assert _gate()
+
+
+def test_release_gate_closed_each_condition():
+    assert not _gate(d_impact=1.5)          # CCIP aim too far
+    assert not _gate(altitude=2.0)          # below alt window (also crash-low)
+    assert not _gate(altitude=9.0)          # above alt window
+    assert not _gate(speed_xy=6.0)          # too fast horizontally
+    assert not _gate(vz=4.0)                # descending too fast
+    assert not _gate(vz=-4.0)               # climbing too fast (abs cap)
+    assert not _gate(roll=0.5)             # tilt too large
+    assert not _gate(pitch=-0.5)            # tilt too large (abs)
+    assert not _gate(ang_vel_norm=5.0)      # spinning too fast
+    assert not _gate(payload_attached=0.0)  # already released -> cannot re-fire
+
+
+def test_release_gate_boundaries_inclusive():
+    assert _gate(d_impact=1.0)   # <= release_radius
+    assert _gate(altitude=3.0)   # >= alt_min
+    assert _gate(altitude=8.0)   # <= alt_max
+    assert _gate(speed_xy=5.0)   # <= max_speed
+
+
+def test_release_gate_vectorized():
+    d_impact = torch.tensor([0.5, 1.5, 0.5])
+    alt = torch.tensor([5.0, 5.0, 2.0])
+    out = mu.release_gate(
+        d_impact, alt, torch.ones(3), torch.zeros(3),
+        torch.zeros(3), torch.zeros(3), torch.ones(3), torch.ones(3),
+        1.0, 3.0, 8.0, 5.0, 3.0, 0.35, 4.0,
+    )
+    assert out.dtype == torch.bool
+    assert out.tolist() == [True, False, False]
+
+
+def test_release_gate_returns_bool_mask_shape():
+    n = 7
+    out = mu.release_gate(
+        torch.full((n,), 0.5), torch.full((n,), 5.0), torch.ones(n), torch.zeros(n),
+        torch.zeros(n), torch.zeros(n), torch.ones(n), torch.ones(n),
+        1.0, 3.0, 8.0, 5.0, 3.0, 0.35, 4.0,
+    )
+    assert out.shape == (n,) and out.dtype == torch.bool and out.all()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

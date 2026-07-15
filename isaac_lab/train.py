@@ -66,6 +66,10 @@ parser.add_argument("--aim_reward_scale", type=float, default=None,
 parser.add_argument("--release_terminal", action="store_true",
                     help="Phase 1 Stage B (exp_018): the scripted CCIP referee's fire event ends the "
                          "episode as success (replaces d_xy proximity success; failure gates unchanged).")
+parser.add_argument("--v11_test", action="store_true",
+                    help="Isaac-v11 relaxed test env: single integrated phase, fixed marker ahead in "
+                         "the cruise direction, policy drop_signal + release envelope, nominal physics. "
+                         "Uses DroneBombardV11Cfg + Isaac-DroneBombard-V11-Direct-v0 (ignores --phase).")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -156,6 +160,7 @@ from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: E402
 
 import drone_bombard  # noqa: F401,E402 - registers the task
 from drone_bombard.drone_bombard_env import DroneBombardEnvCfg  # noqa: E402
+from drone_bombard.v11_env import DroneBombardV11Cfg  # noqa: E402
 from drone_bombard.agents.rsl_rl_ppo_cfg import DroneBombardPPORunnerCfg  # noqa: E402
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -166,17 +171,24 @@ def main():
     phase = args_cli.phase if args_cli.phase is not None else 1
 
     # --- env cfg (built directly — the path proven by verify_one_episode.py) ---
-    env_cfg = DroneBombardEnvCfg()
-    env_cfg.phase = phase  # env __init__ re-derives residual/DR/moving flags from this
+    task = args_cli.task
+    if args_cli.v11_test:
+        # Isaac-v11 relaxed test: separate env class + cfg, single integrated
+        # phase (no --phase, no residual/DR/moving/vision — all kept inert).
+        task = "Isaac-DroneBombard-V11-Direct-v0"
+        env_cfg = DroneBombardV11Cfg()
+    else:
+        env_cfg = DroneBombardEnvCfg()
+        env_cfg.phase = phase  # env __init__ re-derives residual/DR/moving flags from this
+        if args_cli.w_aim is not None:
+            env_cfg.reward.w_aim = args_cli.w_aim
+        if args_cli.aim_reward_scale is not None:
+            env_cfg.reward.aim_reward_scale = args_cli.aim_reward_scale
+        if args_cli.release_terminal:
+            env_cfg.release_terminal = True
     env_cfg.scene.num_envs = args_cli.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else "cuda:0"
     env_cfg.seed = args_cli.seed
-    if args_cli.w_aim is not None:
-        env_cfg.reward.w_aim = args_cli.w_aim
-    if args_cli.aim_reward_scale is not None:
-        env_cfg.reward.aim_reward_scale = args_cli.aim_reward_scale
-    if args_cli.release_terminal:
-        env_cfg.release_terminal = True
 
     # --- agent cfg ---
     agent_cfg: DroneBombardPPORunnerCfg = DroneBombardPPORunnerCfg()
@@ -185,7 +197,8 @@ def main():
         agent_cfg.max_iterations = args_cli.max_iterations
     agent_cfg.logger = args_cli.logger
     agent_cfg.wandb_project = args_cli.wandb_project
-    agent_cfg.run_name = args_cli.run_name if args_cli.run_name else f"phase{phase}"
+    agent_cfg.run_name = args_cli.run_name if args_cli.run_name else (
+        "v11" if args_cli.v11_test else f"phase{phase}")
 
     log_root = os.path.abspath(os.path.join(args_cli.log_root, agent_cfg.experiment_name))
     log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -196,7 +209,7 @@ def main():
     print(f"[INFO] Phase {phase} — logging experiment to: {log_dir}")
 
     # --- build env + rsl_rl runner (stock v2.3.2 API) ---
-    env = gym.make(args_cli.task, cfg=env_cfg)
+    env = gym.make(task, cfg=env_cfg)
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
 
