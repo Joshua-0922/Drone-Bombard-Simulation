@@ -81,6 +81,7 @@ type: index
 - [[research/rtf_fps_analysis]] — RTF vs FPS 분석. RTF=2 최적, Python 루프 병목 규명
 - [[research/isaac_cruise_handoff_junsang]] — [Isaac] cruise 핸드오프: reset 시 컨트롤러 setpoint seed (Rule 10)
 - [[research/isaac_v11_v13_design_guide_junsang]] — [Isaac] v11~v13 설계 가이드: 기존 migration 모델 대비 변경점
+- [[research/isaac_expansion_roadmap_junsang]] — [Isaac] 확장 로드맵: CCIP residual+DR 다음단계 개요 + 남은 축 전체
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
