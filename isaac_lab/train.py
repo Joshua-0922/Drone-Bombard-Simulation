@@ -82,6 +82,10 @@ parser.add_argument("--v14", action="store_true",
                     help="v12 + domain randomization (wind/drag) + learned CCIP residual on action[5:7]. "
                          "obs 27-D (wind/drag observable = Stage A). DroneBombardV14Cfg + "
                          "Isaac-DroneBombard-V14-Direct-v0 (ignores --phase).")
+parser.add_argument("--v15", action="store_true",
+                    help="v14 + the wind physically pushes the DRONE (airframe drag from the relative "
+                         "airflow), not just the payload ballistics. DroneBombardV15Cfg + "
+                         "Isaac-DroneBombard-V15-Direct-v0 (ignores --phase).")
 parser.add_argument("--v14_no_residual", action="store_true",
                     help="Control group for --v14: identical env/DR/obs/action, but the policy residual is "
                          "NOT applied — isolates how much of the impact error the residual actually removes.")
@@ -177,6 +181,7 @@ import drone_bombard  # noqa: F401,E402 - registers the task
 from drone_bombard.drone_bombard_env import DroneBombardEnvCfg  # noqa: E402
 from drone_bombard.v11_env import (  # noqa: E402
     DroneBombardV11Cfg, DroneBombardV12Cfg, DroneBombardV13Cfg, DroneBombardV14Cfg,
+    DroneBombardV15Cfg,
 )
 from drone_bombard.agents.rsl_rl_ppo_cfg import DroneBombardPPORunnerCfg  # noqa: E402
 
@@ -189,7 +194,13 @@ def main():
 
     # --- env cfg (built directly — the path proven by verify_one_episode.py) ---
     task = args_cli.task
-    if args_cli.v14:
+    if args_cli.v15:
+        # v14 + wind physically acting on the airframe.
+        task = "Isaac-DroneBombard-V15-Direct-v0"
+        env_cfg = DroneBombardV15Cfg()
+        if args_cli.v14_no_residual:
+            env_cfg.v14_residual = False
+    elif args_cli.v14:
         # v12 + DR (wind/drag) + learned CCIP residual (action[5:7]).
         task = "Isaac-DroneBombard-V14-Direct-v0"
         env_cfg = DroneBombardV14Cfg()
@@ -230,6 +241,7 @@ def main():
     agent_cfg.logger = args_cli.logger
     agent_cfg.wandb_project = args_cli.wandb_project
     agent_cfg.run_name = args_cli.run_name if args_cli.run_name else (
+        ("v15_nores" if args_cli.v14_no_residual else "v15") if args_cli.v15 else
         ("v14_nores" if args_cli.v14_no_residual else "v14") if args_cli.v14 else
         "v13" if args_cli.v13 else "v12" if args_cli.v12 else
         "v11" if args_cli.v11_test else f"phase{phase}")

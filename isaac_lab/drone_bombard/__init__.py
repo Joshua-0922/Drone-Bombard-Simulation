@@ -7,7 +7,7 @@ from .drone_bombard_env import DroneBombardEnv, DroneBombardEnvCfg
 from .v11_env import (
     DroneBombardV11Env, DroneBombardV11Cfg, DroneBombardV12Cfg,
     DroneBombardV13Env, DroneBombardV13Cfg,
-    DroneBombardV14Env, DroneBombardV14Cfg,
+    DroneBombardV14Env, DroneBombardV14Cfg, DroneBombardV15Cfg,
 )
 
 gym.register(
@@ -74,9 +74,21 @@ gym.register(
     },
 )
 
+gym.register(
+    # v15: v14 + the wind physically pushes the drone (airframe drag from the
+    # relative airflow), not just the payload's ballistic impact.
+    id="Isaac-DroneBombard-V15-Direct-v0",
+    entry_point="drone_bombard.v11_env:DroneBombardV14Env",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": DroneBombardV15Cfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
+    },
+)
+
 __all__ = [
     "DroneBombardEnv", "DroneBombardEnvCfg",
     "DroneBombardV11Env", "DroneBombardV11Cfg", "DroneBombardV12Cfg",
     "DroneBombardV13Env", "DroneBombardV13Cfg",
-    "DroneBombardV14Env", "DroneBombardV14Cfg",
+    "DroneBombardV14Env", "DroneBombardV14Cfg", "DroneBombardV15Cfg",
 ]

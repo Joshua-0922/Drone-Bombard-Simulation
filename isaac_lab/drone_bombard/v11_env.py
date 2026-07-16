@@ -154,6 +154,22 @@ class DroneBombardV14Cfg(DroneBombardV12Cfg):
     v14_drag_obs_scale: float = 0.2
 
 
+@configclass
+class DroneBombardV15Cfg(DroneBombardV14Cfg):
+    """v15 = v14 + the wind physically pushes the DRONE.
+
+    In v14 the sampled wind only displaced the payload's ballistic impact — the
+    airframe flew in still air, so the policy could beat the wind by simply
+    repositioning (release lower/slower), which is why the residual-off control
+    still reached 0.82 m. Here the relative airflow also exerts quadratic drag on
+    the airframe (base hook ``wind_force_enabled``), so holding a position now
+    costs a tilt and the wind genuinely disturbs the flight.
+
+    Same env class as v14 (the force lives in the base controller, cfg-gated).
+    """
+    wind_force_enabled: bool = True
+
+
 class DroneBombardV11Env(DroneBombardEnv):
     cfg: DroneBombardV11Cfg
 

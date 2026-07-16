@@ -25,6 +25,11 @@ parser.add_argument("--policy", type=str, default=None)
 parser.add_argument("--zero-actions", action="store_true")
 parser.add_argument("--scripted", action="store_true")
 parser.add_argument("--step-response", action="store_true")
+parser.add_argument("--wind-test", action="store_true",
+                    help="Empirically verify the v15 airframe wind force: hover under a known forced wind "
+                         "with cfg.wind_force_enabled OFF then ON, and compare the steady-state tilt "
+                         "against atan(k*v^2/(m*g)).")
+parser.add_argument("--wind-speed", type=float, default=5.0, help="Wind speed (m/s, +X) for --wind-test.")
 parser.add_argument("--episodes", type=int, default=10)
 parser.add_argument("--release-terminal", action="store_true",
                     help="Evaluate under the Stage-B (exp_018) release-as-terminal semantics — "
@@ -83,6 +88,49 @@ def run_zero_actions(env, steps=100):
             return False
     ok = bool((max_drift < 1.0).all())
     print(f"[zero-actions] max altitude drift over {steps} steps: {max_drift.max().item():.3f} m -> {'PASS' if ok else 'FAIL'}")
+    return ok
+
+
+def run_wind_test(env, wind_speed=5.0, steps=60):
+    """Empirically verify that the wind actually pushes the AIRFRAME (v15).
+
+    Commands hover (zero action) under a known forced wind and measures the
+    steady-state tilt and downwind speed with cfg.wind_force_enabled toggled OFF
+    then ON. With the force off the wind only ever displaced the payload's
+    ballistic impact, so the airframe hovers level; with it on, holding station
+    costs a tilt of ~atan(F_drag/(m*g)) — a falsifiable prediction.
+    """
+    import math as _m
+
+    u = env.unwrapped
+    n, device = u.num_envs, u.device
+    action_dim = u.single_action_space.shape[0]
+    zero = torch.zeros(n, action_dim, device=device)
+    wind = torch.tensor([wind_speed, 0.0], device=device)
+    print(f"[wind-test] forced wind = {wind_speed:.1f} m/s (+X), hover command, {steps} steps/condition")
+
+    out = {}
+    for enabled in (False, True):
+        u.cfg.wind_force_enabled = enabled
+        env.reset()
+        for _ in range(steps):
+            u._wind_xy[:] = wind  # hold the wind fixed across any mid-test reset
+            env.step(zero)
+        _, vel, _, roll, pitch, _ = u._kinematics()
+        tilt_deg = _m.degrees(torch.sqrt(roll ** 2 + pitch ** 2).mean().item())
+        speed = torch.linalg.norm(vel[:, :2], dim=-1).mean().item()
+        out[enabled] = (tilt_deg, speed)
+        print(f"[wind-test] wind_force {'ON ' if enabled else 'OFF'}: "
+              f"tilt={tilt_deg:6.2f} deg | downwind speed={speed:5.3f} m/s")
+
+    k, m = u.cfg.wind_drag_k, u._ctrl_mass
+    pred = _m.degrees(_m.atan(k * wind_speed ** 2 / (m * 9.81)))
+    print(f"[wind-test] analytic tilt for a station-holding drone: "
+          f"atan({k}*{wind_speed}^2/({m:.2f}*9.81)) = {pred:.2f} deg")
+    off_t, on_t = out[False][0], out[True][0]
+    ok = on_t > off_t + 0.5
+    print(f"[wind-test] {'PASS' if ok else 'FAIL'}: wind {'DOES' if ok else 'does NOT'} push the airframe "
+          f"(tilt {off_t:.2f} -> {on_t:.2f} deg)")
     return ok
 
 
@@ -231,12 +279,14 @@ def main():
         run_zero_actions(env)
     elif args_cli.scripted:
         run_scripted(env, episodes=args_cli.episodes)
+    elif args_cli.wind_test:
+        run_wind_test(env, wind_speed=args_cli.wind_speed)
     elif args_cli.step_response:
         run_step_response(env, args_cli.out_csv)
     elif args_cli.policy:
         run_policy(env, args_cli.policy, episodes=args_cli.episodes)
     else:
-        print("Specify one of --zero-actions / --scripted / --step-response / --policy CKPT")
+        print("Specify one of --zero-actions / --scripted / --step-response / --wind-test / --policy CKPT")
 
     env.close()
 

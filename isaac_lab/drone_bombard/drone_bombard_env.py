@@ -324,6 +324,16 @@ class DroneBombardEnvCfg(DirectRLEnvCfg):
     moving_target_enabled: bool = False
     release_enabled: bool = False
 
+    # --- airframe wind disturbance (v15 hook; INERT unless enabled) ---
+    # Until this is on, ``_wind_xy`` only ever displaced the PAYLOAD's ballistic
+    # impact — the drone itself flew in perfectly still air, so a policy could
+    # beat the wind purely by repositioning. With it on, the relative airflow
+    # exerts quadratic drag on the airframe and the controller must fight it.
+    # Not phase-derived (unlike the flags above), so __post_init__ leaves it be;
+    # default False keeps v11-v14 and the base phases bit-identical.
+    wind_force_enabled: bool = False
+    wind_drag_k: float = 0.06  # N per (m/s)^2 = 0.5*rho*Cd*A (~0.1 m^2 frontal-area quad)
+
     # Stage B (exp_018): scripted-release-as-terminal for Phase 1. When True,
     # the Phase-1 CCIP referee's fire event ENDS the episode as the success
     # condition (replacing d_xy<=success_radius proximity success) — the drone
@@ -706,6 +716,20 @@ class DroneBombardEnv(DirectRLEnv):
 
         forces_b = torch.zeros(self.num_envs, 1, 3, device=self.device)
         forces_b[:, 0, 2] = thrust_mag  # body +Z
+
+        # --- airframe wind disturbance (inert unless cfg.wind_force_enabled) ---
+        # Quadratic drag from the RELATIVE airflow (air velocity as seen by the
+        # drone), applied in the world frame then rotated into the body frame to
+        # join the thrust. This is what makes the wind physically push the
+        # airframe, so holding position costs a tilt of ~atan(F_wind/(m*g))
+        # instead of being free.
+        if self.cfg.wind_force_enabled:
+            v_air_w = torch.zeros_like(vel_w)
+            v_air_w[:, :2] = self._wind_xy - vel_w[:, :2]
+            air_speed = torch.linalg.norm(v_air_w, dim=-1, keepdim=True)
+            f_wind_w = self.cfg.wind_drag_k * air_speed * v_air_w
+            forces_b[:, 0, :] += quat_apply_inverse_pure(quat_w, f_wind_w)
+
         torques_b = torch.zeros(self.num_envs, 1, 3, device=self.device)
         torques_b[:, 0, :] = torque_b
         # final safety: never inject a non-finite wrench into physics (a
