@@ -168,18 +168,15 @@ class DroneBombardV15Cfg(DroneBombardV14Cfg):
     Same env class as v14 (the force lives in the base controller, cfg-gated).
     """
     wind_force_enabled: bool = True
-    # Stronger wind than v14's placeholder 1.0 m/s (which tilted the airframe a
-    # negligible ~0.2 deg). N(0, 4.0) per axis ~ a routine 3-5 m/s outdoor breeze
-    # (up to ~12 m/s in the tails) -> a few-degree station-keeping tilt the
-    # controller must fight. obs scale widened so the observable wind (needed for
-    # the residual) is not clamp-saturated at these magnitudes.
-    v14_wind_std: float = 4.0
-    v14_wind_obs_scale: float = 12.0
-    # Cap the sampled wind MAGNITUDE so the Gaussian tail (N(0,4) reaches
-    # ~12-19 m/s) can't spawn hurricane-force gusts that tilt the drone past the
-    # attitude limit into an unavoidable bad_attitude death. 8 m/s ~ p90, tilt
-    # ~10 deg. 0/None disables the cap.
-    v14_wind_max: float = 8.0
+    # N(0, 2.0) per axis, magnitude-capped at 5 m/s. Chosen so the payload's
+    # wind drift stays within the CCIP residual's +/-3 m authority: at 4.0 the
+    # drift reached 3.7-7.7 m and saturated the residual (impact plateaued ~3 m,
+    # v15 first run). At 2.0 the typical drift is ~2 m (< 3 m) so the residual can
+    # actually close it, while the wind still tilts the airframe a meaningful
+    # ~1-2 deg. obs scale matched to the smaller wind so it uses the [-1,1] range.
+    v14_wind_std: float = 2.0
+    v14_wind_obs_scale: float = 6.0
+    v14_wind_max: float = 5.0  # 0 disables the magnitude cap
 
 
 class DroneBombardV11Env(DroneBombardEnv):
