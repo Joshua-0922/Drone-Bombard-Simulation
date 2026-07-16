@@ -7,6 +7,7 @@ from .drone_bombard_env import DroneBombardEnv, DroneBombardEnvCfg
 from .v11_env import (
     DroneBombardV11Env, DroneBombardV11Cfg, DroneBombardV12Cfg,
     DroneBombardV13Env, DroneBombardV13Cfg,
+    DroneBombardV14Env, DroneBombardV14Cfg,
 )
 
 gym.register(
@@ -61,8 +62,21 @@ gym.register(
     },
 )
 
+gym.register(
+    # v14: v12 + domain randomization (wind/drag) + learned CCIP residual
+    # (action[5:7]). obs 27-D (wind/drag observable — Stage A of the wind trap).
+    id="Isaac-DroneBombard-V14-Direct-v0",
+    entry_point="drone_bombard.v11_env:DroneBombardV14Env",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": DroneBombardV14Cfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
+    },
+)
+
 __all__ = [
     "DroneBombardEnv", "DroneBombardEnvCfg",
     "DroneBombardV11Env", "DroneBombardV11Cfg", "DroneBombardV12Cfg",
     "DroneBombardV13Env", "DroneBombardV13Cfg",
+    "DroneBombardV14Env", "DroneBombardV14Cfg",
 ]

@@ -78,6 +78,13 @@ parser.add_argument("--v13", action="store_true",
                     help="v12 + partial observability: blind +X cruise until within reveal_radius (7 m "
                          "horizontal) of the random marker; marker obs masked + per-step penalty until "
                          "detected. DroneBombardV13Cfg + Isaac-DroneBombard-V13-Direct-v0 (ignores --phase).")
+parser.add_argument("--v14", action="store_true",
+                    help="v12 + domain randomization (wind/drag) + learned CCIP residual on action[5:7]. "
+                         "obs 27-D (wind/drag observable = Stage A). DroneBombardV14Cfg + "
+                         "Isaac-DroneBombard-V14-Direct-v0 (ignores --phase).")
+parser.add_argument("--v14_no_residual", action="store_true",
+                    help="Control group for --v14: identical env/DR/obs/action, but the policy residual is "
+                         "NOT applied — isolates how much of the impact error the residual actually removes.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -168,7 +175,9 @@ from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: E402
 
 import drone_bombard  # noqa: F401,E402 - registers the task
 from drone_bombard.drone_bombard_env import DroneBombardEnvCfg  # noqa: E402
-from drone_bombard.v11_env import DroneBombardV11Cfg, DroneBombardV12Cfg, DroneBombardV13Cfg  # noqa: E402
+from drone_bombard.v11_env import (  # noqa: E402
+    DroneBombardV11Cfg, DroneBombardV12Cfg, DroneBombardV13Cfg, DroneBombardV14Cfg,
+)
 from drone_bombard.agents.rsl_rl_ppo_cfg import DroneBombardPPORunnerCfg  # noqa: E402
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -180,7 +189,14 @@ def main():
 
     # --- env cfg (built directly — the path proven by verify_one_episode.py) ---
     task = args_cli.task
-    if args_cli.v13:
+    if args_cli.v14:
+        # v12 + DR (wind/drag) + learned CCIP residual (action[5:7]).
+        task = "Isaac-DroneBombard-V14-Direct-v0"
+        env_cfg = DroneBombardV14Cfg()
+        if args_cli.v14_no_residual:
+            # control group: same DR/obs/action, residual not applied
+            env_cfg.v14_residual = False
+    elif args_cli.v13:
         # v12 + partial observability (blind cruise, reveal within 7 m).
         task = "Isaac-DroneBombard-V13-Direct-v0"
         env_cfg = DroneBombardV13Cfg()
@@ -214,6 +230,7 @@ def main():
     agent_cfg.logger = args_cli.logger
     agent_cfg.wandb_project = args_cli.wandb_project
     agent_cfg.run_name = args_cli.run_name if args_cli.run_name else (
+        ("v14_nores" if args_cli.v14_no_residual else "v14") if args_cli.v14 else
         "v13" if args_cli.v13 else "v12" if args_cli.v12 else
         "v11" if args_cli.v11_test else f"phase{phase}")
 

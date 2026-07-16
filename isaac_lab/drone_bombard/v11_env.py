@@ -119,6 +119,41 @@ class DroneBombardV13Cfg(DroneBombardV12Cfg):
     v13_undetected_penalty: float = -0.2  # per-step reward while marker not detected
 
 
+@configclass
+class DroneBombardV14Cfg(DroneBombardV12Cfg):
+    """v14 = v12 + domain randomization + learned CCIP residual (Stage A).
+
+    Built on v12 (perfect target obs, random marker) — NOT on v13 — so the
+    residual-learning problem is isolated from the perception problem.
+
+    With DR on, per-episode wind/drag make the ACTUAL ballistic impact
+    (``ballistic_impact(..., _drag_coef, _wind_xy)``, used for the landing
+    outcome) drift away from the NOMINAL CCIP prediction (``predict_impact_nominal``,
+    drag/wind-free) that the policy aims with. The policy closes that gap with a
+    learned 2-D impact-point residual on ``action[5:7]`` (+/- residual_scale m),
+    applied to the nominal prediction — so the gate/aim use the CORRECTED impact
+    while the reward still scores the REAL one.
+
+    Stage A resolves the "wind trap" (an unobservable per-env bias cannot be
+    corrected by a residual) by putting wind/drag directly in the obs. Stage B
+    (v15) removes them and must infer the bias from motion history.
+    """
+    observation_space = 27            # 24 (v12) + wind_xy (2) + drag (1)
+    action_space = 7                  # [0:4] vel, [4] drop_signal, [5:7] CCIP residual
+
+    v14_dr: bool = True               # sample per-episode wind/drag
+    v14_residual: bool = True         # apply the policy residual (False = control group)
+    v14_residual_scale: float = 3.0   # metres; action[5:7] in [-1,1] -> +/- 3 m correction
+
+    # DR strength — start milder than the base phase_cfg defaults (1.5 / 0.15).
+    v14_wind_std: float = 1.0         # m/s, N(0, std) per horizontal axis
+    v14_drag_max: float = 0.15        # U[0, drag_max] first-order drag coefficient
+
+    # obs normalisation for the newly observable bias channels
+    v14_wind_obs_scale: float = 5.0
+    v14_drag_obs_scale: float = 0.2
+
+
 class DroneBombardV11Env(DroneBombardEnv):
     cfg: DroneBombardV11Cfg
 
@@ -396,6 +431,59 @@ class DroneBombardV11Env(DroneBombardEnv):
         self._d_xy_prev = d_xy
         self._d_impact_prev = d_impact
         return torch.nan_to_num(r, nan=0.0)
+
+
+class DroneBombardV14Env(DroneBombardV11Env):
+    """v14: domain randomization + learned CCIP residual on top of v12.
+
+    Four small hooks on the v11 pipeline:
+      * ``_reset_idx``  — sample per-episode wind/drag (the parent zeroes them,
+        since the phase-derived ``dr_enabled`` stays False for the v11 line).
+      * ``_pre_physics_step`` — capture ``action[5:7]`` as the residual.
+      * ``_ccip`` — ADD the residual to the nominal impact prediction. This is the
+        single choke point: the corrected impact then flows into the obs
+        (ccip_err/d_impact), the release gate, and the CCIP shaping reward, while
+        ``_get_dones`` still scores the REAL drag/wind ballistic impact.
+      * ``_get_observations`` — append the observable bias (wind_xy, drag).
+    """
+    cfg: DroneBombardV14Cfg
+
+    def _reset_idx(self, env_ids: torch.Tensor):
+        super()._reset_idx(env_ids)  # v11 marker/cruise-seed; base zeroes wind/drag
+        if env_ids is None or len(env_ids) == self.num_envs:
+            env_ids = self._robot._ALL_INDICES
+        n = len(env_ids)
+        cfg, device = self.cfg, self.device
+        if cfg.v14_dr:
+            self._wind_xy[env_ids] = torch.randn(n, 2, device=device) * cfg.v14_wind_std
+            self._drag_coef[env_ids] = torch.rand(n, device=device) * cfg.v14_drag_max
+        self._residual_action[env_ids] = 0.0
+
+    def _pre_physics_step(self, actions: torch.Tensor):
+        super()._pre_physics_step(actions)  # [0:4] vel, [4] drop_signal
+        self._residual_action = torch.clamp(actions[:, 5:7], -1.0, 1.0)
+
+    def _ccip(self, pos: torch.Tensor, vel: torch.Tensor):
+        from .math_utils import apply_ccip_residual, predict_impact_nominal, time_to_fall
+
+        dc = self.cfg.drop
+        pos_xy, altitude, vel_xy = pos[:, :2], pos[:, 2], vel[:, :2]
+        impact = predict_impact_nominal(pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity)
+        if self.cfg.v14_residual:
+            # learned model-uncertainty correction: nominal + residual ~= real impact
+            impact = apply_ccip_residual(impact, self._residual_action, self.cfg.v14_residual_scale)
+        ccip_err = impact - self._target_xy
+        d_impact = torch.linalg.norm(ccip_err, dim=-1)
+        t_f = time_to_fall(altitude, dc.gravity)
+        return ccip_err, d_impact, t_f
+
+    def _get_observations(self) -> dict:
+        obs24 = super()._get_observations()["policy"]
+        cfg = self.cfg
+        wind_n = torch.clamp(self._wind_xy / cfg.v14_wind_obs_scale, -1.0, 1.0)
+        drag_n = torch.clamp(self._drag_coef / cfg.v14_drag_obs_scale, 0.0, 1.0).unsqueeze(-1)
+        obs = torch.cat([obs24, wind_n, drag_n], dim=-1)  # 27-D
+        return {"policy": torch.nan_to_num(obs, nan=0.0)}
 
 
 class DroneBombardV13Env(DroneBombardV11Env):
