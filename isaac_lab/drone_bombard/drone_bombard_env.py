@@ -345,7 +345,7 @@ class DroneBombardEnvCfg(DirectRLEnvCfg):
     payload_phys_mass: float = 0.1
     payload_phys_radius: float = 0.05
     payload_phys_height: float = 0.06
-    payload_phys_drag_k: float = 0.02  # N per (m/s)^2 for the small payload body
+    payload_phys_drag_k: float = 0.005  # N per (m/s)^2 = 0.5*rho*Cd*A for the ~0.008 m^2 payload
     payload_mount_z: float = -0.14     # carry offset below the drone body (m)
     payload_ground_z: float = 0.0      # landing plane (local frame)
 
