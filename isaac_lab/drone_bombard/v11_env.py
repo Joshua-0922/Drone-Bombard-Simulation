@@ -168,6 +168,18 @@ class DroneBombardV15Cfg(DroneBombardV14Cfg):
     Same env class as v14 (the force lives in the base controller, cfg-gated).
     """
     wind_force_enabled: bool = True
+    # Stronger wind than v14's placeholder 1.0 m/s (which tilted the airframe a
+    # negligible ~0.2 deg). N(0, 4.0) per axis ~ a routine 3-5 m/s outdoor breeze
+    # (up to ~12 m/s in the tails) -> a few-degree station-keeping tilt the
+    # controller must fight. obs scale widened so the observable wind (needed for
+    # the residual) is not clamp-saturated at these magnitudes.
+    v14_wind_std: float = 4.0
+    v14_wind_obs_scale: float = 12.0
+    # Cap the sampled wind MAGNITUDE so the Gaussian tail (N(0,4) reaches
+    # ~12-19 m/s) can't spawn hurricane-force gusts that tilt the drone past the
+    # attitude limit into an unavoidable bad_attitude death. 8 m/s ~ p90, tilt
+    # ~10 deg. 0/None disables the cap.
+    v14_wind_max: float = 8.0
 
 
 class DroneBombardV11Env(DroneBombardEnv):
@@ -471,7 +483,12 @@ class DroneBombardV14Env(DroneBombardV11Env):
         n = len(env_ids)
         cfg, device = self.cfg, self.device
         if cfg.v14_dr:
-            self._wind_xy[env_ids] = torch.randn(n, 2, device=device) * cfg.v14_wind_std
+            wind = torch.randn(n, 2, device=device) * cfg.v14_wind_std
+            wmax = getattr(cfg, "v14_wind_max", 0.0) or 0.0
+            if wmax > 0.0:
+                mag = torch.linalg.norm(wind, dim=-1, keepdim=True)
+                wind = wind * (wmax / mag.clamp(min=wmax))  # scale down only if |wind| > wmax
+            self._wind_xy[env_ids] = wind
             self._drag_coef[env_ids] = torch.rand(n, device=device) * cfg.v14_drag_max
         self._residual_action[env_ids] = 0.0
 
