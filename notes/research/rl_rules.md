@@ -161,6 +161,17 @@ if 'd_xy' in info:
 
 ---
 
+## Rule 10 — 움직이는 상태로 spawn 시 컨트롤러 setpoint seed (Isaac)
+
+**드론을 정지가 아닌 속도로 spawn**하면(예: cruise 핸드오프 `cruise_speed`), reset에서
+캐스케이드 속도 컨트롤러 상태(`_v_filt`, `_prev_action`)를 **그 속도로 seed**해야 한다.
+0으로 두면 첫 스텝에 실제 속도 vs setpoint의 큰 추종오차 → 급격한 tilt →
+`ang_vel > limit_ang_vel(2.0)` → `bad_attitude`로 **에피소드 즉사**(length 1, 학습 신호 0).
+seed 후 정상 학습(v11 dry-run 100% success). → [[research/isaac_cruise_handoff_junsang]],
+[[experiments/exp_006_v11_dryrun_junsang]]
+
+---
+
 ## Known Failure Modes
 
 | 증상 | 원인 | 해결 |
@@ -175,3 +186,4 @@ if 'd_xy' in info:
 | 100~125k 최우수 후 급후퇴 | post-success regression (큰 success reward가 critic 교란) | PER cap + LR/tau↓로 완화, 장기 추세로 평가 (Rule 9) |
 | hover 후 random_drop으로 종료 (drop_error ≈ spawn→target 거리) | hover exploit — heading 보상 수확이 success보다 안전 | Hover Terminal Penalty (종료 시 -15, sustained hover만) → [[experiments/exp_004_round5_hover_junsang]] |
 | `gz model --list` 5s timeout → 학습 abort | PX4 `.ulg` 로그 누적(20GB) → 디스크 I/O 지연 | PX4 로깅 비활성화 (`SDLOG_MODE -1`), 누적 로그 삭제 |
+| `bad_attitude 1.0`, episode length 1 (Isaac) | 움직이는 상태로 spawn했는데 컨트롤러 setpoint(`_v_filt`/`_prev_action`) 0으로 리셋 → 첫 스텝 큰 속도오차 → 급기동 | reset에서 컨트롤러를 cruise 속도로 seed (Rule 10) → [[research/isaac_cruise_handoff_junsang]] |

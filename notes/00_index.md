@@ -79,24 +79,31 @@ type: index
 - [[research/system_overview]] — 전체 시스템 (패키지, 토픽, 좌표계, 브리지)
 - [[research/rl_rules]] — RL 실험 규칙, WandB 메트릭, Known Failure Modes
 - [[research/rtf_fps_analysis]] — RTF vs FPS 분석. RTF=2 최적, Python 루프 병목 규명
+- [[research/isaac_cruise_handoff_junsang]] — [Isaac] cruise 핸드오프: reset 시 컨트롤러 setpoint seed (Rule 10)
+- [[research/isaac_v11_v13_design_guide_junsang]] — [Isaac] v11~v13 설계 가이드: 기존 migration 모델 대비 변경점
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
 - [[experiments/exp_001_8otphxy8_linear_reward]] — 선형 거리 보상 + CRUISE retry
 - [[experiments/exp_002_reward_shaping_patches]] — 보상 패치 Fresh Training (대기 중)
 - [[experiments/exp_003_rtf_dryrun]] — RTF 1/2/4 dry-run 비교. RTF=2 최적 확정.
+- [[experiments/exp_006_v11_dryrun_junsang]] — [Isaac] v11 완화 테스트 dry-run 성공 (success 100%, 착탄 ~0.75m)
+- [[experiments/exp_007_v12_random_marker_junsang]] — [Isaac] v12 첫 확장: 랜덤 marker 일반화 성공 (success 100%)
+- [[experiments/exp_008_v13_partial_obs_junsang]] — [Isaac] v13 부분관측: blind 순항→7m 탐지 학습 성공 (success 100%)
 
 ### 에러 (errors/)
 - [[errors/err_20260320_physics_explosion]] — Gazebo ODE 물리 폭발 3중 방어
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-07-15_junsang]] — [Isaac] v11 완화 → v12 랜덤 → v13 부분관측 전부 100%, 라이브 GUI, 디스크 진단
 - [[daily/daily_2026-04-23]] — Spot VM 이전 완료 (startup.sh + watchdog CF + create_spot_vm.sh) + IP 변경 대응
 - [[daily/daily_2026-04-17]] — Phase 1 코드 전체 구현 (변경 1-10, obs 15→17, CCIP auto-drop)
 - [[daily/daily_2026-04-16]] — WandB 연결 + RTF dry-run 실험 + 인프라 고장 해결
 - [[daily/daily_2026-04-14]] — Guacamole HTTPS + Obsidian 설치 + wikilink 정비
 
 ### 세션 (sessions/)
+- [[sessions/session_2026-07-15_junsang]] — [Isaac] v11/v12/v13 확장 세션 (완화→랜덤→부분관측, 전부 100%)
 - [[sessions/session_2026-04-16]] — RTF dry-run, docker commit, airframe 수정
 - [[sessions/session_2026-04-14]] — Obsidian 시스템 초기화 + 파일 간소화
 
