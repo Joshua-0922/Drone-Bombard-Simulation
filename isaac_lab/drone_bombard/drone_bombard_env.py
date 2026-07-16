@@ -41,7 +41,7 @@ import math
 import torch
 
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, ArticulationCfg
+from isaaclab.assets import Articulation, ArticulationCfg, RigidObject, RigidObjectCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
@@ -334,6 +334,21 @@ class DroneBombardEnvCfg(DirectRLEnvCfg):
     wind_force_enabled: bool = False
     wind_drag_k: float = 0.06  # N per (m/s)^2 = 0.5*rho*Cd*A (~0.1 m^2 frontal-area quad)
 
+    # --- physical payload drop (v16 hook; INERT unless enabled) ---
+    # Until this is on, the "payload" is an analytic ballistic point and a visual
+    # cylinder — nothing physically falls. With it on, a real RigidObject is
+    # carried under the drone, released on the drop event, and falls under gravity
+    # + wind drag; the LANDING point (not a formula) drives the outcome — the
+    # thing that will actually matter once the wind is time-varying (the falling
+    # payload's trajectory then genuinely bends mid-air).
+    payload_physics_enabled: bool = False
+    payload_phys_mass: float = 0.1
+    payload_phys_radius: float = 0.05
+    payload_phys_height: float = 0.06
+    payload_phys_drag_k: float = 0.02  # N per (m/s)^2 for the small payload body
+    payload_mount_z: float = -0.14     # carry offset below the drone body (m)
+    payload_ground_z: float = 0.0      # landing plane (local frame)
+
     # Stage B (exp_018): scripted-release-as-terminal for Phase 1. When True,
     # the Phase-1 CCIP referee's fire event ENDS the episode as the success
     # condition (replacing d_xy<=success_radius proximity success) — the drone
@@ -444,6 +459,14 @@ class DroneBombardEnv(DirectRLEnv):
         self._release_impact_err = torch.zeros(N, device=device)
         self._release_aim_xy = torch.zeros(N, 2, device=device)
         self._release_target_xy = torch.zeros(N, 2, device=device)
+
+        # v16 physical-payload state (buffers always exist; only used when the
+        # cfg hook is on). _payload_free: released and falling (physics active);
+        # _payload_landed: has touched the ground; _payload_impact_xy: the actual
+        # (local-frame) landing point that drives the terminal reward.
+        self._payload_free = torch.zeros(N, dtype=torch.bool, device=device)
+        self._payload_landed = torch.zeros(N, dtype=torch.bool, device=device)
+        self._payload_impact_xy = torch.zeros(N, 2, device=device)
         # Per-episode minimum CCIP aim error |predicted_impact - target| (all
         # phases). Diagnoses 10 Hz trigger discretization: at approach speed v
         # the predicted impact point sweeps ~v*0.1 m per policy step, so the
@@ -590,6 +613,22 @@ class DroneBombardEnv(DirectRLEnv):
         self.scene.articulations["robot"] = self._robot
         self._author_body_mass_props()
 
+        if self.cfg.payload_physics_enabled:
+            pc = self.cfg
+            payload_cfg = RigidObjectCfg(
+                prim_path="/World/envs/env_.*/Payload",
+                spawn=sim_utils.CylinderCfg(
+                    radius=pc.payload_phys_radius, height=pc.payload_phys_height, axis="Z",
+                    rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+                    mass_props=sim_utils.MassPropertiesCfg(mass=pc.payload_phys_mass),
+                    collision_props=sim_utils.CollisionPropertiesCfg(),
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.95, 0.45, 0.05)),
+                ),
+                init_state=RigidObjectCfg.InitialStateCfg(pos=(0.0, 0.0, 10.0)),
+            )
+            self._payload = RigidObject(payload_cfg)
+            self.scene.rigid_objects["payload"] = self._payload
+
         spawn_ground = sim_utils.GroundPlaneCfg()
         spawn_ground.func("/World/ground", spawn_ground)
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.9, 0.9, 0.9))
@@ -641,6 +680,56 @@ class DroneBombardEnv(DirectRLEnv):
         self._physics_tick += 1
 
         self._run_velocity_controller(self._v_filt)
+
+        if self.cfg.payload_physics_enabled:
+            self._step_payload_physics()
+
+    def _step_payload_physics(self):
+        """v16: carry the payload under the drone until release, then let it fall
+        under gravity + wind drag and record where it lands. Runs at physics rate
+        (100 Hz) from _apply_action; gated by cfg.payload_physics_enabled.
+
+        _payload_free is flipped True by the env's release logic on the drop step.
+        """
+        origins = self.scene.env_origins
+
+        # carried (attached, not yet released): kinematically ride the drone.
+        carried = self._payload_attached & ~self._payload_free
+        if carried.any():
+            idx = carried.nonzero(as_tuple=False).squeeze(-1)
+            root = self._robot.data.root_state_w[idx]  # pos(3) quat(4) linvel(3) angvel(3)
+            pose = root[:, :7].clone()
+            pose[:, 2] = pose[:, 2] + self.cfg.payload_mount_z
+            vel = torch.zeros((idx.numel(), 6), device=self.device)
+            vel[:, :3] = root[:, 7:10]  # inherit the drone's linear velocity
+            self._payload.write_root_pose_to_sim(pose, idx)
+            self._payload.write_root_velocity_to_sim(vel, idx)
+
+        # free (released, still airborne): wind drag on the relative airflow.
+        active = self._payload_free & ~self._payload_landed
+        forces = torch.zeros(self.num_envs, 1, 3, device=self.device)
+        if active.any():
+            v = self._payload.data.root_lin_vel_w
+            v_air = torch.stack([self._wind_xy[:, 0] - v[:, 0],
+                                 self._wind_xy[:, 1] - v[:, 1],
+                                 -v[:, 2]], dim=-1)
+            speed = torch.linalg.norm(v_air, dim=-1, keepdim=True)
+            f = self.cfg.payload_phys_drag_k * speed * v_air
+            forces[:, 0, :] = torch.where(active.unsqueeze(-1), f, torch.zeros_like(f))
+        self._payload.set_external_force_and_torque(forces, torch.zeros_like(forces))
+        self._payload.write_data_to_sim()
+
+        # landing: local-frame z at/below the ground plane.
+        if active.any():
+            z_local = self._payload.data.root_pos_w[:, 2] - origins[:, 2]
+            newly = active & (z_local <= self.cfg.payload_ground_z)
+            if newly.any():
+                self._payload_impact_xy[newly] = (
+                    self._payload.data.root_pos_w[newly, :2] - origins[newly, :2])
+                self._payload_landed[newly] = True
+                idx = newly.nonzero(as_tuple=False).squeeze(-1)
+                self._payload.write_root_velocity_to_sim(
+                    torch.zeros((idx.numel(), 6), device=self.device), idx)
 
     def _run_velocity_controller(self, v_filt: torch.Tensor):
         """Cascaded PX4-shaped velocity -> wrench controller (velocity P ->
@@ -1227,6 +1316,12 @@ class DroneBombardEnv(DirectRLEnv):
         self._just_released[env_ids] = False
         self._release_impact_err[env_ids] = 0.0
         self._release_aim_xy[env_ids] = 0.0
+
+        # v16 physical-payload flags. Position needs no reset: _step_payload_physics
+        # re-seats a carried payload under the drone on the next physics tick.
+        self._payload_free[env_ids] = False
+        self._payload_landed[env_ids] = False
+        self._payload_impact_xy[env_ids] = 0.0
         self._release_target_xy[env_ids] = 0.0
         self._aim_err_min[env_ids] = float("inf")
         self._aim_err_last[env_ids] = float("inf")

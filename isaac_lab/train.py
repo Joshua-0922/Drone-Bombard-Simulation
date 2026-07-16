@@ -86,6 +86,10 @@ parser.add_argument("--v15", action="store_true",
                     help="v14 + the wind physically pushes the DRONE (airframe drag from the relative "
                          "airflow), not just the payload ballistics. DroneBombardV15Cfg + "
                          "Isaac-DroneBombard-V15-Direct-v0 (ignores --phase).")
+parser.add_argument("--v16", action="store_true",
+                    help="v12 + a REAL physics payload that is carried, dropped, and LANDS; the episode "
+                         "ends on the payload's actual landing and the reward is scored from it (not the "
+                         "analytic formula). DroneBombardV16Cfg + Isaac-DroneBombard-V16-Direct-v0.")
 parser.add_argument("--v14_no_residual", action="store_true",
                     help="Control group for --v14: identical env/DR/obs/action, but the policy residual is "
                          "NOT applied — isolates how much of the impact error the residual actually removes.")
@@ -181,7 +185,7 @@ import drone_bombard  # noqa: F401,E402 - registers the task
 from drone_bombard.drone_bombard_env import DroneBombardEnvCfg  # noqa: E402
 from drone_bombard.v11_env import (  # noqa: E402
     DroneBombardV11Cfg, DroneBombardV12Cfg, DroneBombardV13Cfg, DroneBombardV14Cfg,
-    DroneBombardV15Cfg,
+    DroneBombardV15Cfg, DroneBombardV16Cfg,
 )
 from drone_bombard.agents.rsl_rl_ppo_cfg import DroneBombardPPORunnerCfg  # noqa: E402
 
@@ -194,7 +198,11 @@ def main():
 
     # --- env cfg (built directly — the path proven by verify_one_episode.py) ---
     task = args_cli.task
-    if args_cli.v15:
+    if args_cli.v16:
+        # v12 + physical payload drop (land-terminal).
+        task = "Isaac-DroneBombard-V16-Direct-v0"
+        env_cfg = DroneBombardV16Cfg()
+    elif args_cli.v15:
         # v14 + wind physically acting on the airframe.
         task = "Isaac-DroneBombard-V15-Direct-v0"
         env_cfg = DroneBombardV15Cfg()
@@ -241,6 +249,7 @@ def main():
     agent_cfg.logger = args_cli.logger
     agent_cfg.wandb_project = args_cli.wandb_project
     agent_cfg.run_name = args_cli.run_name if args_cli.run_name else (
+        "v16" if args_cli.v16 else
         ("v15_nores" if args_cli.v14_no_residual else "v15") if args_cli.v15 else
         ("v14_nores" if args_cli.v14_no_residual else "v14") if args_cli.v14 else
         "v13" if args_cli.v13 else "v12" if args_cli.v12 else

@@ -30,6 +30,9 @@ parser.add_argument("--wind-test", action="store_true",
                          "with cfg.wind_force_enabled OFF then ON, and compare the steady-state tilt "
                          "against atan(k*v^2/(m*g)).")
 parser.add_argument("--wind-speed", type=float, default=5.0, help="Wind speed (m/s, +X) for --wind-test.")
+parser.add_argument("--drop-test", action="store_true",
+                    help="Verify the v16 physical payload: cruise, force a release, and check the payload "
+                         "physically falls along the drag-free ballistic curve (mid-air, before landing).")
 parser.add_argument("--episodes", type=int, default=10)
 parser.add_argument("--release-terminal", action="store_true",
                     help="Evaluate under the Stage-B (exp_018) release-as-terminal semantics — "
@@ -131,6 +134,59 @@ def run_wind_test(env, wind_speed=5.0, steps=60):
     ok = on_t > off_t + 0.5
     print(f"[wind-test] {'PASS' if ok else 'FAIL'}: wind {'DOES' if ok else 'does NOT'} push the airframe "
           f"(tilt {off_t:.2f} -> {on_t:.2f} deg)")
+    return ok
+
+
+def run_drop_test(env, settle=8, air_steps=8):
+    """Verify the v16 physical payload actually falls like a projectile.
+
+    Cruise forward at altitude, force a physical release, then for a few airborne
+    steps compare the payload's real position to the analytic drag-free ballistic
+    trajectory from its release state. In nominal physics (no wind/drag) they must
+    agree; a mismatch means the carry/release/gravity wiring is wrong. Stops well
+    before landing so the env's auto-reset never clears the payload.
+    """
+    u = env.unwrapped
+    if not getattr(u.cfg, "payload_physics_enabled", False):
+        print("[drop-test] SKIP: env has no physical payload (payload_physics_enabled=False)")
+        return False
+    n, device = u.num_envs, u.device
+    action_dim = u.single_action_space.shape[0]
+    dt = u.cfg.sim.dt * u.cfg.decimation
+    g = u.cfg.drop.gravity
+    origins = u.scene.env_origins
+
+    env.reset()
+    act = torch.zeros(n, action_dim, device=device)
+    act[:, 0] = 1.0  # cruise forward, hold altitude
+    for _ in range(settle):
+        env.step(act)
+
+    pp0 = (u._payload.data.root_pos_w - origins).clone()       # payload release position
+    v0 = u._robot.data.root_lin_vel_w.clone()                  # inherited drone velocity
+    print(f"[drop-test] release: payload alt={pp0[:,2].mean():.2f} m, fwd speed={v0[:,0].mean():.2f} m/s, {n} payloads")
+
+    u._payload_free[:] = True
+    u._payload_attached[:] = False
+    u._released[:] = True
+    zero = torch.zeros(n, action_dim, device=device)
+
+    max_zerr, max_xerr, last_z = 0.0, 0.0, pp0[:, 2].mean().item()
+    for k in range(1, air_steps + 1):
+        env.step(zero)
+        pp = (u._payload.data.root_pos_w - origins)
+        t = k * dt
+        z_pred = pp0[:, 2] + v0[:, 2] * t - 0.5 * g * t * t
+        x_pred = pp0[:, :2] + v0[:, :2] * t
+        max_zerr = max(max_zerr, (pp[:, 2] - z_pred).abs().mean().item())
+        max_xerr = max(max_xerr, torch.linalg.norm(pp[:, :2] - x_pred, dim=-1).mean().item())
+        last_z = pp[:, 2].mean().item()
+
+    print(f"[drop-test] airborne {air_steps} steps ({air_steps*dt:.1f}s) -> payload alt ~{last_z:.2f} m "
+          f"(descending: {last_z < pp0[:,2].mean().item()})")
+    print(f"[drop-test] real vs drag-free ballistic: max |dz|={max_zerr:.3f} m, max |dxy|={max_xerr:.3f} m")
+    ok = (last_z < pp0[:, 2].mean().item() - 0.5) and max_zerr < 0.5 and max_xerr < 0.5
+    print(f"[drop-test] {'PASS' if ok else 'FAIL'}: payload physically falls along the ballistic curve")
     return ok
 
 
@@ -281,6 +337,8 @@ def main():
         run_scripted(env, episodes=args_cli.episodes)
     elif args_cli.wind_test:
         run_wind_test(env, wind_speed=args_cli.wind_speed)
+    elif args_cli.drop_test:
+        run_drop_test(env)
     elif args_cli.step_response:
         run_step_response(env, args_cli.out_csv)
     elif args_cli.policy:
