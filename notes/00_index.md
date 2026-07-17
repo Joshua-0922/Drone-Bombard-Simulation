@@ -94,6 +94,7 @@ type: index
 - [[experiments/exp_009_v14_ccip_residual_junsang]] — [Isaac] v14 DR+CCIP residual (Stage A): residual ON>OFF, 대조군
 - [[experiments/exp_010_v15_airframe_wind_junsang]] — [Isaac] v15 바람이 기체 작용 (wind-test 검증, residual 포화 발견→wind 2.0)
 - [[experiments/exp_011_v16_physical_drop_junsang]] — [Isaac] v16 실제 물리 payload drop (drop-test PASS, success 0.80)
+- [[experiments/exp_012_v17_pixel_vision_junsang]] — [Isaac] v17 픽셀 양자화 vision (대략 위치→접근하며 정밀, success ~0.8)
 
 ### 에러 (errors/)
 - [[errors/err_20260320_physics_explosion]] — Gazebo ODE 물리 폭발 3중 방어

@@ -78,7 +78,8 @@ owner: junsang
 축별로 **현재 → 다음 → 최종**:
 
 ### 2.1 인지 (Perception)
-`완벽 obs(v12)` → `거리게이트 reveal(v13 ✅)` → **진짜 vision**(핀홀 카메라 u,v,conf, footprint≈고도×0.58, down-camera) → **YOLO 실물**(yolo_eval, 단 TiledCamera 버그로 캘리브 블록됨) → sim-to-real 비전.
+`완벽 obs(v12)` → `거리게이트 reveal(v13 ✅)` → **`픽셀 양자화(v17 ✅)`**(위치를 셀 중심으로 대략, 셀∝거리) → **진짜 vision**(핀홀 카메라 u,v,conf, footprint≈고도×0.58, down-camera) → **YOLO 실물**(yolo_eval, 단 TiledCamera 버그로 캘리브 블록됨) → sim-to-real 비전.
+- v17로 "대략 위치 + 가까워야 정밀" 근사 완료(success ~0.8) → [[experiments/exp_012_v17_pixel_vision_junsang]]. 다음은 실제 핀홀 카메라.
 - 최난: "안 보이는 타겟 접근 + 인지 오차" 동시.
 
 ### 2.2 물리 / 탄도 (Ballistics)
