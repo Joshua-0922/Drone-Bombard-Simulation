@@ -41,6 +41,7 @@ from .math_utils import (
     time_to_fall,
     ballistic_impact,
     release_gate,
+    apply_ccip_residual,
 )
 
 
@@ -211,6 +212,32 @@ class DroneBombardV17Cfg(DroneBombardV13Cfg):
     """
     pixel_vision_enabled: bool = True
     pixel_cell_k: float = 0.15   # pixel cell size (m) = k * slant range (drone->target)
+
+
+@configclass
+class DroneBombardV18Cfg(DroneBombardV15Cfg):
+    """v18 = STAGED INTEGRATION #1: perception (v17) + physics (v14/v15).
+
+    Merges the two branches that until now grew separately:
+      * perception (v11->v12->v13->v17): random marker, blind cruise + reveal at
+        7 m + undetected penalty + detected flag, and PIXEL-QUANTIZED position
+        (coarse far, fine near).
+      * physics (v11->v12->v14->v15): wind/drag domain randomization, a learned
+        CCIP residual on action[5:7], and the wind physically pushing the airframe.
+
+    So the drone must acquire a target it can't see until close, read only a fuzzy
+    pixel estimate of it, fight the wind on the airframe, and learn a residual to
+    correct the wind-blown ballistics — all at once. Drop stays ANALYTIC (physical
+    payload = staged integration #3, v16). obs = 28-D (v11 24 + wind_xy 2 + drag 1
+    + detected 1), action = 7-D (residual). All the underlying toggles stay live so
+    difficulty can be dialed back for debugging.
+    """
+    observation_space = 28   # 24 + wind_xy(2) + drag(1) + detected(1)
+    # perception knobs (from v13/v17); physics knobs inherited from V15Cfg
+    reveal_radius: float = 7.0
+    v13_undetected_penalty: float = -0.2
+    pixel_vision_enabled: bool = True
+    pixel_cell_k: float = 0.15
 
 
 class DroneBombardV11Env(DroneBombardEnv):
@@ -802,3 +829,103 @@ class DroneBombardV17Env(DroneBombardV13Env):
         obs[:, 0] = torch.clamp((perceived[:, 0] - pos[:, 0]) / 20.0, -1.0, 1.0) * det
         obs[:, 1] = torch.clamp((perceived[:, 1] - pos[:, 1]) / 20.0, -1.0, 1.0) * det
         return {"policy": torch.nan_to_num(obs, nan=0.0)}
+
+
+class DroneBombardV18Env(DroneBombardV14Env):
+    """v18: perception (v17) + physics (v14/v15) integrated on one env.
+
+    Inherits the v14 physics pipeline (per-episode wind/drag DR in _reset_idx, the
+    action[5:7] residual captured in _pre_physics_step, the wind/drag obs channels,
+    and — via the base cfg hook wind_force_enabled — the wind pushing the airframe).
+    Adds the v13/v17 perception: reveal gate + undetected penalty + detected flag,
+    and a PIXEL-QUANTIZED target. _ccip composes both worlds: the CCIP is aimed at
+    the pixel-quantized (perceived) target using the residual-corrected ballistic
+    prediction. Drop stays analytic (release-terminal); success is the real
+    (DR-physics) landing vs the TRUE marker.
+    """
+    cfg: DroneBombardV18Cfg
+
+    def __init__(self, cfg: DroneBombardV18Cfg, render_mode: str | None = None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
+        self._perceived_target_xy = torch.zeros(self.num_envs, 2, device=self.device)
+
+    def _quantize_target(self, pos_xy: torch.Tensor, altitude: torch.Tensor) -> torch.Tensor:
+        rel = self._target_xy - pos_xy
+        slant = torch.sqrt((rel * rel).sum(dim=-1) + altitude * altitude)
+        cell = (self.cfg.pixel_cell_k * slant).clamp(min=0.05).unsqueeze(-1)
+        rel_q = (torch.floor(rel / cell) + 0.5) * cell
+        return pos_xy + rel_q
+
+    def _ccip(self, pos: torch.Tensor, vel: torch.Tensor):
+        # perception (v17) + physics (v14): CCIP of the residual-corrected ballistic
+        # prediction relative to the pixel-quantized (perceived) target.
+        if self.cfg.pixel_vision_enabled:
+            perceived = self._quantize_target(pos[:, :2], pos[:, 2])
+        else:
+            perceived = self._target_xy
+        self._perceived_target_xy = perceived
+        dc = self.cfg.drop
+        impact = predict_impact_nominal(pos[:, :2], vel[:, :2], pos[:, 2], dc.release_delay, dc.gravity)
+        if self.cfg.v14_residual:
+            impact = apply_ccip_residual(impact, self._residual_action, self.cfg.v14_residual_scale)
+        ccip_err = impact - perceived
+        d_impact = torch.linalg.norm(ccip_err, dim=-1)
+        t_f = time_to_fall(pos[:, 2], dc.gravity)
+        return ccip_err, d_impact, t_f
+
+    def _get_observations(self) -> dict:
+        # v14 obs (27-D: v11 24 + wind/drag; CCIP channels already perceived+residual
+        # via _ccip). Overwrite rel with the perceived offset, mask marker channels
+        # when undetected, append the detected flag -> 28-D.
+        out = super()._get_observations()
+        obs = out["policy"].clone()
+        pos = self._robot.data.root_pos_w - self.scene.env_origins
+        det = self._current_d_xy() <= self.cfg.reveal_radius
+        self._detected = det
+        m = det.float()
+        if self.cfg.pixel_vision_enabled:
+            perceived = self._perceived_target_xy
+            obs[:, 0] = torch.clamp((perceived[:, 0] - pos[:, 0]) / 20.0, -1.0, 1.0)
+            obs[:, 1] = torch.clamp((perceived[:, 1] - pos[:, 1]) / 20.0, -1.0, 1.0)
+        obs[:, [0, 1, 13, 14, 15]] = obs[:, [0, 1, 13, 14, 15]] * m.unsqueeze(-1)  # reveal mask
+        obs = torch.cat([obs, m.unsqueeze(-1)], dim=-1)  # detected flag -> 28-D
+        return {"policy": torch.nan_to_num(obs, nan=0.0)}
+
+    def _get_rewards(self) -> torch.Tensor:
+        # v13 reward: marker-independent shaping always; marker-dependent terms and
+        # the drop reward gated on detection; per-step undetected penalty. Landing
+        # reward uses _release_impact_err (the real DR-physics miss set in _get_dones).
+        cfg = self.cfg
+        _, _, ang, roll, pitch, _ = self._kinematics()
+        f = self._done_flags
+        d_impact = self._d_impact
+        d_xy = self._current_d_xy()
+        det = (d_xy <= cfg.reveal_radius).float()
+
+        r = -cfg.v11_w_ang_vel * (ang * ang).sum(dim=-1)
+        r = r - cfg.v11_w_tilt * (roll * roll + pitch * pitch)
+        r = r - cfg.v11_w_action_smooth * (self._delta_action * self._delta_action).sum(dim=-1)
+        r = r - cfg.v11_w_time
+        r = r + (1.0 - det) * cfg.v13_undetected_penalty
+
+        progress = cfg.v11_w_progress * (self._d_xy_prev - d_xy)
+        ccip = cfg.v11_w_ccip * torch.exp(-cfg.v11_k_ccip * d_impact)
+        r = r + det * (progress + ccip)
+        r = r + det * f["gate_open"].float() * cfg.v11_gate_reward
+        r = r + det * (self._wants_drop & f["gate_open"]).float() * cfg.v11_drop_signal_reward
+
+        landing_err = self._release_impact_err
+        landing_reward = torch.where(
+            landing_err <= cfg.v11_success_radius,
+            torch.full_like(landing_err, cfg.v11_reward_success),
+            cfg.v11_reward_success * torch.exp(-cfg.v11_k_landing * landing_err),
+        )
+        r = r + f["released"].float() * landing_reward
+
+        r = r + f["crash"].float() * cfg.v11_crash_penalty
+        r = r + f["out_of_range"].float() * cfg.v11_out_of_range_penalty
+        r = r + f["timeout"].float() * cfg.v11_no_drop_penalty
+
+        self._d_xy_prev = d_xy
+        self._d_impact_prev = d_impact
+        return torch.nan_to_num(r, nan=0.0)

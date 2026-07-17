@@ -94,6 +94,10 @@ parser.add_argument("--v17", action="store_true",
                     help="v13 + pixel-quantized vision: within the reveal radius the marker is snapped to "
                          "the centre of a pixel cell whose size grows with slant range (coarse far, fine "
                          "near). DroneBombardV17Cfg + Isaac-DroneBombard-V17-Direct-v0.")
+parser.add_argument("--v18", action="store_true",
+                    help="Staged integration #1: perception (v17: random+reveal+pixel) + physics (v14/v15: "
+                         "DR+residual+airframe wind). obs 28-D, action 7-D, analytic drop. "
+                         "DroneBombardV18Cfg + Isaac-DroneBombard-V18-Direct-v0.")
 parser.add_argument("--v14_no_residual", action="store_true",
                     help="Control group for --v14: identical env/DR/obs/action, but the policy residual is "
                          "NOT applied — isolates how much of the impact error the residual actually removes.")
@@ -189,7 +193,7 @@ import drone_bombard  # noqa: F401,E402 - registers the task
 from drone_bombard.drone_bombard_env import DroneBombardEnvCfg  # noqa: E402
 from drone_bombard.v11_env import (  # noqa: E402
     DroneBombardV11Cfg, DroneBombardV12Cfg, DroneBombardV13Cfg, DroneBombardV14Cfg,
-    DroneBombardV15Cfg, DroneBombardV16Cfg, DroneBombardV17Cfg,
+    DroneBombardV15Cfg, DroneBombardV16Cfg, DroneBombardV17Cfg, DroneBombardV18Cfg,
 )
 from drone_bombard.agents.rsl_rl_ppo_cfg import DroneBombardPPORunnerCfg  # noqa: E402
 
@@ -202,7 +206,11 @@ def main():
 
     # --- env cfg (built directly — the path proven by verify_one_episode.py) ---
     task = args_cli.task
-    if args_cli.v17:
+    if args_cli.v18:
+        # staged integration #1: perception + physics.
+        task = "Isaac-DroneBombard-V18-Direct-v0"
+        env_cfg = DroneBombardV18Cfg()
+    elif args_cli.v17:
         # v13 + pixel-quantized vision.
         task = "Isaac-DroneBombard-V17-Direct-v0"
         env_cfg = DroneBombardV17Cfg()
@@ -257,6 +265,7 @@ def main():
     agent_cfg.logger = args_cli.logger
     agent_cfg.wandb_project = args_cli.wandb_project
     agent_cfg.run_name = args_cli.run_name if args_cli.run_name else (
+        "v18" if args_cli.v18 else
         "v17" if args_cli.v17 else
         "v16" if args_cli.v16 else
         ("v15_nores" if args_cli.v14_no_residual else "v15") if args_cli.v15 else
