@@ -9,6 +9,7 @@ from .v11_env import (
     DroneBombardV13Env, DroneBombardV13Cfg,
     DroneBombardV14Env, DroneBombardV14Cfg, DroneBombardV15Cfg,
     DroneBombardV16Env, DroneBombardV16Cfg,
+    DroneBombardV17Env, DroneBombardV17Cfg,
 )
 
 gym.register(
@@ -98,10 +99,22 @@ gym.register(
     },
 )
 
+gym.register(
+    # v17: v13 + pixel-quantized vision (position snapped to a distance-scaled cell).
+    id="Isaac-DroneBombard-V17-Direct-v0",
+    entry_point="drone_bombard.v11_env:DroneBombardV17Env",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": DroneBombardV17Cfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
+    },
+)
+
 __all__ = [
     "DroneBombardEnv", "DroneBombardEnvCfg",
     "DroneBombardV11Env", "DroneBombardV11Cfg", "DroneBombardV12Cfg",
     "DroneBombardV13Env", "DroneBombardV13Cfg",
     "DroneBombardV14Env", "DroneBombardV14Cfg", "DroneBombardV15Cfg",
     "DroneBombardV16Env", "DroneBombardV16Cfg",
+    "DroneBombardV17Env", "DroneBombardV17Cfg",
 ]

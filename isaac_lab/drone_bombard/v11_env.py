@@ -195,6 +195,24 @@ class DroneBombardV16Cfg(DroneBombardV12Cfg):
     payload_physics_enabled: bool = True
 
 
+@configclass
+class DroneBombardV17Cfg(DroneBombardV13Cfg):
+    """v17 = v13 + PIXEL-QUANTIZED vision (harder perception).
+
+    Inside the reveal radius the marker position is no longer exact: it is snapped
+    to the CENTRE of the pixel cell it falls in, and the cell size grows with the
+    slant range (coarse when far, fine when near). So on first detection the drone
+    only knows "roughly over there" (cell ~1 m at 7 m > success radius) and heads
+    for the fuzzy cell centre; as it closes in the cell shrinks and the estimate
+    sharpens toward the true position, so it must approach to drop precisely. The
+    reveal gate + undetected penalty are inherited from v13; the policy perceives
+    the quantized target (obs + CCIP + gate) while success is judged on the TRUE
+    landing. Toggle with pixel_vision_enabled (False == v13 exact reveal).
+    """
+    pixel_vision_enabled: bool = True
+    pixel_cell_k: float = 0.15   # pixel cell size (m) = k * slant range (drone->target)
+
+
 class DroneBombardV11Env(DroneBombardEnv):
     cfg: DroneBombardV11Cfg
 
@@ -730,3 +748,57 @@ class DroneBombardV13Env(DroneBombardV11Env):
         self._d_xy_prev = d_xy
         self._d_impact_prev = d_impact
         return torch.nan_to_num(r, nan=0.0)
+
+
+class DroneBombardV17Env(DroneBombardV13Env):
+    """v17: pixel-quantized vision on top of v13's reveal.
+
+    The revealed marker position is snapped to the centre of a pixel cell whose
+    size = pixel_cell_k * slant_range, so it is coarse far away and sharpens as the
+    drone approaches. The policy perceives only this quantized target (obs, CCIP,
+    release gate); the reveal gate + undetected penalty are v13's, and success is
+    still judged against the TRUE marker (a fuzzy aim that must be refined by
+    closing in). pixel_vision_enabled=False falls back to v13 exact reveal.
+    """
+    cfg: DroneBombardV17Cfg
+
+    def __init__(self, cfg: DroneBombardV17Cfg, render_mode: str | None = None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
+        self._perceived_target_xy = torch.zeros(self.num_envs, 2, device=self.device)
+
+    def _quantize_target(self, pos_xy: torch.Tensor, altitude: torch.Tensor) -> torch.Tensor:
+        # snap the true camera-relative target to the centre of its pixel cell;
+        # cell size grows with slant range (fine near, coarse far).
+        rel = self._target_xy - pos_xy
+        slant = torch.sqrt((rel * rel).sum(dim=-1) + altitude * altitude)
+        cell = (self.cfg.pixel_cell_k * slant).clamp(min=0.05).unsqueeze(-1)
+        rel_q = (torch.floor(rel / cell) + 0.5) * cell
+        return pos_xy + rel_q
+
+    def _ccip(self, pos: torch.Tensor, vel: torch.Tensor):
+        if not self.cfg.pixel_vision_enabled:
+            return super()._ccip(pos, vel)
+        # CCIP against the PERCEIVED (quantized) target — so obs, the release gate,
+        # and the CCIP shaping reward all use the fuzzy position, not the truth.
+        perceived = self._quantize_target(pos[:, :2], pos[:, 2])
+        self._perceived_target_xy = perceived
+        dc = self.cfg.drop
+        impact = predict_impact_nominal(pos[:, :2], vel[:, :2], pos[:, 2], dc.release_delay, dc.gravity)
+        ccip_err = impact - perceived
+        d_impact = torch.linalg.norm(ccip_err, dim=-1)
+        t_f = time_to_fall(pos[:, 2], dc.gravity)
+        return ccip_err, d_impact, t_f
+
+    def _get_observations(self) -> dict:
+        out = super()._get_observations()  # v13 obs; CCIP channels already perceived via _ccip
+        if not self.cfg.pixel_vision_enabled:
+            return out
+        # v11 built the rel_x/rel_y channels (0,1) from the TRUE target — overwrite
+        # them with the perceived (quantized) offset, keeping v13's detected mask.
+        obs = out["policy"].clone()
+        pos = self._robot.data.root_pos_w - self.scene.env_origins
+        perceived = self._perceived_target_xy  # set by _ccip during super()
+        det = self._detected.float()
+        obs[:, 0] = torch.clamp((perceived[:, 0] - pos[:, 0]) / 20.0, -1.0, 1.0) * det
+        obs[:, 1] = torch.clamp((perceived[:, 1] - pos[:, 1]) / 20.0, -1.0, 1.0) * det
+        return {"policy": torch.nan_to_num(obs, nan=0.0)}
