@@ -91,12 +91,16 @@ type: index
 - [[experiments/exp_006_v11_dryrun_junsang]] — [Isaac] v11 완화 테스트 dry-run 성공 (success 100%, 착탄 ~0.75m)
 - [[experiments/exp_007_v12_random_marker_junsang]] — [Isaac] v12 첫 확장: 랜덤 marker 일반화 성공 (success 100%)
 - [[experiments/exp_008_v13_partial_obs_junsang]] — [Isaac] v13 부분관측: blind 순항→7m 탐지 학습 성공 (success 100%)
+- [[experiments/exp_009_v14_ccip_residual_junsang]] — [Isaac] v14 DR+CCIP residual (Stage A): residual ON>OFF, 대조군
+- [[experiments/exp_010_v15_airframe_wind_junsang]] — [Isaac] v15 바람이 기체 작용 (wind-test 검증, residual 포화 발견→wind 2.0)
+- [[experiments/exp_011_v16_physical_drop_junsang]] — [Isaac] v16 실제 물리 payload drop (drop-test PASS, success 0.80)
 
 ### 에러 (errors/)
 - [[errors/err_20260320_physics_explosion]] — Gazebo ODE 물리 폭발 3중 방어
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-07-16_junsang]] — [Isaac] v14 DR+residual → v15 기체바람 → v16 실제 물리 drop 완료
 - [[daily/daily_2026-07-15_junsang]] — [Isaac] v11 완화 → v12 랜덤 → v13 부분관측 전부 100%, 라이브 GUI, 디스크 진단
 - [[daily/daily_2026-04-23]] — Spot VM 이전 완료 (startup.sh + watchdog CF + create_spot_vm.sh) + IP 변경 대응
 - [[daily/daily_2026-04-17]] — Phase 1 코드 전체 구현 (변경 1-10, obs 15→17, CCIP auto-drop)
@@ -104,6 +108,7 @@ type: index
 - [[daily/daily_2026-04-14]] — Guacamole HTTPS + Obsidian 설치 + wikilink 정비
 
 ### 세션 (sessions/)
+- [[sessions/session_2026-07-16_junsang]] — [Isaac] v14/v15/v16 세션 (DR+residual→기체바람→물리 drop)
 - [[sessions/session_2026-07-15_junsang]] — [Isaac] v11/v12/v13 확장 세션 (완화→랜덤→부분관측, 전부 100%)
 - [[sessions/session_2026-04-16]] — RTF dry-run, docker commit, airframe 수정
 - [[sessions/session_2026-04-14]] — Obsidian 시스템 초기화 + 파일 간소화

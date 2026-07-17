@@ -172,6 +172,16 @@ seed 후 정상 학습(v11 dry-run 100% success). → [[research/isaac_cruise_ha
 
 ---
 
+## Rule 11 — residual 보정 범위는 드리프트 크기를 커버해야 한다 (Isaac)
+
+**CCIP residual(±`residual_scale`)로 DR 편향을 보정**할 때, 실제 **드리프트가 residual 범위를
+초과하면 residual이 포화(saturate)** 되어 물리적으로 다 못 고친다 → 착탄오차가 그 지점에서 정체.
+v15에서 wind_std=4.0으로 키우니 payload 드리프트가 **3.7~7.7m > residual ±3m** → 착탄 ~3m 정체·
+success≈0. **DR 세기를 키우면 residual_scale도 함께 키우거나, 드리프트가 범위 안에 들도록 DR을
+제한**해야 함(v15: wind_std 2.0으로 하향, 드리프트 중앙값 2.4m<3m). → [[experiments/exp_010_v15_airframe_wind_junsang]]
+
+---
+
 ## Known Failure Modes
 
 | 증상 | 원인 | 해결 |

@@ -21,8 +21,12 @@ owner: junsang
 | v11 | 완화 baseline (완벽obs·고정 marker·정책 drop_signal) | ✅ 100%, 착탄 0.43m |
 | v12 | 랜덤 marker (5m disk) | ✅ 100%, ~0.72m |
 | v13 | 부분관측 (blind→7m reveal) | ✅ 100%, ~0.8m |
+| v14 | DR + CCIP residual (Stage A, 바람 관측) | ✅ residual ON>OFF (착탄 0.69/0.82m) — [[experiments/exp_009_v14_ccip_residual_junsang]] |
+| v15 | 바람이 기체에 작용 | ✅ wind-test 검증 / wind 2.0 튜닝(dry-run 미실행) — [[experiments/exp_010_v15_airframe_wind_junsang]] |
+| v16 | **실제 물리 payload drop** | ✅ drop-test PASS, dry-run success 0.80·실제 착탄 sub-meter — [[experiments/exp_011_v16_physical_drop_junsang]] |
 
-물리는 아직 **nominal**(드래그·바람 0), residual/이동타겟/vision은 **inert hook**.
+이동타겟/vision은 여전히 **inert hook**. **업데이트:** residual/DR은 v14/v15에서, 물리 drop은 v16에서
+착수 완료. 남은 큰 축 = **vision, 이동 타겟, 시변 바람, 그리고 과제 2(시각/검증 도구)**.
 
 ---
 
