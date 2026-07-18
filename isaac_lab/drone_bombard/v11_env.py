@@ -237,7 +237,19 @@ class DroneBombardV18Cfg(DroneBombardV15Cfg):
     reveal_radius: float = 7.0
     v13_undetected_penalty: float = -0.2
     pixel_vision_enabled: bool = True
-    pixel_cell_k: float = 0.15
+    pixel_cell_k: float = 0.12          # slightly sharper than 0.15 (eases the gate)
+
+    # --- integration bootstrap tuning (fixes the v18 deadlock) ---
+    # The first v18 run stalled at release_rate 0: early RANDOM residual (+/-3 m)
+    # kept |nominal+residual - perceived_target| above the 1 m release gate, so the
+    # drone never dropped and never got a learning signal (confirmed: residual OFF
+    # -> release 100%). Widening the gate lets a drop happen despite the random
+    # residual (success is still judged at success_radius=1.0), a smaller residual
+    # scale shrinks the early corruption, and milder wind shrinks the drift the
+    # residual must cover.
+    release_radius: float = 1.5         # was 1.0 — bootstrap the drop through the gate
+    v14_residual_scale: float = 2.0     # was 3.0 — less early gate corruption
+    v14_wind_std: float = 1.5           # was 2.0 — smaller drift to correct
 
 
 class DroneBombardV11Env(DroneBombardEnv):
