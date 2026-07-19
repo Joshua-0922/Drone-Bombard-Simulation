@@ -30,6 +30,9 @@ parser.add_argument("--wind-test", action="store_true",
                          "with cfg.wind_force_enabled OFF then ON, and compare the steady-state tilt "
                          "against atan(k*v^2/(m*g)).")
 parser.add_argument("--wind-speed", type=float, default=5.0, help="Wind speed (m/s, +X) for --wind-test.")
+parser.add_argument("--show", action="store_true",
+                    help="Enable visual aids for watching (target beacon/disc + payload marker) and a "
+                         "close chase camera. Use with --policy for livestream/GUI viewing.")
 parser.add_argument("--drop-test", action="store_true",
                     help="Verify the v16 physical payload: cruise, force a release, and check the payload "
                          "physically falls along the drag-free ballistic curve (mid-air, before landing).")
@@ -320,12 +323,16 @@ def main():
     env_cfg = parse_env_cfg(args_cli.task, num_envs=args_cli.num_envs)
     # Chase camera locked on the drone so --policy playback is actually visible
     # in the livestream/GUI (default world camera stares at the ground grid and
-    # the drone flies off-frame at ~10 m altitude).
+    # the drone flies off-frame at ~10 m altitude). Pulled in from (-8,-8,4) —
+    # that framed the drone too small; this sits just behind/above it.
     env_cfg.viewer.origin_type = "asset_root"
     env_cfg.viewer.asset_name = "robot"
     env_cfg.viewer.env_index = 0
-    env_cfg.viewer.eye = (-8.0, -8.0, 4.0)
-    env_cfg.viewer.lookat = (0.0, 0.0, 0.0)
+    env_cfg.viewer.eye = (-4.5, -3.5, 2.2)
+    env_cfg.viewer.lookat = (1.5, 0.0, -0.5)
+    if args_cli.show:
+        # visual aids for watching: the target beacon/disc + payload marker.
+        env_cfg.show_markers = True
     if args_cli.release_terminal:
         env_cfg.release_terminal = True
     env = gym.make(args_cli.task, cfg=env_cfg)

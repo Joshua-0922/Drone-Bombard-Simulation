@@ -538,6 +538,7 @@ class DroneBombardEnv(DirectRLEnv):
         unless cfg.show_markers is True. Used for recording/eval."""
         self._payload_marker = None
         self._target_marker = None
+        self._target_pole = None
         if not self.cfg.show_markers:
             return
         from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
@@ -549,11 +550,22 @@ class DroneBombardEnv(DirectRLEnv):
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.95, 0.45, 0.05)),
             )},
         ))
+        # Ground disc = the success zone; a tall bright pole makes the target
+        # visible from the side (a flat ground disc foreshortens to nothing in the
+        # chase camera). Both are visual-only, gated by show_markers.
         self._target_marker = VisualizationMarkers(VisualizationMarkersCfg(
             prim_path="/Visuals/Target",
             markers={"target": sim_utils.CylinderCfg(
-                radius=0.8, height=0.02, axis="Z",
+                radius=1.0, height=0.02, axis="Z",
                 visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.1, 0.1)),
+            )},
+        ))
+        self._target_pole = VisualizationMarkers(VisualizationMarkersCfg(
+            prim_path="/Visuals/TargetPole",
+            markers={"pole": sim_utils.CylinderCfg(
+                radius=0.12, height=6.0, axis="Z",
+                visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(1.0, 0.15, 0.7), emissive_color=(0.7, 0.05, 0.4)),
             )},
         ))
 
@@ -574,6 +586,10 @@ class DroneBombardEnv(DirectRLEnv):
         target_pos[:, :2] = self._target_xy + self.scene.env_origins[:, :2]
         target_pos[:, 2] = 0.01
         self._target_marker.visualize(translations=target_pos)
+        if self._target_pole is not None:
+            pole_pos = target_pos.clone()
+            pole_pos[:, 2] = 3.0  # h=6 cylinder, centre at 3 -> base sits on the ground
+            self._target_pole.visualize(translations=pole_pos)
 
     def _author_body_mass_props(self):
         """Author the x500 mass + the measured native inertia on the body link
