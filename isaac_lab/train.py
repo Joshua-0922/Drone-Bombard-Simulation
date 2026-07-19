@@ -98,6 +98,10 @@ parser.add_argument("--v18", action="store_true",
                     help="Staged integration #1: perception (v17: random+reveal+pixel) + physics (v14/v15: "
                          "DR+residual+airframe wind). obs 28-D, action 7-D, analytic drop. "
                          "DroneBombardV18Cfg + Isaac-DroneBombard-V18-Direct-v0.")
+parser.add_argument("--v18_hard", action="store_true",
+                    help="Phase 2 for --v18: tighten the eased Phase-1 params back to the full target "
+                         "(gate 1.0, residual_scale 3.0, wind_std 2.0, pixel_cell_k 0.15). Warm-start from "
+                         "a Phase-1 checkpoint with --resume.")
 parser.add_argument("--v14_no_residual", action="store_true",
                     help="Control group for --v14: identical env/DR/obs/action, but the policy residual is "
                          "NOT applied — isolates how much of the impact error the residual actually removes.")
@@ -210,6 +214,12 @@ def main():
         # staged integration #1: perception + physics.
         task = "Isaac-DroneBombard-V18-Direct-v0"
         env_cfg = DroneBombardV18Cfg()
+        if args_cli.v18_hard:
+            # Phase 2: restore the full-difficulty target (warm-start via --resume).
+            env_cfg.release_radius = 1.0
+            env_cfg.v14_residual_scale = 3.0
+            env_cfg.v14_wind_std = 2.0
+            env_cfg.pixel_cell_k = 0.15
     elif args_cli.v17:
         # v13 + pixel-quantized vision.
         task = "Isaac-DroneBombard-V17-Direct-v0"
@@ -265,7 +275,7 @@ def main():
     agent_cfg.logger = args_cli.logger
     agent_cfg.wandb_project = args_cli.wandb_project
     agent_cfg.run_name = args_cli.run_name if args_cli.run_name else (
-        "v18" if args_cli.v18 else
+        ("v18_hard" if args_cli.v18_hard else "v18") if args_cli.v18 else
         "v17" if args_cli.v17 else
         "v16" if args_cli.v16 else
         ("v15_nores" if args_cli.v14_no_residual else "v15") if args_cli.v15 else
