@@ -182,6 +182,17 @@ success≈0. **DR 세기를 키우면 residual_scale도 함께 키우거나, 드
 
 ---
 
+## Rule 12 — 능력 통합엔 "성공경험 부트스트랩"이 관건 (커리큘럼)
+
+여러 어려운 요소를 **from-scratch로 한꺼번에** 켜면, 초기 랜덤 정책이 **성공(보상)을 한 번도 못 겪어**
+학습 신호가 없어 정체한다. v18 통합에서 확인: **초기 랜덤 residual(±3m)이 release 게이트(1m)를
+봉쇄** → 투하 0 → 데드락 (residual OFF 시 release 0→100%로 확정). **해결 = 커리큘럼**:
+① 완화 Phase(게이트↑·residual↓·바람↓)로 **성공을 시작하게** 부트스트랩 → ② 그 모델을 `--resume`
+warm-start해서 **난이도를 목표치로 조여** 이어학습. Phase 2는 완화 불필요(residual이 이미 쓸만).
+→ **게이트/보상이 초기 탐색을 막지 않는지** 항상 점검. → [[experiments/exp_013_v18_integration_curriculum_junsang]]
+
+---
+
 ## Known Failure Modes
 
 | 증상 | 원인 | 해결 |

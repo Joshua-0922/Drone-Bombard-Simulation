@@ -82,6 +82,7 @@ type: index
 - [[research/isaac_cruise_handoff_junsang]] — [Isaac] cruise 핸드오프: reset 시 컨트롤러 setpoint seed (Rule 10)
 - [[research/isaac_v11_v13_design_guide_junsang]] — [Isaac] v11~v13 설계 가이드: 기존 migration 모델 대비 변경점
 - [[research/isaac_expansion_roadmap_junsang]] — [Isaac] 확장 로드맵: CCIP residual+DR 다음단계 개요 + 남은 축 전체
+- [[research/isaac_v18_curriculum_continuation_junsang]] — [Isaac] v18 커리큘럼 백업 & Phase 3+ 재개 가이드 (체크포인트 경로·재개 명령)
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
@@ -95,6 +96,7 @@ type: index
 - [[experiments/exp_010_v15_airframe_wind_junsang]] — [Isaac] v15 바람이 기체 작용 (wind-test 검증, residual 포화 발견→wind 2.0)
 - [[experiments/exp_011_v16_physical_drop_junsang]] — [Isaac] v16 실제 물리 payload drop (drop-test PASS, success 0.80)
 - [[experiments/exp_012_v17_pixel_vision_junsang]] — [Isaac] v17 픽셀 양자화 vision (대략 위치→접근하며 정밀, success ~0.8)
+- [[experiments/exp_013_v18_integration_curriculum_junsang]] — [Isaac] v18 능력 통합 + 커리큘럼 (데드락 발견→warm-start 해결, success 1.0)
 
 ### 에러 (errors/)
 - [[errors/err_20260320_physics_explosion]] — Gazebo ODE 물리 폭발 3중 방어
