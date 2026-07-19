@@ -45,15 +45,40 @@ owner: junsang
 | alt_min / alt_max | 3 / 8 m |
 | max_speed / max_vz / max_tilt / max_ang_vel | 5 / 3 / 0.35rad / 4 |
 
-## 4. 보상 (v11)
-| 파라미터 | 값 | | 파라미터 | 값 |
-|------|-----|---|------|-----|
-| w_progress | 1.0 | | reward_success | **300** |
-| w_ccip | 0.5 | | k_landing | 1.0 |
-| k_ccip | 1.0 | | success_radius | **1.0m** |
-| w_ang_vel / w_tilt | 0.05 / 0.05 | | no_drop_penalty | **-30** |
-| w_action_smooth / w_time | 0.05 / 0.01 | | crash_penalty | -50 |
-| gate_reward / drop_signal_reward | 0.05 / **1.0** | | out_of_range_penalty | -30 |
+## 4. 보상 함수 (수식 + 의의)
+
+**per-step 총 보상** (v11 기준, v13/18은 detected 게이팅·미탐지 페널티 추가):
+$$
+r_t = \underbrace{w_{prog}(d_{prev}-d_{xy})}_{\text{접근}}
+ + \underbrace{w_{ccip}\,e^{-k_{ccip}\,d_{imp}}}_{\text{조준(지수)}}
+ - \underbrace{w_{\omega}\|\omega\|^2 - w_{tilt}(\phi^2+\theta^2) - w_{sm}\|\Delta a\|^2 - w_{time}}_{\text{안정·부드러움·시간}}
+ + \underbrace{w_{gate}\mathbb{1}_{gate} + w_{drop}\mathbb{1}_{drop\&gate}}_{\text{투하 유도}}
+ + \underbrace{\mathbb{1}_{released}\,R_{land}}_{\text{터미널}} + (\text{페널티})
+$$
+
+### 항목별 (값 / 수식 / 의의)
+| 항 | 값 | 수식 | 의의 |
+|----|-----|------|------|
+| **접근 progress** | `w_progress`=1.0 | $w_{prog}(d_{prev}-d_{xy})$ | **potential-based shaping**: 타겟에 가까워지면 +, 멀어지면 −. sparse한 착탄만으론 학습 느려 매 스텝 방향 유도. 최적정책 불변 |
+| **CCIP 조준** | `w_ccip`=0.5, `k_ccip`=1.0 | $w_{ccip}\,e^{-k_{ccip}\,d_{imp}}$ | **지수**: 예측착탄-타겟 거리 $d_{imp}$가 0이면 최대(0.5), 멀수록 0. 지수라 **근접에서 gradient 급증** → 선형보다 정밀 조준 유도 |
+| **각속도** | `w_ang_vel`=0.05 | $-w_{\omega}\|\omega\|^2$ | 제곱: 급회전 억제 → bad_attitude 방지 |
+| **기울기** | `w_tilt`=0.05 | $-w_{tilt}(\phi^2+\theta^2)$ | roll·pitch² 억제 → 과도 tilt 방지 |
+| **부드러움** | `w_action_smooth`=0.05 | $-w_{sm}\|\Delta a\|^2$ | action 변화² 억제 → 떨림 없는 부드러운 제어(sim-to-real 유리) |
+| **시간** | `w_time`=0.01 | $-w_{time}$/step | 빨리 접근·투하 유도(배회 방지) |
+| **게이트** | `gate_reward`=0.05 | $w_{gate}\mathbb{1}_{gate}$ | envelope(투하가능 상태) 진입·체류 유도 |
+| **drop_signal** | `drop_signal_reward`=1.0 | $w_{drop}\mathbb{1}_{wants\_drop\,\&\,gate}$ | **투하 시도 자체 유도**(회피 방지). 게이트 밖 시도는 무보상·무페널티(공짜) |
+| **착탄 터미널** ⭐ | `reward_success`=300, `k_landing`=1.0, `success_radius`=1.0 | $R_{land}=\begin{cases}300 & e_{land}\le 1\text{m}\\ 300\,e^{-k_{land}\,e_{land}} & \text{else}\end{cases}$ | **최종 목표**. 성공존 내 만점, 밖은 **지수 감쇠** → 아깝게 빗나감도 부분보상 = binary보다 신호 풍부 |
+| **crash** | -50 | $\mathbb{1}_{crash}(-50)$ | 지면충돌·저고도 회피 |
+| **out_of_range** | -30 | $\mathbb{1}_{oor}(-30)$ | 타겟 이탈 회피 |
+| **no_drop timeout** | -30 | $\mathbb{1}_{timeout\,\&\,\neg rel}(-30)$ | **안 떨어뜨리고 끝나면 손해** → hover exploit(투하 회피) 방지 |
+| **미탐지** (v13+) | `v13_undetected_penalty`=-0.2 | $(1-\mathbb{1}_{det})(-0.2)$ | 못 찾을 때 매 스텝 벌 → blind 탐색·접근 유도 |
+
+### 왜 이런 함수 형태인가 (설계 의의)
+- **지수 $e^{-k\,d}$ (조준·착탄)**: 근접에서 gradient가 커 **정밀함을 강하게 유도**. 선형은 근접 민감도 낮음. $k$로 보상이 좁아지는 급함 조절.
+- **제곱 (자세·부드러움)**: 값 클수록 급증 → **극단만 강하게 억제**, 정상 범위는 관대.
+- **potential-based (progress)**: 조밀한 방향 신호를 주되 **최적정책 불변**(reward shaping 정석).
+- **binary+지수 혼합 (착탄)**: 성공존은 만점(명확한 목표), 밖은 지수 부분보상(학습 신호 끊김 방지).
+- **비대칭 투하 유도**: 시도 +1 · 성공 +300 · 안 함 -30 · 게이트밖 시도 공짜 → **"일단 투하해보게"** (Rule 12).
 
 ## 5. 버전별 추가 파라미터 (토글)
 | 기능 (버전) | cfg 플래그·값 |
