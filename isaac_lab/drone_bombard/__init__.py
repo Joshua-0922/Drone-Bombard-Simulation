@@ -11,6 +11,7 @@ from .v11_env import (
     DroneBombardV16Env, DroneBombardV16Cfg,
     DroneBombardV17Env, DroneBombardV17Cfg,
     DroneBombardV18Env, DroneBombardV18Cfg,
+    DroneBombardV19Env, DroneBombardV19Cfg,
 )
 
 gym.register(
@@ -122,6 +123,17 @@ gym.register(
     },
 )
 
+gym.register(
+    # v19: staged integration #3 — v18 (perception+physics) + real physical drop (v16).
+    id="Isaac-DroneBombard-V19-Direct-v0",
+    entry_point="drone_bombard.v11_env:DroneBombardV19Env",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": DroneBombardV19Cfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
+    },
+)
+
 __all__ = [
     "DroneBombardEnv", "DroneBombardEnvCfg",
     "DroneBombardV11Env", "DroneBombardV11Cfg", "DroneBombardV12Cfg",
@@ -130,4 +142,5 @@ __all__ = [
     "DroneBombardV16Env", "DroneBombardV16Cfg",
     "DroneBombardV17Env", "DroneBombardV17Cfg",
     "DroneBombardV18Env", "DroneBombardV18Cfg",
+    "DroneBombardV19Env", "DroneBombardV19Cfg",
 ]

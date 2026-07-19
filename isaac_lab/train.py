@@ -98,6 +98,10 @@ parser.add_argument("--v18", action="store_true",
                     help="Staged integration #1: perception (v17: random+reveal+pixel) + physics (v14/v15: "
                          "DR+residual+airframe wind). obs 28-D, action 7-D, analytic drop. "
                          "DroneBombardV18Cfg + Isaac-DroneBombard-V18-Direct-v0.")
+parser.add_argument("--v19", action="store_true",
+                    help="Staged integration #3: v18 (perception+physics) + REAL physical payload drop "
+                         "(v16). Land-terminal, reward from real landing. Warm-start from a v18 ckpt with "
+                         "--resume. DroneBombardV19Cfg + Isaac-DroneBombard-V19-Direct-v0.")
 parser.add_argument("--v18_hard", action="store_true",
                     help="Phase 2 for --v18: tighten the eased Phase-1 params back to the full target "
                          "(gate 1.0, residual_scale 3.0, wind_std 2.0, pixel_cell_k 0.15). Warm-start from "
@@ -198,6 +202,7 @@ from drone_bombard.drone_bombard_env import DroneBombardEnvCfg  # noqa: E402
 from drone_bombard.v11_env import (  # noqa: E402
     DroneBombardV11Cfg, DroneBombardV12Cfg, DroneBombardV13Cfg, DroneBombardV14Cfg,
     DroneBombardV15Cfg, DroneBombardV16Cfg, DroneBombardV17Cfg, DroneBombardV18Cfg,
+    DroneBombardV19Cfg,
 )
 from drone_bombard.agents.rsl_rl_ppo_cfg import DroneBombardPPORunnerCfg  # noqa: E402
 
@@ -210,7 +215,11 @@ def main():
 
     # --- env cfg (built directly — the path proven by verify_one_episode.py) ---
     task = args_cli.task
-    if args_cli.v18:
+    if args_cli.v19:
+        # staged integration #3: perception + physics + physical drop.
+        task = "Isaac-DroneBombard-V19-Direct-v0"
+        env_cfg = DroneBombardV19Cfg()
+    elif args_cli.v18:
         # staged integration #1: perception + physics.
         task = "Isaac-DroneBombard-V18-Direct-v0"
         env_cfg = DroneBombardV18Cfg()
@@ -275,6 +284,7 @@ def main():
     agent_cfg.logger = args_cli.logger
     agent_cfg.wandb_project = args_cli.wandb_project
     agent_cfg.run_name = args_cli.run_name if args_cli.run_name else (
+        "v19" if args_cli.v19 else
         ("v18_hard" if args_cli.v18_hard else "v18") if args_cli.v18 else
         "v17" if args_cli.v17 else
         "v16" if args_cli.v16 else

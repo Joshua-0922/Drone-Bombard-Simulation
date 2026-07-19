@@ -252,6 +252,18 @@ class DroneBombardV18Cfg(DroneBombardV15Cfg):
     v14_wind_std: float = 1.5           # was 2.0 — smaller drift to correct
 
 
+@configclass
+class DroneBombardV19Cfg(DroneBombardV18Cfg):
+    """v19 = staged integration #3: v18 (perception + physics) + REAL physical
+    payload drop (v16). The payload is now a RigidObject that actually falls — in
+    the DR wind, so its trajectory bends — and lands; the episode ends on the
+    landing and success/reward use the REAL landing point (not the analytic
+    formula). Same 28-D obs / 7-D action as v18, so a v18 checkpoint warm-starts
+    it cleanly (fly/aim/release policy transfers; only post-release dynamics
+    change). Keeps v18's eased params for the same gate-deadlock reason."""
+    payload_physics_enabled: bool = True
+
+
 class DroneBombardV11Env(DroneBombardEnv):
     cfg: DroneBombardV11Cfg
 
@@ -937,6 +949,136 @@ class DroneBombardV18Env(DroneBombardV14Env):
         r = r + f["crash"].float() * cfg.v11_crash_penalty
         r = r + f["out_of_range"].float() * cfg.v11_out_of_range_penalty
         r = r + f["timeout"].float() * cfg.v11_no_drop_penalty
+
+        self._d_xy_prev = d_xy
+        self._d_impact_prev = d_impact
+        return torch.nan_to_num(r, nan=0.0)
+
+
+class DroneBombardV19Env(DroneBombardV18Env):
+    """v19: v18 perception+physics with a REAL physical payload drop (v16).
+
+    Keeps v18's _ccip (pixel-quantized perceived target + residual-corrected
+    prediction) and 28-D obs. Swaps v18's analytic release-terminal for v16's
+    land-terminal physical drop: the drop event hands a RigidObject to physics
+    (it falls in the DR wind), the drone hovers, and the episode ends when the
+    payload LANDS — success/reward from the real landing. Reward = v13 perception
+    (undetected penalty + detection gating, frozen post-release) + v16 land-terminal
+    landing reward.
+    """
+    cfg: DroneBombardV19Cfg
+
+    def __init__(self, cfg: DroneBombardV19Cfg, render_mode: str | None = None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
+        if not hasattr(self, "_perceived_target_xy"):
+            self._perceived_target_xy = torch.zeros(self.num_envs, 2, device=self.device)
+
+    def _pre_physics_step(self, actions: torch.Tensor):
+        super()._pre_physics_step(actions)  # v18->v14: vel + drop_signal + residual capture
+        # v16 option A: hover the drone after release while the payload falls.
+        if self._released.any():
+            held = self._released
+            self._vel_cmd[held] = 0.0
+            self._wants_drop[held] = False
+
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        cfg = self.cfg
+        tc = cfg.termination
+        pos, vel, ang, roll, pitch, _ = self._kinematics()
+        altitude = pos[:, 2]
+        speed = torch.linalg.norm(vel, dim=-1)
+        speed_xy = torch.linalg.norm(vel[:, :2], dim=-1)
+        ang_norm = torch.linalg.norm(ang, dim=-1)
+
+        _, d_impact, _ = self._ccip(pos, vel)  # v18: perceived (pixel) + residual
+        self._d_impact = d_impact
+        self._aim_err_min = torch.minimum(self._aim_err_min, d_impact)
+
+        gate = release_gate(
+            d_impact, altitude, speed_xy, vel[:, 2], roll, pitch, ang_norm,
+            self._payload_attached.float(),
+            cfg.release_radius, cfg.release_alt_min, cfg.release_alt_max,
+            cfg.release_max_speed, cfg.release_max_vz, cfg.release_max_tilt, cfg.release_max_ang_vel,
+        )
+        self._gate_open = gate
+        fire = self._wants_drop & gate & (~self._released)
+
+        # physical release: detach + fall (NOT terminal — wait for the landing)
+        self._just_released = fire.clone()
+        self._released = self._released | fire
+        self._payload_attached = self._payload_attached & (~fire)
+        self._payload_free = self._payload_free | fire
+
+        d_xy = self._current_d_xy()
+        self._d_xy_min = torch.minimum(self._d_xy_min, d_xy)
+        self._detected = d_xy <= cfg.reveal_radius
+        self._overshoot_flythrough = torch.zeros_like(gate)
+
+        landed = self._payload_landed
+        impact_err = torch.linalg.norm(self._payload_impact_xy - self._target_xy, dim=-1)
+        self._release_impact_err = torch.where(landed, impact_err, self._release_impact_err)
+
+        step = self.episode_length_buf
+        crash = (altitude < tc.ground_contact_altitude) | (
+            (step > tc.min_altitude_start_step) & (altitude < tc.min_altitude) & (~self._released)
+        )
+        overspeed = speed > tc.v_max_safety
+        inverted = (roll.abs() > tc.limit_inverted_tilt) | (pitch.abs() > tc.limit_inverted_tilt)
+        bad_attitude = (ang_norm > tc.limit_ang_vel) | inverted
+        out_of_range = d_xy > tc.max_distance
+        max_alt = altitude > tc.max_altitude
+        failure = (crash | overspeed | bad_attitude | out_of_range | max_alt) & (~self._released)
+        success = landed & (impact_err <= cfg.v11_success_radius)
+        terminated = landed | failure
+        time_out = step >= (self.max_episode_length - 1)
+
+        z = torch.zeros_like(gate)
+        self._done_flags = {
+            "success": success, "crash": crash & (~self._released),
+            "overspeed": overspeed & (~self._released),
+            "bad_attitude": bad_attitude & (~self._released),
+            "out_of_range": out_of_range & (~self._released),
+            "max_altitude": max_alt & (~self._released), "overshoot": z, "stagnation": z,
+            "released": self._released.clone(), "landed": landed,
+            "release_miss": landed & ~success,
+            "timeout": time_out & ~terminated,
+            "gate_open": gate, "wants_drop": self._wants_drop,
+        }
+        return terminated, time_out & ~terminated
+
+    def _get_rewards(self) -> torch.Tensor:
+        cfg = self.cfg
+        _, _, ang, roll, pitch, _ = self._kinematics()
+        f = self._done_flags
+        d_impact = self._d_impact
+        d_xy = self._current_d_xy()
+        det = (d_xy <= cfg.reveal_radius).float()
+        flying = (~self._released).float()  # freeze shaping after release (spectate the fall)
+
+        r = -cfg.v11_w_ang_vel * (ang * ang).sum(dim=-1) * flying
+        r = r - cfg.v11_w_tilt * (roll * roll + pitch * pitch) * flying
+        r = r - cfg.v11_w_action_smooth * (self._delta_action * self._delta_action).sum(dim=-1) * flying
+        r = r - cfg.v11_w_time * flying
+        r = r + (1.0 - det) * cfg.v13_undetected_penalty * flying
+
+        progress = cfg.v11_w_progress * (self._d_xy_prev - d_xy)
+        ccip = cfg.v11_w_ccip * torch.exp(-cfg.v11_k_ccip * d_impact)
+        r = r + det * flying * (progress + ccip)
+        r = r + det * flying * f["gate_open"].float() * cfg.v11_gate_reward
+        r = r + det * flying * (self._wants_drop & f["gate_open"]).float() * cfg.v11_drop_signal_reward
+
+        # terminal reward on the REAL payload landing
+        landing_err = self._release_impact_err
+        landing_reward = torch.where(
+            landing_err <= cfg.v11_success_radius,
+            torch.full_like(landing_err, cfg.v11_reward_success),
+            cfg.v11_reward_success * torch.exp(-cfg.v11_k_landing * landing_err),
+        )
+        r = r + f["landed"].float() * landing_reward
+
+        r = r + f["crash"].float() * cfg.v11_crash_penalty
+        r = r + f["out_of_range"].float() * cfg.v11_out_of_range_penalty
+        r = r + (f["timeout"] & ~self._released).float() * cfg.v11_no_drop_penalty
 
         self._d_xy_prev = d_xy
         self._d_impact_prev = d_impact
