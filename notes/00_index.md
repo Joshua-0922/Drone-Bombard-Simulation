@@ -85,6 +85,7 @@ type: index
 - [[research/isaac_v18_curriculum_continuation_junsang]] — [Isaac] v18 커리큘럼 백업 & Phase 3+ 재개 가이드 (체크포인트 경로·재개 명령)
 - [[research/isaac_model_spec_junsang]] — ⭐ [Isaac] 모델 스펙: 전체 파라미터 한눈에 (현재 모델·cfg 값·버전별 차이)
 - [[research/isaac_viz_tools_junsang]] — [Isaac] 시각화/검증 도구 (play.py 모드·마커·라이브스트림·시행착오)
+- [[research/isaac_v19_collapse_nodrop_junsang]] — [Isaac] v19 no-drop 붕괴 진단(상주 CCIP 보상) + A(포텐셜)·B(loiter)·D(best저장) 처방
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
