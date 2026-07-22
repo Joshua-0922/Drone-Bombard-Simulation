@@ -539,17 +539,25 @@ class DroneBombardEnv(DirectRLEnv):
         self._payload_marker = None
         self._target_marker = None
         self._target_pole = None
+        self._payload_hl = None
         if not self.cfg.show_markers:
             return
         from isaaclab.markers import VisualizationMarkers, VisualizationMarkersCfg
 
-        self._payload_marker = VisualizationMarkers(VisualizationMarkersCfg(
-            prim_path="/Visuals/Payload",
-            markers={"payload": sim_utils.CylinderCfg(
-                radius=0.05, height=0.06, axis="Z",
-                visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.95, 0.45, 0.05)),
-            )},
-        ))
+        # Visual payload marker ONLY for the analytic drop (v11-v18) — when there
+        # is a real physics payload (v16/v19) the RigidObject is already visible,
+        # so this marker would just duplicate it (two cylinders under the drone).
+        if not self.cfg.payload_physics_enabled:
+            self._payload_marker = VisualizationMarkers(VisualizationMarkersCfg(
+                prim_path="/Visuals/Payload",
+                markers={"payload": sim_utils.CylinderCfg(
+                    radius=0.05, height=0.06, axis="Z",
+                    visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.95, 0.45, 0.05)),
+                )},
+            ))
+        # For the physics payload (v16/v19) we do NOT add a highlight marker: the
+        # real RigidObject is shown at its true size so the drop reads honestly
+        # (an oversized sphere misrepresents the object). _payload_hl stays None.
         # Ground disc = the success zone; a tall bright pole makes the target
         # visible from the side (a flat ground disc foreshortens to nothing in the
         # chase camera). Both are visual-only, gated by show_markers.
@@ -570,18 +578,19 @@ class DroneBombardEnv(DirectRLEnv):
         ))
 
     def _update_markers(self):
-        if self._payload_marker is None:
+        if self._target_marker is None:  # show_markers off
             return
         pos_w = self._robot.data.root_pos_w
-        # Only auto-follow the drone while the payload is attached. Once
-        # released (_payload_attached False, e.g. by record_episode.py's
-        # drop animation), external code drives the marker directly via
-        # self._payload_marker.visualize(...) and this call is a no-op for
-        # it — we skip re-snapping it to the drone every step.
-        if bool(self._payload_attached[0]):
+        # Visual payload marker (analytic drop only): ride under the drone while
+        # attached. Skipped entirely when a physics payload exists (marker is None).
+        if self._payload_marker is not None and bool(self._payload_attached[0]):
             payload_pos = pos_w.clone()
             payload_pos[:, 2] += self.cfg.drop.payload_mount_offset_z  # ride under the drone
             self._payload_marker.visualize(translations=payload_pos)
+        # physics-payload highlight: tracks the real RigidObject (carried under the
+        # drone, then falls on release) so you can actually see it separate + land.
+        if self._payload_hl is not None:
+            self._payload_hl.visualize(translations=self._payload.data.root_pos_w.clone())
         target_pos = torch.zeros_like(pos_w)
         target_pos[:, :2] = self._target_xy + self.scene.env_origins[:, :2]
         target_pos[:, 2] = 0.01
@@ -649,6 +658,12 @@ class DroneBombardEnv(DirectRLEnv):
         spawn_ground.func("/World/ground", spawn_ground)
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.9, 0.9, 0.9))
         light_cfg.func("/World/Light", light_cfg)
+
+        if self.cfg.show_markers:
+            # Keep the grid (gives motion/position reference); add a tilted sun so
+            # the drone/payload cast shadows on it -> a depth cue for the drop.
+            sun = sim_utils.DistantLightCfg(intensity=1800.0, angle=1.0, color=(1.0, 0.97, 0.92))
+            sun.func("/World/Sun", sun, orientation=(0.94, 0.0, -0.34, 0.0))
 
         self.scene.clone_environments(copy_from_source=False)
         if self.device == "cpu":

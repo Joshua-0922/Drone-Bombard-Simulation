@@ -18,7 +18,9 @@ from isaaclab_rl.rsl_rl import (
 class DroneBombardPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 32
     max_iterations = 3000
-    save_interval = 50
+    save_interval = 25   # finer retention: keep model_{it}.pt every 25 iters so a
+                         # near-peak checkpoint survives (v19 iter-375 was lost when
+                         # only one hand-copied .pt was kept). NEVER wipe the log_dir.
     experiment_name = "drone_bombard_ppo"
     empirical_normalization = False
 
