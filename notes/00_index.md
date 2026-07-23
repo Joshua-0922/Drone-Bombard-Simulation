@@ -48,6 +48,7 @@ type: index
 
 | 주제 | 파일 |
 |------|------|
+| **L4 VM 접속 가이드(팀원용)·STOCKOUT 재시도** | `notes/Environment/vm_access_guide_junsang.md` |
 | Guacamole/VNC 설정·접속 | `notes/Environment/README.md` |
 | 자주 쓰는 명령어 | `notes/sessions/commands.md` |
 | RL 규칙 | `notes/research/rl_rules.md` |
