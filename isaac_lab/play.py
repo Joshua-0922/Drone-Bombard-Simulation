@@ -42,6 +42,12 @@ parser.add_argument("--release-terminal", action="store_true",
                          "must match how the policy was trained, or proximity termination "
                          "truncates the loiter behavior being measured.")
 parser.add_argument("--out-csv", type=str, default="/workspace/logs/isaac_lab/step_response.csv")
+parser.add_argument("--wandb", action="store_true",
+                    help="Log the --policy eval summary + distribution figures (histograms, "
+                         "termination-cause bar) to wandb as a job_type='eval' run.")
+parser.add_argument("--wandb_project", type=str, default="drone-bombard-isaac")
+parser.add_argument("--wandb_run_name", type=str, default=None,
+                    help="wandb run name; default eval_<checkpoint-stem>.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -49,6 +55,8 @@ app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app
 
 import csv
+import os
+
 import torch
 
 import gymnasium as gym
@@ -317,6 +325,69 @@ def run_policy(env, policy_path, episodes=10):
               f"{stats(cat['terminal_impact_err'])} m")
         print(f"[policy] final_speed_xy at termination: {stats(cat['final_speed_xy'])} m/s")
         print(f"[policy] timeout_near_miss_rate={near_miss_wsum/max(log_w,1):.2%}")
+
+        if args_cli.wandb:
+            _log_eval_to_wandb(policy_path, n_done, cause_counts, causes, cat,
+                               released, impacted, near_miss_wsum / max(log_w, 1))
+
+
+def _log_eval_to_wandb(policy_path, n_done, cause_counts, causes, cat,
+                       released, impacted, near_miss_rate):
+    """Push the deterministic-eval verdict to wandb as figures: summary
+    scalars, per-episode distribution histograms, and a termination-cause
+    bar chart. Lives in the same project as training runs (job_type='eval')
+    so training curves and eval verdicts sit side by side."""
+    import wandb
+
+    stem = os.path.basename(policy_path).rsplit(".", 1)[0]
+    run = wandb.init(
+        project=args_cli.wandb_project,
+        name=args_cli.wandb_run_name or f"eval_{stem}",
+        job_type="eval",
+        config={
+            "policy": policy_path,
+            "episodes": n_done,
+            "num_envs": args_cli.num_envs,
+            "release_terminal": args_cli.release_terminal,
+        },
+    )
+
+    def _q(t, q):
+        return torch.quantile(t, q).item() if t.numel() else float("nan")
+
+    d_xy = cat["d_xy_min"][torch.isfinite(cat["d_xy_min"])]
+    aim = cat["aim_err_min"][torch.isfinite(cat["aim_err_min"])]
+    rel_err = cat["release_impact_err"][released]
+    pay_err = cat["payload_impact_err"][impacted]
+    summary = {
+        "eval/success_rate": cause_counts["success"] / max(n_done, 1),
+        "eval/release_rate": released.float().mean().item(),
+        "eval/payload_impact_rate": impacted.float().mean().item(),
+        "eval/timeout_near_miss_rate": near_miss_rate,
+        "eval/d_xy_min_med_m": _q(d_xy, 0.5),
+        "eval/aim_err_min_med_m": _q(aim, 0.5),
+        "eval/drop_impact_error_mean_m": rel_err.mean().item() if rel_err.numel() else float("nan"),
+        "eval/drop_impact_error_p90_m": _q(rel_err, 0.9),
+        "eval/payload_impact_err_mean_m": pay_err.mean().item() if pay_err.numel() else float("nan"),
+        "eval/final_speed_xy_med_ms": _q(cat["final_speed_xy"], 0.5),
+    }
+    hists = {
+        "eval/hist_d_xy_min_m": d_xy,
+        "eval/hist_aim_err_min_m": aim,
+        "eval/hist_drop_impact_error_m": rel_err,
+        "eval/hist_payload_impact_err_m": pay_err,
+        "eval/hist_final_speed_xy_ms": cat["final_speed_xy"],
+    }
+    payload = dict(summary)
+    payload.update({k: wandb.Histogram(v.numpy()) for k, v in hists.items() if v.numel()})
+    cause_table = wandb.Table(
+        data=[[c, cause_counts[c]] for c in causes], columns=["cause", "count"])
+    payload["eval/termination_causes"] = wandb.plot.bar(
+        cause_table, "cause", "count", title="Termination causes")
+    wandb.log(payload)
+    run.summary.update(summary)
+    wandb.finish()
+    print(f"[policy] wandb eval figures logged: project={args_cli.wandb_project} run={run.name}")
 
 
 def main():

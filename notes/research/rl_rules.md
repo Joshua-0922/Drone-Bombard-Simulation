@@ -414,6 +414,25 @@ surgery보다 견고. obs 확장도 동일 — index 0-13 불변 + append만(exp
 **(d) 순차 학습은 서브프로세스로.** Isaac Sim은 프로세스당 1 sim만 안전 → 한 프로세스에서
 env를 만들고 부수고 다시 만들지 말고, 페이즈마다 새 프로세스(`--resume`으로 체인).
 
+**(e) 실학습 corroboration (2026-07-12, exp_015 baseline 완주, [[research/curriculum_phase_convergence]]).**
+2048 envs·600/500/500 iters로 1→2→3 완주(ORCH_EXIT=0, ~65 min): **Phase 1만 완전 수렴**
+(success 0.48→1.00, reward→107 — exp_014 100% 재현). 페이즈 경계에서 **reward 딥→빠른 회복**
+(P2 −0.8→94.7 @~150 iter, P3 시작 57)이 (a)의 warm-start 무손실 + (b)의 보상 재정의를 그대로
+실증. **그러나 P2·P3는 success ~0** — reward 우상향은 접근/proximity 스트림이 지배하고,
+release-종단 명중(real_err ≤ 0.8 m)은 베이스라인 500 iter로 형성 안 됨(P2 drop 4.66→2.91 m로
+반경 밖 정체, release_rate tail ~0.33 변동; P3 lead best 0.071 m이나 tail 평탄). **커리큘럼
+baseline의 P2/P3는 reward가 아니라 `release_rate`+릴리스 `drop_impact_error_m`(+`lead_error_m`)로
+판정하라** — Rule 21/22의 "근접≠릴리스"가 커리큘럼 스케일에서 재확인됐고, 뚫는 해법은 Rule 23의
+릴리스=종단 구조(exp_018).
+
+**(f) 이어학습 corroboration (2026-07-13, exp_015 §8 P2/P3 각 +2000 iters).**
+§7 baseline 체크포인트에서 페이즈별 단독 연장(P2: 1098→3097, P3: 3097→5096, 2048 envs,
+`release_terminal` 미적용). **0.8 m 돌파 없음(success ≈ 0 전 구간).** P2 drop tail
+2.91→2.87 m(**정체**, best_min 0.008 m는 스파이크), release_rate 0.33→**0.01** 급락(근접 최적화가
+릴리스 억제 — exp_017 단조 하락과 동형). P3 drop 3.20→**5.31 m 회귀**, reward 101.7→74.5.
+**베이스라인 커리큘럼에서 iter 예산만 늘려서는 P2/P3 릴리스-종단 명중을 기대하지 말 것** —
+구조 개입(exp_018) 없이는 P2 ~3 m plateau, P3 불안정/회귀. 상세: [[research/curriculum_phase_convergence]] §2(e).
+
 ---
 
 ## Rule 21 — 이벤트 조건부 지표는 그 이벤트를 명시적으로 시뮬레이트한 순간에 측정하라
@@ -498,6 +517,26 @@ self._just_released`(alias) → `_reset_idx`의 in-place clear가 step() 반환 
 
 **(e) 지표 의미론:** 발화=종단 모드에선 release_rate ≡ success rate. 비종단 래치
 시절(exp_016/017의 6%/5.5%)과 수치 직접 비교 금지.
+
+---
+
+## Rule 24 — per-env 동적 결합/분리는 조인트가 아니라 kinematic weld로; 물리↔해석 parity를 계측으로 증명 후 전환하라
+
+> **상세:** [[research/physical_payload_attach]] / [[experiments/exp_019_physical_payload]] (2026-07-21)
+
+**(a)** GPU-복제 PhysX는 per-env 조인트 생성/제거(토폴로지 변경) 불가 — "부착했다 분리"는
+fixed joint가 아니라 **kinematic weld**(부착 env만 매 physics step pose+velocity write,
+분리 = write 중단)로 구현하라. 완전 벡터화되고 복제 물리를 건드리지 않는다. 검증: 추적
+오차 1.1 mm, 측정 착탄 vs 해석적 CCIP |Δ| ≤ 0.021 m (exp_019, 8/8).
+
+**(b)** weld는 kinematic이라 부착 중 하중이 드론 solver에 전달되지 않는다 — 페이로드
+질량은 드론 authored 질량에 포함 유지(Rule 19: 런타임 질량 변경 금지). 비용 = 분리 후
+팬텀 질량(릴리스=종단 커리큘럼에선 미발현; 에피소드를 착탄까지 연장 시 per-env ctrl_mass
+필요).
+
+**(c)** 물리 경로(측정 착탄)로 해석적 경로(referee/보상)를 교체하기 전, 두 경로의 parity를
+같은 조건에서 계측으로 증명하라. 특히 DR(drag/wind)이 해석식에만 적용되는 상태에서
+교체하면 Phase 2가 조용히 다른 과제가 된다.
 
 ---
 

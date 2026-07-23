@@ -6,9 +6,74 @@
 
 # 1. Current State
 
-**업데이트:** 2026-07-06
+**업데이트:** 2026-07-23
 
-> **🔀 병행 트랙 (2026-07-06, Stage B): Isaac Lab exp_018 — 릴리스-종단 구조로 release_rate 5.5% → 100% (Rule 23)** —
+> **🔀 병행 트랙 (2026-07-23): Isaac Lab exp_020 — 물리 페이로드 부착 첫 학습 완주, 학습 비용 0 확증 + wandb eval-figure 파이프라인** —
+> `isaac_jk` 워크트리, `isaac-verify`/L4. Phase 1 `--release_terminal`, 2048 envs × 400 iters,
+> **warm-start `exp018_B0_final.pt` + `--w_aim 1.0 --aim_reward_scale 0.5`(B0 보상 bit-match)**
+> → `physical_payload=True`(cfg 기본)가 유일한 델타. wandb `o5jn9xzk`(train)/`vryuc6mu`(eval).
+> **det 200-ep eval: success/release 100.00% (200/200), drop err mean 0.169 m(max 0.200),
+> 호버-드롭 유지(final speed med 0.068 m/s).** release_rate 첫 롤아웃부터 100% 고정(B0의
+> 23→99.6% 상승과 대조 — 재학습 과도기 없음) = exp_019 parity의 학습-스케일 확증.
+> ⚠️ σ 1.41→1.71 드리프트(release 포화로 sharpen 압력 부재 — 장기 fine-tune 시 1순위 모니터),
+> drop err 분포 tolerance 경계 이동(med 0.178). **`play.py --wandb` 신설**(eval 요약 스칼라 +
+> 히스토그램 5종 + 종단 원인 bar chart, `job_type="eval"` — 학습 커브와 판정 figure 병치).
+> 1차 기동은 컨테이너 빈 `WANDB_API_KEY`로 silent 실패(isaaclab.sh exit 0 삼킴) →
+> **`docker exec --env-file /opt/drone-bombard/.wandb.env` 필수**. ckpt: 컨테이너
+> `/workspace/logs/isaac_lab/drone_bombard/exp020_payload_final.pt` + 호스트
+> `/opt/drone-bombard/checkpoints/exp020/`. **Stage C(DR+residual, 별도 지시 대기)는 물리
+> 페이로드 포함으로 진행 가능 — 단 Phase-2 DR 힘 정합 선행 필요.**
+> → [[experiments/exp_020_o5jn9xzk_payload_training]] / [[errors/err_20260723_wandb_key_empty]]
+
+> **🔀 (이전 2026-07-21): Isaac Lab exp_019 — 물리 페이로드 attach/detach 구현·검증 완료 (4/4 PASS, Rule 24)** —
+> `isaac_jk` 워크트리. 사용자 목표("페이로드를 실제로 달고 CCIP 근접 시 분리") 대응 코드
+> 전수 검토 → 결함 6종 발견(①페이로드 물리 부재 ②`_payload_attached` 죽은 플래그 ③마커
+> env-0 게이팅 ④ctrl_mass 스칼라 ⑤릴리스=즉시 종단 ⑥CCIP vz 생략), ①②③ 수정: 해석적
+> 페이로드 → **실제 per-env RigidObject(0.1 kg 실린더) + kinematic weld**(GPU-복제 물리는
+> per-env 조인트 토폴로지 변경 불가 → 부착 env만 매 physics step pose+vel write, CCIP 발화
+> → release_delay 카운트다운 → write 중단 = 자유낙하, z≤0.10 m 측정 착탄 래치).
+> hover-drop 강제 릴리스 검증(8 envs, isaac-verify): 부착 추적 **1.1 mm**, 분리 0/8 잔류,
+> 착탄 8/8, **측정 vs 해석적 CCIP |Δ| mean 0.012/max 0.021 m**(물리↔해석 cm-parity).
+> 보상·종단·referee **bit-identical**(순수 추가), `payload_impact_rate`/
+> `payload_impact_err_measured_m` 신설, `physical_payload=False`로 구 경로 보존.
+> 후속(별도 지시 대기): 에피소드 착탄-연장(⑤), Phase-2 DR 힘 정합, vz 복원(⑥),
+> per-env ctrl_mass(④). 검증 스크립트 `isaac_lab/_test_payload_drop.py`.
+> → [[experiments/exp_019_physical_payload]] / [[research/physical_payload_attach]] / Rule 24
+
+> **🔀 (이전 2026-07-13): Isaac Lab exp_015 이어학습(2차) — P2/P3 extended 각 +2000 iters 완주
+> (P2_EXIT=0, P3_EXIT=0)** — `feat/isaac-env-migration`. §7 baseline 체크포인트에서 페이즈별
+> 단독 연장(`isaac-verify`, 2048 envs, `release_terminal`·`w_aim` **미적용**).
+> **P2 ext(iter 1098→3097):** drop tail **2.87 m**(1차 2.91 m 대비 ~0.04 m), best_min 0.008 m
+> 스파이크, release_rate **0.33→0.01** 급락, success **0**. **P3 ext(iter 3097→5096):**
+> drop tail **5.31 m**(1차 3.20 m **회귀**), reward 101.7→**74.5**, lead tail 평탄 0.35,
+> success **0**. **0.8 m 돌파 ❌** — iter 예산 확대만으로 릴리스-종단 명중 미형성(Rule 20f).
+> exp_018 `release_terminal` 종단 재구조 필요 재확인. 산출물(host `logs/exp015_cont/`):
+> `exp015_phase{2,3}_ext_final.pt`, `summary_p{2,3}_ext.json`, `p{2,3}_stdout.log`,
+> `pipeline_done.txt`. git commit/push 미수행.
+> → [[experiments/exp_015_phased_curriculum]] §8 / [[research/curriculum_phase_convergence]] §2(e) / Rule 20f
+
+> **(이전 2026-07-12): Isaac Lab exp_015 실학습 — Phase 1→2→3 커리큘럼 첫 end-to-end 완주 (baseline, ORCH_EXIT=0)** —
+> `feat/isaac-env-migration`. 오케스트레이터를 L4(`isaac-verify`, headless)에서 완주:
+> `--phases 1,2,3 --phase_iterations 600,500,500 --num_envs 2048 --logger tensorboard --seed 42
+> --log_root /tmp/exp015_orch`. **plain 커리큘럼**(exp_018 `--release_terminal`·exp_017 `--w_aim`
+> **미사용** = exp_015 원본 릴리스 메커니즘). throughput **~2.3 s/iter(≈28 K steps/s)** → 예산
+> 조정 없이 ~65 min 완주(P1 ~23 · P2 ~21 · P3 ~20 min). **결과(tail-mean 20 iter)**:
+> **Phase 1(접근/nominal): success 0.48→1.00, reward→107** — exp_014 eval 100% 재현(해석적 CCIP
+> `drop_impact_error_m` ~0.13 m). **Phase 2(CCIP+Residual+DR, 정지): reward −0.8→94.7 회복
+> (~150 iter), `drop_impact_error_m` 4.66→2.91 m ↓(best 0.37), release_rate peak 0.98/tail 0.33
+> 변동, success ~0**(DR 착탄 2.9 m ≫ 성공반경 0.8 m). **Phase 3(이동타겟): reward→102,
+> `lead_error_m` best 0.071 m(tail 평탄 0.34), release 0.10, success ~0.** **warm-start 무손실
+> 실증**: 페이즈 경계 reward 딥→빠른 회복(Rule 20b/20e). **정직 평가: reward 우상향은
+> proximity 스트림 지배 — P2/P3 릴리스-종단 명중(sub-0.8 m)은 베이스라인 500 iter로 미형성.
+> exp_016(근접≠릴리스)·exp_017(보상-단독 실패)의 결론을 커리큘럼 스케일에서 재확인. 뚫는
+> 해법은 exp_018 릴리스=종단 구조(미적용) — P2/P3 추가 학습 또는 종단 재구조 필요.** 산출물
+> 영속화(host `/opt/drone-bombard/isaac-worktree/logs/exp015_orch/`): `exp015_phase{1,2,3}_final.pt`
+> (각 1.7 MB), `train_stdout.log`(2.9 MB, 파싱 소스), `metrics_phase{1,2,3}.csv`, `summary.json`,
+> 수렴그래프 `notes/experiments/exp015_convergence.png`. TensorBoard는 컨테이너
+> `/tmp/exp015_orch/drone_bombard_ppo/…`. git commit/push 미수행(노트만 편집).
+> → [[experiments/exp_015_phased_curriculum]] §7 / [[research/curriculum_phase_convergence]] / Rule 20
+
+> **(이전 2026-07-06, Stage B): Isaac Lab exp_018 — 릴리스-종단 구조로 release_rate 5.5% → 100% (Rule 23)** —
 > `feat/isaac-env-migration`. exp_017(판정 b) 직후 사용자 지시 실행: ①근접 종단(d_xy≤0.8) →
 > **릴리스-발화 종단**(`DroneBombardEnvCfg.release_terminal`, 기본 False=레거시 bit-identical;
 > 실패 게이트 7종·타임아웃 불변 — 적대 검증 byte-미접촉 확인) ②aim_err 보상 **nominal CCIP
@@ -178,6 +243,7 @@
 
 # 2. Recent Progress
 
+- **2026-07-21 (Isaac Lab, exp_019) — 물리 페이로드 attach/detach: kinematic weld 구현 + hover-drop 검증 4/4 PASS.** 코드 전수 검토에서 릴리스 경로 결함 6종 발견(핵심: `_payload_attached`가 발화 시 False로 전환되지 않는 죽은 플래그 + 페이로드 자체가 물리적으로 부재). per-env RigidObject 페이로드 신설 — 부착=매 physics step pose+vel write(조인트 불가 제약 우회), 분리=CCIP 발화 후 release_delay(0.1 s) 카운트다운 만료 시 write 중단, 착탄=z≤0.10 m 래치로 측정 오차 기록. 검증: 추적 1.1 mm/분리 0 잔류/착탄 8/8/**측정 vs 해석적 |Δ| max 0.021 m**. 보상·종단 bit-identical, 기존 마커 env-0 버그도 수정. `play.py`에 payload_impact 통계 추가. → [[experiments/exp_019_physical_payload]] / [[research/physical_payload_attach]] / Rule 24
 - **2026-07-03 (Isaac Lab migration) — README 컨테이너 진입 절차 수정 + `play.py` 4-tuple 버그 fix.** 사용자가 혼자 재현 시도 시 실패 원인 규명: README의 `docker pull drone-bombard-isaac:latest`가 가리키는 이미지는 로컬에도 GCP Artifact Registry(`isaac-lab` 저장소, 0 items)에도 **존재하지 않음** — pull 대상이 없었음. 실제로는 `isaac-lab-local:580` 이미지로 띄운 `isaac-verify` 컨테이너가 이미 dev VM에 떠 있었음. README §5에 "이미 떠 있는 컨테이너 재사용" 절 신설 + non-root exec 시 root 소유 캐시(`/isaac-sim/kit/cache` 등)로 인한 `PermissionError` 크래시 및 chown 해결법 문서화 + `PYTHONUNBUFFERED=1` 팁(미설정 시 `simulation_app.close()`의 하드 종료로 마지막 PASS/FAIL print 유실) + README 전체의 `./isaaclab.sh`(존재하지 않는 상대경로, `/workspace/drone-bombard`에서 cwd 불일치) → `/workspace/isaaclab/isaaclab.sh` 절대경로로 일괄 수정(14곳). 검증 중 `isaac_lab/play.py`의 `run_zero_actions`/`run_scripted`/`run_policy`가 `RslRlVecEnvWrapper`(rsl_rl 4-tuple `obs,rew,dones,extras` API) 사용 중임에도 5-tuple(`obs,rew,terminated,truncated,info`) unpacking을 시도해 **항상 `ValueError`로 즉시 크래시**하던 버그 발견·수정. 수정 후 `--zero-actions`는 실행은 되나 altitude drift 12m/100 step로 FAIL(`verify_one_episode.py`는 동일 env로 148-step 안정 호버 PASS) — wrapper 경로 자체의 미해결 회귀 가능성, 후속 조사 필요. → [[isaac_container_access]] (Claude memory)
 - **2026-07-03 (Isaac Lab migration) — 실제 실행 검증 통과 (VERIFY: PASS).** 사용자 요청으로 이 dev 박스에 `isaac-sim:5.1.0` pull → Isaac Lab v2.3.2+rsl_rl 설치 → `verify_one_episode.py`(신규 무학습 하네스)로 `Isaac-DroneBombard-Direct-v0` **1 에피소드 실제 실행**. env 구성·USD 씬(드론)·질량 오버라이드(2.173kg)·reset(obs (1,14))·**148스텝 안정 호버**(고도 유지, 중력보상)·obs/reward/termination 유한(NaN 0)·stagnation guard 정상 발동. **실행으로만 잡히는 env/컨트롤러 버그 5종 수정**(핵심: rate loop 토크에 관성항 누락 → ~46× 과토크 → 즉시 스핀아웃; `τ=I·(k_rate·rate_err)`로 수정). + 이미지 자체 버그 2종(dangling `_structures.py` 심링크, core isaaclab 미설치) Dockerfile 반영. **렌더링/GUI는 driver 535<580으로 이 박스에서 불가** — 물리/CUDA 정상, 시각화는 L4 VM 필요(사용자: headless 검증 수용). 커밋 `f2f1b1a`. → [[experiments/exp_012_isaac_migration_phase2]] §6b / [[research/isaac_velocity_controller]]
 - **2026-07-03 (Isaac Lab migration, `feat/isaac-env-migration` 브랜치):** **Phase 2 — env+PPO 코드 이식 완료.** 별도 워크트리(`git worktree add /opt/drone-bombard/isaac-worktree feat/isaac-env-migration` + `git merge jekyun`, merge `940c88b`)에서 진행 — jekyun의 라이브 v15 학습(tmux `rl_train`) 방해 없음. `isaac_lab/` 신설: `math_utils.py`(action rate-limit/LPF, pinhole vision projection, hold-buffer, ballistic/CCIP, 3-layer reward, overshoot/stagnation guard — 순수 torch, isaaclab 무의존) + `drone_bombard_env.py`(DirectRLEnv, 위 math_utils를 isaaclab lifecycle에 연결) + `agents/rsl_rl_ppo_cfg.py` + `train.py`/`play.py`/`yolo_eval.py`. v13/v15 obs(14)·action(4)·reward·termination 상수 전부 parity 이식(표: [[experiments/exp_012_isaac_migration_phase2]]). SAC→PPO(rsl_rl), target/spawn 랜덤화 신규(Gazebo는 고정 타겟), vision=학습 시 analytic pinhole(YOLO 캘리브레이션 노이즈)+평가 시 실제 YOLOv8 이원화, drop=액션 아닌 스크립트 CCIP 메트릭(태스크 스코프 v15와 동일). Phase-2 훅 4종(CCIP residual, release 상수 cfg화, obs superset 고정, domain-rand 스텁) 비활성 wiring — Phase 1 출력 불변. **검증:** `pytest isaac_lab/tests/test_math.py` **29/29 통과**(drone-bombard-harmonic 컨테이너, torch 2.4.1, isaaclab 미설치 — 파일 경로 직접 로드로 패키지 `__init__` 우회). `py_compile` 전체 통과. L4 Spot VM 미기동 → env 스모크·실제 학습 미실행(README에 정확한 커맨드 문서화). 부수 발견: Gazebo `hyperparams_v13.yaml`의 `limit_tilt:0.26`는 코드에서 미사용인 죽은 설정(실제 게이트는 `limit_inverted_tilt=1.047` 기본값) — 이식 안 함. Overshoot guard가 success_radius=0.8에서 도달 불가능한 것은 Rule 10의 의도된 설계임을 Gazebo 소스로 재확인(버그 아님) — 비종단 진단 카운터만 신설. 신규 **Rule 16**(시뮬레이터 이식 시 plant/reward parity는 상수뿐 아니라 타이밍+메커니즘까지 검증). → [[experiments/exp_012_isaac_migration_phase2]] / [[research/isaac_velocity_controller]] / [[research/rl_rules]] Rule 16
@@ -203,8 +269,11 @@
 
 # 3. Remaining Tasks (Next Steps)
 
+- [x] **(Isaac Lab, exp_019)** 물리 페이로드 attach/detach — kinematic weld 구현·검증 완료(4/4 PASS). → [[experiments/exp_019_physical_payload]]
+- [ ] **(Isaac Lab, exp_019 후속 — 별도 지시 대기)** ⑤에피소드를 페이로드 착탄까지 연장(발화-종단 → 착탄-종단 + 측정 착탄오차 터미널 보상; 종단 의미론 변경 = fresh 학습) ⑥CCIP vz 항 복원(`t=(vz+√(vz²+2gH))/g`) ②Phase-2 DR(drag/wind) 힘을 물리 페이로드 낙하에도 적용(해석↔물리 정합) ④per-env `_ctrl_mass` 텐서화(분리 후 팬텀 0.1 kg). → [[research/physical_payload_attach]] §트레이드오프
 - [x] **(Isaac Lab, exp_015)** Phase별 순차 커리큘럼 **코드 구현 완료** — action 4→6 residual, phase 노브+파생 플래그, 릴리스 이벤트+DR 착탄오차 터미널 보상, Gauss-Markov 이동타겟+lead, `train.py --phases` 오케스트레이터. `py_compile` 12파일 통과. → [[experiments/exp_015_phased_curriculum]] / [[research/phased_curriculum]] / Rule 20
-- [ ] **(Isaac Lab, exp_015)** L4/컨테이너에서 `pytest test_math.py`(+8 신규=38) 실행 → 페이즈별 2-iter 스모크(phase 1/2/3) → `--phases 1,2,3` dry-run(256 envs, 5,5,5) → 본 학습(2048 envs, 3000/2000/2000). PhaseCfg 하이퍼파라미터 dry-run 신호로 튜닝. → [[experiments/exp_015_phased_curriculum]] §5
+- [x] **(Isaac Lab, exp_015)** 본 학습 완주 — `--phases 1,2,3 --phase_iterations 600,500,500 --num_envs 2048`(baseline, ~65 min, ORCH_EXIT=0). Phase 1 완전 수렴(success 1.00), P2/P3는 방향성 신호(drop↓/lead best 0.071m)만·명중 미형성. → [[experiments/exp_015_phased_curriculum]] §7 / [[research/curriculum_phase_convergence]]
+- [ ] **(Isaac Lab, exp_015 후속)** P2/P3 명중 능력 확보: (a) exp_018 `release_terminal` 구조를 Phase 2·3에 적용(warm-start=exp018 B0 검토) 또는 (b) P2/P3 iteration 대폭 증량. PhaseCfg(residual_scale/release_tolerance/w_impact/w_lead) 튜닝. → [[research/curriculum_phase_convergence]]
 - [ ] **(Isaac Lab migration, 병행 트랙)** L4 Spot VM 기동(`infra/deploy.sh` 빌드+push, `infra/startup.sh` 실행) → Cartpole 스모크 → `Isaac-DroneBombard-Direct-v0` env 스모크(2-iter) → `play.py --zero-actions/--scripted` 물리 검증. → [[experiments/exp_012_isaac_migration_phase2]]
 - [ ] **(Isaac Lab migration)** PX4 속도-스텝응답 Gazebo 캡처 세션(`vel_logger_v2.py` 신규, 7-포인트) → Isaac 컨트롤러 게인 검정. 현재 미검정(구조 일치, 게인 초기값). → [[research/isaac_velocity_controller]]
 - [ ] **(Isaac Lab migration)** `yolo_eval.py --calibrate` 첫 실행 → vision 캘리브레이션 v1(현재 v0=스펙 추정).
@@ -237,6 +306,9 @@
 
 | 날짜 | Run ID | Steps | 요약 |
 |------|--------|-------|------|
+| 2026-07-21 | **exp019 물리 페이로드 attach/detach (검증 전용, 병행 트랙)** | 0 (8 envs hover-drop 검증, isaac-verify) | **kinematic weld 구현 + 4/4 PASS.** 부착 추적 1.1 mm, 분리 0/8 잔류, 착탄 8/8, 측정 vs 해석적 CCIP \|Δ\| mean 0.012/max 0.021 m. 보상·종단 bit-identical. Rule 24. → [[experiments/exp_019_physical_payload]] |
+| 2026-07-13 | **exp015 이어학습(2차) P2/P3 ext (Isaac PPO, 병행 트랙)** | P2: +2000 iters (1098→3097) · P3: +2000 iters (3097→5096), 2048 envs, ~3h | **iter 예산 확대 검증 — 0.8m 돌파 ❌.** P2 ext: drop 2.87m(정체), release 0.33→0.01, success 0. P3 ext: drop 5.31m(회귀), reward 74.5, success 0. Rule 20f. → [[experiments/exp_015_phased_curriculum]] §8 |
+| 2026-07-12 | **exp015 실학습 (baseline, Isaac PPO, tensorboard, 병행 트랙)** | 2048 envs × 600/500/500 iters (~104M steps, ~65 min) | **Phase 1→2→3 커리큘럼 첫 완주(ORCH_EXIT=0). Phase 1만 완전 수렴.** plain `--phases 1,2,3`. P1 success 0.48→1.00·reward→107(exp_014 재현); P2 reward −0.8→94.7·drop 4.66→2.91m↓·release peak 0.98/tail 0.33·success~0; P3 reward→102·lead best 0.071m·success~0. warm-start 무손실(Rule 20e). reward 우상향=proximity 지배 — P2/P3 명중 미형성(추가 학습 또는 exp_018 종단구조 필요). ckpt/로그/그래프 host 영속화. → [[experiments/exp_015_phased_curriculum]] §7 / [[research/curriculum_phase_convergence]] |
 | 2026-03-20 | 8otphxy8 | 114K | 선형 거리 보상 + CRUISE retry. 마지막 정상 베이스라인. |
 | 2026-03-22 | — | — | 보상 패치 적용 (학습 없음). Fresh start 대기 중. |
 | 2026-04-16 | mtx7ud6o/x8jq9fsy/u8w3xn0w | 5500×3 | RTF 1/2/4 dry-run. RTF=2 최적 (59.5 fps). |
@@ -261,3 +333,4 @@
 | 2026-07-05 | **exp016 CCIP 릴리스 referee 재평가 (eval-only, A2 ckpt, 병행 트랙)** | 0 (200-ep deterministic eval) | **디커플링 규명: 4.59m = 지표 의미론 버그(릴리스 트리거 부재, 성공-종단 속도 캐리).** CCIP referee(≤0.2m) 수정 후: 발화 시 0.137m, release_rate 6%/11.5%(10/100Hz), aim_err_min med 0.755m ≈ d_xy_min(cross-track 지배). 구 지표 4.649m 재현. 보상/종단 bit-identical. Rule 21. → [[experiments/exp_016_ccip_release_reeval]] / [[research/ccip_release_decoupling]] |
 | 2026-07-06 | **exp017 Stage A — 밀집 CCIP 조준 보상 (750gpldr/6z0gpnhy/fv5qqmtz, Isaac PPO, 병행 트랙)** | 3 runs (P1 400 + v1 400 + v2 600 iters, 2048 envs) | **보상-변경-단독은 release_rate 못 올림 — 판정 (b), Rule 22.** det 200-ep: 기준선 2.5% → v1(w=1) 5.5%(aim 0.889m·speed 2.72, 방향 실재·p≈0.13) → v2(w=2/knee 1.0) 3.5% 회귀. P1 기준선 학습 내 12→3.7% 단조 하락(근접 최적화가 릴리스 능력 파괴). 원인=γ-할인 완주 보너스·CCIP 노이즈 증폭(×1.53s)·성공 조기 종단. 5-lens 사전 검증, farm 0. ckpt 3종 분리 보존(+호스트 백업) — 차기 warm-start=stageA(v1). → [[experiments/exp_017_stageA_aim_reward]] / [[research/ccip_aim_reward_stageA]] |
 | 2026-07-06 | **exp018 Stage B — 릴리스-종단 이벤트 (xt0hrr1c/0ns10yso/4vaodj0o/kk06wsbx, Isaac PPO, 병행 트랙)** | 4 runs × 400 iters (전부 v1 warm-start) | **릴리스-종단 구조 → det release_rate 100.00%, drop err 0.125 m (Rule 23).** 종단 교체 단독(B0)으로 5.5%→100%(학습 내 23→99.6% 단조 상승 — Stage A 하락 반전, Rule 22a 인과 확정). aim 보상 노브 불감(w 0/1.5 100%, knee 0.75만 98.5%) — 자동 발화 referee가 노이즈를 +100 샘플러로 전환. done-flag alias 버그 사전 수정(eval success 0% 위험). 호버-드롭 수렴(종단 속도 0.11 m/s). **Stage C warm-start = exp018_B0_final.pt.** → [[experiments/exp_018_release_terminal]] / [[research/release_terminal_stageB]] |
+| 2026-07-23 | **exp020 물리 페이로드 부착 첫 학습 (o5jn9xzk train / vryuc6mu eval, Isaac PPO, 병행 트랙)** | 400 iters (2048 envs, warm-start=exp018_B0, 보상 bit-match) | **물리 페이로드(kinematic weld) 학습 비용 = 0 — det 200-ep success/release 100.00%, drop err 0.169 m.** `physical_payload=True`가 유일한 델타, release_rate 첫 롤아웃부터 100%(재학습 과도기 없음). σ 드리프트 1.41→1.71 모니터 대상. `play.py --wandb` eval-figure 파이프라인 신설. 컨테이너 빈 WANDB_API_KEY 함정(`--env-file` 필수). ckpt 호스트 `/opt/drone-bombard/checkpoints/exp020/`. → [[experiments/exp_020_o5jn9xzk_payload_training]] |
