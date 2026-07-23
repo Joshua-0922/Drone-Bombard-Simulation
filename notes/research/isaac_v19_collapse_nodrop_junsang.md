@@ -73,4 +73,5 @@ v18_phase2 warm-start → v19 재학습(A+B+D), iter300→600, 1024 envs. `selec
 - 검증됐으니 [[research/rl_rules]] **Rule 13** 등록(상주 vs 포텐셜 shaping + 재적응 딥).
 - best 모델 백업: 노트북 `~/v19_backup/v19_abd_run/model_best.pt`(=iter599), VM `~/v19_abd_backup/run/`.
 - 코드: branch `Issac_JS` `2f2bf9b`. 실험: [[experiments/exp_015_v19_abd_retrain_junsang]].
+- **후속(정밀도)**: 착탄 정체(0.56m)의 원인=성공존 내부 평평보상 → 연속 착지보상으로 **0.356m·success 100%** 달성. → [[experiments/exp_016_v19_precision_landing_junsang]]
 - 관련: [[experiments/exp_014_v19_full_integration_junsang]] · [[research/isaac_viz_tools_junsang]]
