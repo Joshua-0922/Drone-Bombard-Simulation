@@ -73,6 +73,7 @@ type: index
 ## 노트 인덱스
 
 ### 연구 (research/)
+- ⭐ [[research/isaac_model_intro_junsang]] — [Isaac] **모델 소개**: 한 에피소드 흐름(스폰→랜덤표적·바람→순항→인지→탄도보정→하강 투하→물리 낙하 명중)으로 보는 온보딩 (+각 단계 어떻게 해냈나·코드 포인터)
 - [[research/phase1_plan]] — Phase 1 CCIP 기반 자율 접근 연구 계획 (8주, 5/8-6/30)
 - [[research/reward_design]] — 4-layer 보상 함수 (LaTeX 수식)
 - [[research/architecture]] — Method A (1-World-4-Payload) 아키텍처
