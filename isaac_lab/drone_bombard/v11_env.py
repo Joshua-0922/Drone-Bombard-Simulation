@@ -274,6 +274,17 @@ class DroneBombardV19Cfg(DroneBombardV18Cfg):
     ccip_potential_shaping: bool = True   # A: telescoping aim shaping (no standing reward)
     v19_w_loiter: float = 0.02            # B: per-step penalty * steps-in-envelope-not-dropped
 
+    # --- precision push (v19 accuracy fix) ---
+    # The original landing reward was FLAT (reward_success) everywhere inside
+    # success_radius, so a 0.1 m hit and a 0.9 m hit paid identically -> the policy
+    # had no gradient to land tighter and med_err plateaued ~0.56 m. Make it a
+    # continuous exp that keeps pulling toward 0 m even inside the zone, plus a
+    # discrete bonus for crossing the success threshold (keeps the "get inside"
+    # signal). Warm-start the existing best model into this to sharpen accuracy.
+    precise_landing_reward: bool = True   # continuous (vs flat-inside) landing reward
+    v19_k_landing: float = 2.0            # steeper falloff -> strong sub-metre gradient
+    v19_success_bonus: float = 100.0      # discrete bump for err <= success_radius
+
 
 class DroneBombardV11Env(DroneBombardEnv):
     cfg: DroneBombardV11Cfg
@@ -1101,11 +1112,21 @@ class DroneBombardV19Env(DroneBombardV18Env):
 
         # terminal reward on the REAL payload landing
         landing_err = self._release_impact_err
-        landing_reward = torch.where(
-            landing_err <= cfg.v11_success_radius,
-            torch.full_like(landing_err, cfg.v11_reward_success),
-            cfg.v11_reward_success * torch.exp(-cfg.v11_k_landing * landing_err),
-        )
+        if cfg.precise_landing_reward:
+            # Continuous precision reward: exp keeps pulling toward 0 m even INSIDE
+            # the success zone (a 0.1 m hit out-earns a 0.9 m hit), + a discrete
+            # bonus for crossing the success threshold. Removes the flat-inside cap
+            # that plateaued med_err. reward_success is the exp peak at err=0.
+            landing_reward = (
+                cfg.v11_reward_success * torch.exp(-cfg.v19_k_landing * landing_err)
+                + (landing_err <= cfg.v11_success_radius).float() * cfg.v19_success_bonus
+            )
+        else:
+            landing_reward = torch.where(
+                landing_err <= cfg.v11_success_radius,
+                torch.full_like(landing_err, cfg.v11_reward_success),
+                cfg.v11_reward_success * torch.exp(-cfg.v11_k_landing * landing_err),
+            )
         r = r + f["landed"].float() * landing_reward
 
         r = r + f["crash"].float() * cfg.v11_crash_penalty
