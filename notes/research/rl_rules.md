@@ -193,6 +193,21 @@ warm-start해서 **난이도를 목표치로 조여** 이어학습. Phase 2는 �
 
 ---
 
+## Rule 13 — shaping 보상은 "유지"가 아니라 "개선"에만 줘라 (상주 vs 포텐셜)
+
+**절대값 shaping**($w\cdot e^{-k d}$처럼 상태에 대한 상주 보상)은 목표 근처에서 **가만있어도 매 스텝
+보상을 계속 수확**하게 만든다. 종료가 보상을 끊는 태스크(투하·착지 등)에선, 특히 **터미널 보상이
+노이즈로 자주 빗나갈 때**, 정책이 "완벽 조준 + 영원히 호버(안 던짐)"라는 국소최적으로 **수렴 후
+붕괴**한다. v19에서 확인: 물리 투하가 노이즈 커서(착탄 1.4m) 상주 CCIP 보상 수확이 투하보다 이득
+→ iter375 release 100% → iter499 release **0**(조준은 완벽, 투하만 소실). **해결:**
+① **shaping을 포텐셜(차분)형으로** — $w(e^{-k d_t}-e^{-k d_{t-1}})$, 개선 시에만 보상·유지 시 0
+(Ng et al. 1999, 최적정책 불변). ② **인엔벨로프 미행동에 누진 페널티**로 능동적으로 밀기.
+③ **best-checkpoint 저장 + 재적응 딥에서 조기종료 금지**(보상 바꾸면 release가 잠깐 0까지 떨어졌다
+회복 → peak를 떠야 함). 재학습 검증: success 0%→76.7%, 착탄 0.563m, iter600까지 붕괴 없음.
+→ [[research/isaac_v19_collapse_nodrop_junsang]] · [[experiments/exp_015_v19_abd_retrain_junsang]]
+
+---
+
 ## Known Failure Modes
 
 | 증상 | 원인 | 해결 |
@@ -208,3 +223,4 @@ warm-start해서 **난이도를 목표치로 조여** 이어학습. Phase 2는 �
 | hover 후 random_drop으로 종료 (drop_error ≈ spawn→target 거리) | hover exploit — heading 보상 수확이 success보다 안전 | Hover Terminal Penalty (종료 시 -15, sustained hover만) → [[experiments/exp_004_round5_hover_junsang]] |
 | `gz model --list` 5s timeout → 학습 abort | PX4 `.ulg` 로그 누적(20GB) → 디스크 I/O 지연 | PX4 로깅 비활성화 (`SDLOG_MODE -1`), 누적 로그 삭제 |
 | `bad_attitude 1.0`, episode length 1 (Isaac) | 움직이는 상태로 spawn했는데 컨트롤러 setpoint(`_v_filt`/`_prev_action`) 0으로 리셋 → 첫 스텝 큰 속도오차 → 급기동 | reset에서 컨트롤러를 cruise 속도로 seed (Rule 10) → [[research/isaac_cruise_handoff_junsang]] |
+| 수렴 후 release_rate가 100→0으로 붕괴 (조준은 완벽, 투하만 소실) (Isaac) | 상주 CCIP shaping($w\,e^{-kd}$)을 조준 유지로 계속 수확하는 게 노이즈 큰 물리 투하보다 이득 → no-drop 국소최적으로 과도학습 중 붕괴 | shaping을 포텐셜(차분)형으로 + 인엔벨로프 누진 페널티 + best-checkpoint 저장 (Rule 13) → [[research/isaac_v19_collapse_nodrop_junsang]] |

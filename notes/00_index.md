@@ -101,6 +101,7 @@ type: index
 - [[experiments/exp_012_v17_pixel_vision_junsang]] — [Isaac] v17 픽셀 양자화 vision (대략 위치→접근하며 정밀, success ~0.8)
 - [[experiments/exp_013_v18_integration_curriculum_junsang]] — [Isaac] v18 능력 통합 + 커리큘럼 (데드락 발견→warm-start 해결, success 1.0)
 - [[experiments/exp_014_v19_full_integration_junsang]] — [Isaac] v19 전체 통합 + 실제 물리 drop (success 1.0, 실제 착탄 0.56m)
+- [[experiments/exp_015_v19_abd_retrain_junsang]] — [Isaac] v19 no-drop 붕괴 수정(A 포텐셜 shaping+B loiter+D best저장) 재학습: 붕괴 없이 success 76.7%·착탄 0.563m
 
 ### 에러 (errors/)
 - [[errors/err_20260320_physics_explosion]] — Gazebo ODE 물리 폭발 3중 방어

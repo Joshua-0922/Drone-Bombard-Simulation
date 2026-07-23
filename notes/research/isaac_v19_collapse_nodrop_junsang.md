@@ -50,7 +50,27 @@ $$ w_c\big(e^{-k d_{impact}} - e^{-k d_{impact}^{prev}}\big) $$
 훑어 **실제착탄 success 기준 best**를 `model_best.pt`로 복사(Isaac 1회 부팅, 가중치만 교체).
 **교훈: log_dir 절대 비우지 말 것** — iter375(착탄 0.56m) 유실이 이번 사달의 화근.
 
+## 검증 결과 (재학습, 2026-07-23) — ✅ 성공
+v18_phase2 warm-start → v19 재학습(A+B+D), iter300→600, 1024 envs. `select_best_checkpoint.py`
+로 전 체크포인트 평가:
+
+| iter | success | release | med_err(m) |
+|---|---|---|---|
+| 300 (시작점) | 8.7% | 98.7% | 1.04 |
+| 350~450 | **0%** | 0~6% | — (재적응 딥) |
+| 500 | 34% | 96% | 0.94 |
+| 550 | 61% | 99% | 0.72 |
+| **599 (best)** | **76.7%** | **96%** | **0.563** |
+
+- **붕괴 방지 확정:** iter499(옛 붕괴 지점)를 넘어 **iter600까지 release 96~100% 유지**. 예전처럼
+  0으로 무너지지 않음. → A(포텐셜 shaping)가 "호버 수확" 인센티브를 제거한 효과.
+- **정밀도 향상:** success 0%(붕괴)/8%(v18) → **76.7%**, 착탄 0.563m(유실된 옛 best 0.56m 복원 + success 대폭↑).
+- **⚠️ 재적응 딥(iter350~450):** 새 보상으로 바꾸면 옛 정책이 의존하던 상주보상이 사라져 release가
+  **일시적으로 0까지 떨어졌다가 회복**. → **재적응 구간에서 조기종료 금지**, D(best저장)로 peak를 떠야 함.
+  (딥에서 멈췄으면 "실패"로 오판했을 것 = D의 필요성 실증.)
+
 ## 다음
-- v18 warm-start → v19 재학습(A+B+D 적용), 학습곡선으로 A/B 효과 확정 → 확정되면 [[research/rl_rules]]에 Rule 추가.
-- 커밋: branch `Issac_JS` `2f2bf9b`.
+- 검증됐으니 [[research/rl_rules]] **Rule 13** 등록(상주 vs 포텐셜 shaping + 재적응 딥).
+- best 모델 백업: 노트북 `~/v19_backup/v19_abd_run/model_best.pt`(=iter599), VM `~/v19_abd_backup/run/`.
+- 코드: branch `Issac_JS` `2f2bf9b`. 실험: [[experiments/exp_015_v19_abd_retrain_junsang]].
 - 관련: [[experiments/exp_014_v19_full_integration_junsang]] · [[research/isaac_viz_tools_junsang]]
