@@ -69,8 +69,8 @@ owner: junsang
 | decimation | 10 → **정책 10Hz** |
 | 컨트롤러 | 캐스케이드 속도→wrench (velocity P → thrust → attitude P → rate P) |
 | 기체 | Crazyflie articulation |
-| env_spacing | 16m / num_envs 학습 512 |
-| 학습 | max_iterations 300 (v16 250, v18-P2·v19 200), ~24 step/iter → ~360만 step |
+| env_spacing | 16m / num_envs 학습 **512(초기)~1024(v19 재학습)**, 평가 64 |
+| 학습 | max_iterations 300 (v16 250, v18-P2·v19 200, v19_abd/precise 각 +300) · save_interval **25**(v19+) · ~3.7s/iter@1024env |
 
 ## 2. 시나리오 (v11 base)
 | 파라미터 | 값 |
@@ -174,6 +174,54 @@ obs **28D** (24 + wind_xy 2 + drag 1 + detected 1), action **7D**.
 
 ## 7. 시각화 (show_markers일 때만, 학습 무영향)
 `show_markers`, chase 카메라, 타겟 비콘, payload 하이라이트 → [[research/isaac_viz_tools_junsang]]
+
+---
+
+## 7.5 메커니즘 상세 — 바람 · 비전 · payload · marker (수식+수치)
+
+> 아래는 코드 실값(`v11_env.py` / `drone_bombard_env.py`) 기준. §8·§9는 개념 설명, 여기는 **정확한 수식·수치**.
+
+### 🌬 바람(wind) 메커니즘
+- **샘플링**: 에피소드 리셋마다 각 수평축 독립 정규분포 — $w_{x},w_{y}\sim \mathcal{N}(0,\ \sigma_w^2)$, 이후 크기 $\lVert w\rVert$를 $w_{max}$로 클램프. (`v11_env.py:_reset_idx` L590)
+  - $\sigma_w$ = `v14_wind_std` = **1.5 m/s** (v19; v14=1.0, v15/v18-hard=2.0), $w_{max}$=`v14_wind_max`=**5.0 m/s**.
+  - **에피소드 내 일정**(정상풍), **방향 균일 랜덤**, **수평만**(수직 없음). 시변 돌풍=미구현(Stage B).
+- **기체 작용** (`wind_force_enabled=True`, v15): 상대기류에 2차 항력 — $F = k_{air}\,\lVert v_{air}\rVert\,v_{air}$, $v_{air}=w - v_{drone}$. $k_{air}$=`wind_drag_k`=**0.06** N/(m/s)². → 드론이 밀려 위치유지에 힘 써야 함.
+- **payload 작용**: §payload 참조(낙하 중 드리프트).
+- **예측 반영**: `_wind_xy`가 탄도 예측·obs 채널(정규화 `v14_wind_obs_scale`=6.0)에 들어감 → 정책이 바람 알고 residual 보정.
+- **항력계수 DR**: `_drag_coef` $\sim U[0,\ 0.15]$(`v14_drag_max`) — payload 탄도계수 랜덤화, 별도.
+- ⚠️ wind 너무 세면 드리프트 > residual 범위 → **포화**(Rule 11). 그래서 v19는 1.5로 완화.
+
+### 👁 비전(픽셀 양자화) 메커니즘
+2단계: **① 거리 게이트 reveal** + **② 픽셀 양자화**.
+- **reveal**: 수평거리 $d_{xy}\le$ `reveal_radius`=**7.0 m** 이면 위치 obs 공개(`detected=1`), 아니면 마스킹(0)+미탐지 페널티 −0.2/step.
+- **픽셀 양자화** (`_quantize_target`, L898): 인지 위치를 셀 중심으로 스냅.
+$$
+\text{slant}=\sqrt{\lVert rel\rVert^2 + h^2},\quad
+cell = \max(k_{px}\cdot\text{slant},\ 0.05),\quad
+\hat{p} = p_{drone} + \big(\lfloor rel/cell\rfloor + 0.5\big)\cdot cell
+$$
+  - $rel = p_{target}-p_{drone}$(수평), $h$=고도, $k_{px}$=`pixel_cell_k`=**0.12**(v19; v17=0.15). 셀 최소 0.05m.
+  - → **멀면 셀 커서 애매, 가까울수록 정밀**. 정책은 $\hat{p}$(인지값)로만 조준, **success는 실제 표적**.
+
+### 📦 payload 물리 수치 (v16/v19, `payload_physics_enabled=True`)
+| 파라미터 | 값 | 의미 |
+|------|------|------|
+| `payload_phys_mass` | **0.1 kg** | payload 질량 |
+| `payload_phys_radius` / `payload_phys_height` | **0.05 / 0.06 m** | 실린더(RigidObject) 치수 |
+| `payload_phys_drag_k` | **0.005** N/(m/s)² | 낙하 항력계수 ($=\tfrac12\rho C_d A$, 전면적 ~0.008 m²) |
+| `payload_mount_z` | **−0.14 m** | 드론 아래 매달림 오프셋 |
+| `payload_ground_z` | **0.0 m** | 착지 판정 평면(local) |
+- **낙하 물리** (`drone_bombard_env.py:_step_payload_physics`, 100Hz): 부착 중엔 드론에 kinematic으로 매달려 이동 → 투하 시 분리 → 자유낙하 항력 $F=k_{pl}\,\lVert v_{air}\rVert\,v_{air}$ ($v_{air}=[w_x-v_x,\ w_y-v_y,\ -v_z]$) → $z\le$ ground_z에서 착지, `_payload_impact_xy` 기록.
+- (탄도 계산용 `payload_mass`=0.1, `drag_coef`=위 DR값도 별도로 예측에 사용.)
+
+### 🎯 marker(표적) 랜덤 생성
+- **중심**: cruise 방향으로 `marker_dist`=**20 m** 앞 → 기본 (20, 0).
+- **랜덤**(`marker_random=True`, v12+): 중심 기준 **반경 `marker_spawn_radius`=5 m 원 안, 면적 균일**. (`_reset_idx` L406)
+$$
+r = R\sqrt{U[0,1]},\quad \theta = U[0,2\pi),\quad p_{target} = \text{center} + (r\cos\theta,\ r\sin\theta)
+$$
+  - **$\sqrt{\cdot}$가 핵심**: 그냥 $r=R\cdot U$면 중심에 몰림 → $\sqrt{}$로 **면적 균일**(원 전체 고르게).
+  - 드론은 여전히 +X로 순항 스폰 → **축을 벗어난 표적으로 조향**해야 함.
 
 ---
 
