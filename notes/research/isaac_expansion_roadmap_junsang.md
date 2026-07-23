@@ -24,9 +24,15 @@ owner: junsang
 | v14 | DR + CCIP residual (Stage A, 바람 관측) | ✅ residual ON>OFF (착탄 0.69/0.82m) — [[experiments/exp_009_v14_ccip_residual_junsang]] |
 | v15 | 바람이 기체에 작용 | ✅ wind-test 검증 / wind 2.0 튜닝(dry-run 미실행) — [[experiments/exp_010_v15_airframe_wind_junsang]] |
 | v16 | **실제 물리 payload drop** | ✅ drop-test PASS, dry-run success 0.80·실제 착탄 sub-meter — [[experiments/exp_011_v16_physical_drop_junsang]] |
+| v17 | 픽셀 양자화 vision | ✅ success ~0.8, 착탄 ~0.75m — [[experiments/exp_012_v17_pixel_vision_junsang]] |
+| v18 | **인지+물리 통합** (커리큘럼) | ✅ 데드락→warm-start, success 1.0·착탄 0.53~0.65m (Rule 12) — [[experiments/exp_013_v18_integration_curriculum_junsang]] |
+| v19 | **전체 통합 + 실제 물리 drop** | ✅ success 1.0·실제 착탄 0.56m — [[experiments/exp_014_v19_full_integration_junsang]] |
+| v19_abd | no-drop **붕괴 수정**(A 포텐셜 shaping+B loiter+D best저장) | ✅ 붕괴방지·success 76.7%·0.563m (Rule 13) — [[experiments/exp_015_v19_abd_retrain_junsang]] |
+| **v19_precise** | **정밀도 향상**(연속 착지보상) | ✅ **success 100%·release 100%·착탄 0.356m** — [[experiments/exp_016_v19_precision_landing_junsang]] |
 
-이동타겟/vision은 여전히 **inert hook**. **업데이트:** residual/DR은 v14/v15에서, 물리 drop은 v16에서
-착수 완료. 남은 큰 축 = **vision, 이동 타겟, 시변 바람, 그리고 과제 2(시각/검증 도구)**.
+**업데이트(2026-07-23):** 인지·물리·통합·실제물리drop **전 축 완료**, 통합 모델(v19)이 **붕괴수정+정밀화**까지
+거쳐 **착탄 0.356m·success 100%** 달성. 과제2(시각/검증 도구)도 완료. 남은 큰 축 = **진짜 vision(핀홀/YOLO),
+이동 타겟, 시변 바람, 정밀도 추가(release_radius 커리큘럼), 다중시드 견고화, sim-to-real**.
 
 ---
 
@@ -100,16 +106,19 @@ owner: junsang
 
 ---
 
-## 3. 우선순위 제안 (의존성 기반)
+## 3. 우선순위 제안 (의존성 기반) — 2026-07-23 갱신
 
-1. **CCIP residual + DR (v14→v15)** ← 다음 (§1). 물리 realism의 관문.
-2. **이동 타겟** — residual과 독립, 병렬 가능. 리드 조준.
-3. **진짜 vision** — 가장 큰 인지 축. v13(거리게이트)이 징검다리였음.
-4. **랜덤 핸드오프 / 난이도 스케일** — 각 축 성공 후 일반화 강화.
-5. **물리 payload / 다중 payload** — 임무 realism.
-6. **통합 + sim-to-real** — 마지막.
+**✅ 완료:** CCIP residual+DR(v14/15) · 물리 payload(v16) · 픽셀 vision(v17) · 통합(v18) · 전체통합+물리drop(v19) · **붕괴수정+정밀화(v19_precise, 착탄 0.356m)** · 과제2 시각화.
+
+**남은 우선순위:**
+1. **정밀도 추가** — release_radius 1.5→1.0 커리큘럼, k_landing↑, 다중시드 견고화. (v19_precise best warm-start)
+2. **진짜 vision** — 핀홀 카메라(u,v,conf) → YOLO 실물. 가장 큰 남은 인지 축(픽셀 양자화가 징검다리).
+3. **이동 타겟** — 독립, 병렬 가능. 리드 조준.
+4. **랜덤 핸드오프 / 난이도 스케일** · 시변 바람(Stage B: 바람 관측 제거→추정).
+5. **sim-to-real** — 도메인갭·지연·실기·PX4/하드웨어. 마지막.
 
 > 원칙 유지: **한 번에 하나씩 · 삭제 없이 토글 · 대조군으로 인과 확인 · 각 단계 smoke→dry-run 검증**.
+> 추가 교훈(v19): **shaping은 개선에만(포텐셜형, Rule 13) · best-checkpoint 저장 · 정밀도는 보상에 명시**.
 
 ---
 

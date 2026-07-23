@@ -17,6 +17,13 @@ owner: junsang
 ## 현재 최종 모델 = v19 (전체 통합)
 랜덤타겟 + blind 탐색 + 픽셀 양자화 인지 + DR(바람/드래그) + 기체바람 + CCIP residual + **실제 물리 payload 낙하**. obs **28D**, action **7D**, PPO(rsl_rl).
 
+**현재 best (2026-07-23): `v19_precise` iter875 — success 100% · release 100% · 실제 착탄 0.356m.**
+백업: 노트북 `~/v19_backup/v19_precise_run/model_best.pt`, VM `~/v19_precise_backup/run/` + `/workspace/drone-bombard/v19_precise_best.pt`.
+
+> **⚠️ 보상 2건 수정 이력 (반드시 인지):**
+> 1. **no-drop 붕괴 수정 (A+B)** — 옛 v19(iter499)가 **상주 CCIP shaping 수확**으로 투하를 아예 안 하게 붕괴(release 0). → CCIP shaping을 **포텐셜(차분)형**으로(A) + **인엔벨로프 누진 페널티**(B). ([[experiments/exp_015_v19_abd_retrain_junsang]], Rule 13)
+> 2. **정밀도 향상 (연속 착지보상)** — 성공존 내부 평평보상(0.1m·0.9m 동일)이 착탄을 0.56m로 정체 → **연속 지수 착지보상**으로 교체 → 0.356m·success 100%. ([[experiments/exp_016_v19_precision_landing_junsang]])
+
 ---
 
 ## 관측(obs) · 행동(action) 채널
@@ -89,24 +96,37 @@ r_t = w_{prog}(d_{prev}-d_{xy}) + w_{ccip}\,e^{-k_{ccip}\,d_{imp}} - w_{\omega}\
 $$
 
 - 앞부분 = 접근·조준·자세/부드러움/시간(dense shaping), 중간 = 투하 유도, $R_{land}$ = 착탄 터미널, $P$ = 실패 페널티.
-- **착탄 터미널 보상** (성공존 만점 + 밖은 지수 감쇠):
+
+> **⚠️ v19 현행 보상은 아래 base식에서 3곳이 바뀜 (붕괴수정 A·B + 정밀화):**
+> - **(A) CCIP 조준항을 포텐셜(차분)형으로**: $w_{ccip}\,e^{-k\,d_{imp}}$ (상주) → $w_{ccip}(e^{-k\,d_{imp,t}}-e^{-k\,d_{imp,t-1}})$. **조준을 유지만 하면 0**, 개선할 때만 보상 → "호버 수확" 국소최적 제거. `cfg.ccip_potential_shaping=True`.
+> - **(B) 인엔벨로프 미투하 누진 페널티**: $-w_{loiter}\cdot(\text{게이트 열린 채 안 던진 연속 스텝수})$. 서성일수록 비용↑ → 투하 압박. `v19_w_loiter=0.02`.
+> - **(정밀화) 착탄 보상을 연속형으로**(아래 $R_{land}$).
+> 근거: [[experiments/exp_015_v19_abd_retrain_junsang]] · [[experiments/exp_016_v19_precision_landing_junsang]] · Rule 13.
+
+- **착탄 터미널 보상**:
 
 $$
-R_{land} = \begin{cases} 300 & e_{land} \le 1\ \text{m} \\ 300\,e^{-k_{land}\,e_{land}} & \text{그 외} \end{cases}
+R_{land}^{\text{base}} = \begin{cases} 300 & e_{land} \le 1\ \text{m} \\ 300\,e^{-k_{land}\,e_{land}} & \text{그 외} \end{cases}
+\qquad\Longrightarrow\qquad
+R_{land}^{\text{v19}} = 300\,e^{-k_{land}^{v19}\,e_{land}} + 100\cdot\mathbf{1}[e_{land}\le 1]
 $$
+
+base(좌)는 **성공존 내부가 평평(300 고정)** → 0.1m·0.9m 동일 → 정밀 유인 없어 착탄 0.56m 정체.
+v19(우, `precise_landing_reward=True`, $k_{land}^{v19}=2.0$)는 **0m까지 계속 당기는 연속 지수** + 성공 이산 보너스(100) → 착탄 **0.356m·success 100%**.
 
 ### 항목별 (값 / 수식 / 의의)
 | 항 | 값 | 수식 | 의의 |
 |----|-----|------|------|
 | 접근 progress | `w_progress`=1.0 | $w_{prog}(d_{prev}-d_{xy})$ | **potential-based shaping**: 가까워지면 +, 멀어지면 −. 매 스텝 방향 유도, 최적정책 불변 |
-| CCIP 조준 | `w_ccip`=0.5, `k_ccip`=1.0 | $w_{ccip}\,e^{-k_{ccip}\,d_{imp}}$ | **지수**: 예측착탄-타겟 거리 0이면 최대(0.5), 멀수록 0. **근접에서 gradient 급증** → 선형보다 정밀 조준 |
+| CCIP 조준 | `w_ccip`=0.5, `k_ccip`=1.0 | **v19: 차분** $w_{ccip}(e^{-k d_{t}}-e^{-k d_{t-1}})$ / base: $w_{ccip}e^{-k d_{imp}}$ | **v19는 포텐셜(차분)형**: 조준 개선 시만 +, 유지 시 0 (base 상주형은 완벽조준 호버로 수확 → 붕괴, Rule 13) |
 | 각속도 | `w_ang_vel`=0.05 | $-w_{\omega}\lVert\omega\rVert^2$ | 제곱: 급회전 억제 → bad_attitude 방지 |
 | 기울기 | `w_tilt`=0.05 | $-w_{tilt}(\phi^2+\theta^2)$ | roll·pitch² 억제 |
 | 부드러움 | `w_action_smooth`=0.05 | $-w_{sm}\lVert\Delta a\rVert^2$ | action 변화² 억제 → 부드러운 제어(sim-to-real 유리) |
 | 시간 | `w_time`=0.01 | $-w_{time}$ | 빨리 접근·투하 유도(배회 방지) |
 | 게이트 | `gate_reward`=0.05 | $w_{gate}\,\mathbf{1}_{gate}$ | envelope(투하가능) 진입·체류 유도 |
 | drop_signal | `drop_signal_reward`=1.0 | $w_{drop}\,\mathbf{1}_{gate\cap drop}$ | **투하 시도 유도**. 게이트 밖 시도는 무보상·무페널티(공짜) |
-| 착탄 터미널 ⭐ | `reward_success`=300, `k_landing`=1.0, `success_radius`=1.0 | 위 $R_{land}$ | **최종 목표**. 성공존 만점, 밖은 지수 감쇠 → 아깝게 빗나감도 부분보상 |
+| **loiter (B, v19)** | `v19_w_loiter`=0.02 | $-w_{loiter}\cdot n_{gate}$ | **인엔벨로프 미투하 누진 페널티**: 게이트 열린 채 안 던진 연속 스텝수 $n_{gate}$에 비례 → 서성이면 손해, 투하 압박 (붕괴수정 B) |
+| 착탄 터미널 ⭐ | `reward_success`=300, `k_landing`=1.0/**v19 2.0**, `success_radius`=1.0, **`v19_success_bonus`=100** | 위 $R_{land}^{v19}$ | **최종 목표**. v19는 **연속 지수+성공보너스** → 성공존 안에서도 0m까지 정밀 유도(평평보상 제거) |
 | crash | -50 | — | 지면충돌·저고도 회피 |
 | out_of_range | -30 | — | 타겟 이탈 회피 |
 | no_drop timeout | -30 | — | **안 떨어뜨리고 끝나면 손해** → hover exploit 방지 |
@@ -115,9 +135,9 @@ $$
 ### 왜 이런 함수 형태인가 (설계 의의)
 - **지수 $e^{-k\,d}$ (조준·착탄)**: 근접에서 gradient가 커 **정밀함을 강하게 유도**. 선형은 근접 민감도 낮음. $k$로 보상이 좁아지는 급함 조절.
 - **제곱 (자세·부드러움)**: 값 클수록 급증 → **극단만 강하게 억제**, 정상 범위는 관대.
-- **potential-based (progress)**: 조밀한 방향 신호를 주되 **최적정책 불변**(reward shaping 정석).
-- **binary+지수 혼합 (착탄)**: 성공존은 만점(명확한 목표), 밖은 지수 부분보상(학습 신호 끊김 방지).
-- **비대칭 투하 유도**: 시도 +1 · 성공 +300 · 안 함 -30 · 게이트밖 시도 공짜 → **"일단 투하해보게"** (Rule 12).
+- **potential-based (progress·v19 CCIP)**: 조밀한 방향 신호를 주되 **최적정책 불변**(Ng et al. 1999). ⭐ **shaping은 "유지"가 아니라 "개선"에만 줘라** — 상주형(절대값 $e^{-kd}$)은 목표 근처서 가만있어도 매 스텝 수확 → 노이즈 큰 터미널 대신 "완벽조준+호버(안 던짐)" 국소최적으로 **붕괴**(v19 release 0). 차분형이 이를 원천 차단 (**Rule 13**).
+- **연속 착탄 (v19)**: base의 "성공존 만점 평평"은 명확하지만 **내부 정밀 gradient가 없어 정체** → 연속 지수+성공보너스로 **0m까지 계속 당김**(성공 신호는 이산 보너스로 유지). 착탄 0.56→0.36m.
+- **비대칭 투하 유도**: 시도 +1 · 성공 +300 · 안 함 -30 · 게이트밖 시도 공짜 + **인엔벨로프 누진 페널티(B)** → **"일단, 그리고 정확히 투하하게"** (Rule 12·13).
 
 ## 5. 버전별 추가 파라미터 (토글)
 | 기능 (버전) | cfg 플래그·값 |
@@ -140,6 +160,17 @@ obs **28D** (24 + wind_xy 2 + drag 1 + detected 1), action **7D**.
 | (v19) payload_physics | True | True |
 
 > **커리큘럼**: 완화(Phase1)로 데드락 회피 부트스트랩 → hard(Phase2) warm-start. (Rule 12)
+
+### v19 붕괴수정·정밀 cfg (2026-07-23 추가, 전부 토글)
+| 플래그 | 값 | 역할 |
+|------|------|------|
+| `ccip_potential_shaping` | True | **A**: CCIP 조준 shaping 차분(포텐셜)형 — 호버 수확 붕괴 방지 |
+| `v19_w_loiter` | 0.02 | **B**: 인엔벨로프 미투하 누진 페널티 계수 |
+| `precise_landing_reward` | True | 연속 착지보상 on (off면 기존 평평형) |
+| `v19_k_landing` | 2.0 | 연속 착지보상 지수 급함(정밀도 압박) |
+| `v19_success_bonus` | 100 | 성공존 진입 이산 보너스 |
+
+> 재학습: v18-P2 → v19_abd(A+B+D, iter600, success 76.7%·0.563m) → v19_precise(연속착탄, iter875, **success 100%·0.356m**). 코드 `Issac_JS 09a53a2`.
 
 ## 7. 시각화 (show_markers일 때만, 학습 무영향)
 `show_markers`, chase 카메라, 타겟 비콘, payload 하이라이트 → [[research/isaac_viz_tools_junsang]]

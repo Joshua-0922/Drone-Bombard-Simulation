@@ -55,6 +55,12 @@ owner: junsang
 - **바닥은 격자가 낫다**(솔리드는 참조 없어 오히려 안 보임). 그림자가 깊이 단서로 유용.
 - analytic drop(v11~v18)은 **payload가 안 날아감**(release-terminal) → 물리 drop(v16/v19)이어야 낙하 시각화 가능.
 
+## 업데이트 (2026-07-23) — GUI 합격 ✅
+- **노란 하이라이트 구슬 제거** → 실물 payload(주황 원통) 그대로 표시(공으로 확대 금지).
+- **카메라 payload 추적**(`viewer.asset_name="payload"`): 분리 후 낙하하는 payload를 지면까지 따라감 → 분리·명중이 또렷.
+- **투하 안 보이던 원인 = 붕괴한 v19 체크포인트**(release 0)였음 → v18/정밀 best 모델로 교체하니 실제 명중 시청됨. (모델 문제였지 시각화 문제 아님)
+- 정밀 best(v19_precise iter875, 착탄 0.356m)로 **타이트한 명중** 라이브 확인 완료.
+
 ## 남은 것
-- 그림자/조명 미세조정, payload 색·크기 최종화.
-- 관련: [[experiments/exp_014_v19_full_integration_junsang]] · [[experiments/exp_011_v16_physical_drop_junsang]] · [[00_index]]
+- 그림자/조명 미세조정(선택). 시각화는 사실상 완료.
+- 관련: [[experiments/exp_016_v19_precision_landing_junsang]] · [[experiments/exp_015_v19_abd_retrain_junsang]] · [[experiments/exp_014_v19_full_integration_junsang]] · [[00_index]]
