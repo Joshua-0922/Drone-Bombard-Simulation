@@ -362,3 +362,9 @@ cd /workspace/drone-bombard
 # 컨테이너 진입 후:
 /workspace/isaaclab/isaaclab.sh -p isaac_lab/play.py --zero-actions
 # (디스플레이가 있는 머신에서만 작동)
+
+# 공유 체크포인트를 검토용 GUI로 재생 (비컨/마커 + 체이스 카메라)
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/play.py \
+  --task Isaac-DroneBombard-V19-Direct-v0 \
+  --policy ./checkpoints/v19/precise/model_best.pt --show
+# 검토 GUI 사용법·화면 보는 방법(X11/WebRTC/영상): checkpoints/v19/WARMSTART.md 참조
