@@ -316,6 +316,7 @@ pytest isaac_lab/tests/test_math.py -v          # 30/30
 
 ## 9. 관련 문서
 
+- [`REVIEW_GUI.md`](REVIEW_GUI.md) — **검토용 GUI(play.py) 사용법 (모든 버전 공통, 버전별 `--task` 매핑)**
 - [`checkpoints/v19/WARMSTART.md`](checkpoints/v19/WARMSTART.md) — **v19 학습 결과 이어받기(warm-start/resume) 방법 + 공유 체크포인트**
 - `isaac_lab/README.md` — Isaac Lab 코드 실행 상세
 - `notes/research/isaac_lab_architecture.md` — 폴더 구조·데이터 흐름·Gazebo 대비 차이
@@ -363,8 +364,8 @@ cd /workspace/drone-bombard
 /workspace/isaaclab/isaaclab.sh -p isaac_lab/play.py --zero-actions
 # (디스플레이가 있는 머신에서만 작동)
 
-# 공유 체크포인트를 검토용 GUI로 재생 (비컨/마커 + 체이스 카메라)
+# 학습된 정책을 검토용 GUI로 재생 (비컨/마커 + 체이스 카메라)
 /workspace/isaaclab/isaaclab.sh -p isaac_lab/play.py \
   --task Isaac-DroneBombard-V19-Direct-v0 \
   --policy ./checkpoints/v19/precise/model_best.pt --show
-# 검토 GUI 사용법·화면 보는 방법(X11/WebRTC/영상): checkpoints/v19/WARMSTART.md 참조
+# 버전별 --task 매핑·화면 보는 법(X11/WebRTC/영상): REVIEW_GUI.md 참조
