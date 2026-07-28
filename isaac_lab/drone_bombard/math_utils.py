@@ -216,6 +216,259 @@ def step_target_velocity(
     return (1.0 - theta * dt) * vel_xy + sigma * math.sqrt(dt) * noise
 
 
+def step_target_ca(
+    pos_xy: torch.Tensor,
+    vel_xy: torch.Tensor,
+    acc_xy: torch.Tensor,
+    dt: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """One constant-acceleration (CA) step for the moving target:
+    ``x <- x + v*dt + 0.5*a*dt^2``, ``v <- v + a*dt``. With ``acc_xy == 0``
+    this reduces exactly to the constant-velocity (CV) model, so a single
+    implementation serves both (the CV path passes zero acceleration)."""
+    new_pos = pos_xy + vel_xy * dt + 0.5 * acc_xy * dt * dt
+    new_vel = vel_xy + acc_xy * dt
+    return new_pos, new_vel
+
+
+def step_target_ct(
+    pos_xy: torch.Tensor,
+    vel_xy: torch.Tensor,
+    omega: torch.Tensor,
+    dt: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """One coordinated-turn (CT) step: the velocity vector rotates at the
+    per-env turn rate ``omega`` (rad/s, signed) while its magnitude is
+    preserved, and the position integrates the exact circular arc:
+
+        x' = x + ( sin(w*dt)*vx - (1-cos(w*dt))*vy ) / w
+        y' = y + ( (1-cos(w*dt))*vx + sin(w*dt)*vy ) / w
+        v' = R(w*dt) v
+
+    For ``|omega| -> 0`` the arc terms limit to ``v*dt`` (straight line), so
+    tiny turn rates are routed through the CV closed form to avoid the 0/0
+    (guard at 1e-6 rad/s; the two branches agree to O(w*dt^2) there)."""
+    w = omega
+    wdt = w * dt
+    sin_wdt = torch.sin(wdt)
+    cos_wdt = torch.cos(wdt)
+    vx, vy = vel_xy[:, 0], vel_xy[:, 1]
+
+    straight = w.abs() < 1e-6
+    w_safe = torch.where(straight, torch.ones_like(w), w)
+
+    dx = (sin_wdt * vx - (1.0 - cos_wdt) * vy) / w_safe
+    dy = ((1.0 - cos_wdt) * vx + sin_wdt * vy) / w_safe
+    arc = torch.stack([dx, dy], dim=-1)
+    new_pos = pos_xy + torch.where(straight.unsqueeze(-1), vel_xy * dt, arc)
+
+    new_vx = cos_wdt * vx - sin_wdt * vy
+    new_vy = sin_wdt * vx + cos_wdt * vy
+    rotated = torch.stack([new_vx, new_vy], dim=-1)
+    new_vel = torch.where(straight.unsqueeze(-1), vel_xy, rotated)
+    return new_pos, new_vel
+
+
+def step_target_motion(
+    pos_xy: torch.Tensor,
+    vel_xy: torch.Tensor,
+    acc_xy: torch.Tensor,
+    omega: torch.Tensor,
+    dt: float,
+    model: str,
+    theta: float = 0.0,
+    sigma: float = 0.0,
+    noise: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Dispatch one moving-target step for the selected motion model.
+
+    ``model`` is one of:
+      * ``"cv"`` — constant velocity (straight line at the reset-sampled v).
+      * ``"ca"`` — constant acceleration (reset-sampled a, v drifts).
+      * ``"ct"`` — coordinated turn (reset-sampled signed omega, |v| const).
+      * ``"gm"`` — the legacy Gauss-Markov/OU velocity walk
+        (``step_target_velocity``), kept as the default for parity with the
+        pre-existing Phase-3 behavior.
+
+    Returns ``(new_pos_xy, new_vel_xy)``; ``acc_xy``/``omega`` are constant
+    per-episode parameters (resampled in ``_reset_idx``), never mutated here.
+    Kept as a pure function (noise passed in) so every branch is
+    deterministically unit-testable."""
+    if model == "cv":
+        return step_target_ca(pos_xy, vel_xy, torch.zeros_like(acc_xy), dt)
+    if model == "ca":
+        return step_target_ca(pos_xy, vel_xy, acc_xy, dt)
+    if model == "ct":
+        return step_target_ct(pos_xy, vel_xy, omega, dt)
+    if model == "gm":
+        if noise is None:
+            noise = torch.randn_like(vel_xy)
+        new_vel = step_target_velocity(vel_xy, theta, sigma, dt, noise)
+        return pos_xy + new_vel * dt, new_vel
+    raise ValueError(f"unknown target motion model: {model!r} (expected cv/ca/ct/gm)")
+
+
+# =====================================================================
+# Target tracker: Singer (Gauss-Markov acceleration) Kalman filter
+# =====================================================================
+
+
+def quat_apply_pure(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """Rotate body-frame vector ``v`` into the world frame of quaternion
+    ``q`` (w,x,y,z). Pure torch, the forward counterpart of
+    ``quat_apply_inverse_pure`` (same identity without conjugating)."""
+    qw, qvec = q[:, 0], q[:, 1:4]
+    t = 2.0 * torch.linalg.cross(qvec, v, dim=-1)
+    return v + qw.unsqueeze(-1) * t + torch.linalg.cross(qvec, t, dim=-1)
+
+
+def pixel_to_ground_xy(
+    u_px: torch.Tensor,
+    v_px: torch.Tensor,
+    pos_local: torch.Tensor,
+    quat_w: torch.Tensor,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Invert ``project_target_pinhole``: back-project a detection pixel
+    through the straight-down body camera onto the ground plane (local z=0).
+    This is the measurement a real YOLO+camera stack yields — pixel -> ray ->
+    flat-ground intersection — and is what feeds the target tracker.
+
+    Uses the same camera-frame axis convention as the forward projection
+    (X_c = body +Y, Y_c = body +X, Z_c = body -Z), so the round trip
+    pixel -> ground -> pixel is exact (unit-tested).
+
+    Returns ``(ground_xy [N,2], valid [N])`` — invalid where the ray does not
+    point down toward the ground (grazing/upward rays would put the
+    intersection behind the camera or at infinity)."""
+    x_cn = (u_px - cx) / fx
+    y_cn = (v_px - cy) / fy
+    # camera frame -> body frame: (X_c, Y_c, Z_c) = (rel_b_y, rel_b_x, -rel_b_z)
+    dir_b = torch.stack([y_cn, x_cn, -torch.ones_like(x_cn)], dim=-1)
+    dir_w = quat_apply_pure(quat_w, dir_b)
+
+    dz = dir_w[:, 2]
+    valid = dz < -1e-6  # ray must descend toward the ground plane
+    dz_safe = torch.where(valid, dz, torch.full_like(dz, -1e-6))
+    t = -pos_local[:, 2] / dz_safe
+    ground_xy = pos_local[:, :2] + t.unsqueeze(-1) * dir_w[:, :2]
+    valid = valid & (t > 0.0) & torch.isfinite(ground_xy).all(dim=-1)
+    return ground_xy, valid
+
+
+def singer_transition_matrix(dt: float, tau: float, device=None, dtype=torch.float32) -> torch.Tensor:
+    """Discrete transition F [6,6] for the planar Singer model — state
+    ``[x, y, vx, vy, ax, ay]`` where each axis's acceleration is a
+    first-order Gauss-Markov process with correlation time ``tau``
+    (``a_dot = -a/tau + white noise``). Per axis:
+
+        p' = p + v*dt + a * (alpha*dt - 1 + e) / alpha^2
+        v' = v + a * (1 - e) / alpha
+        a' = a * e,       e = exp(-dt/tau), alpha = 1/tau
+
+    As tau -> inf this limits to constant-acceleration kinematics; as
+    tau -> 0 to (noisy) constant velocity — which is exactly why the single
+    Singer filter tracks CV/CA and (approximately) CT targets."""
+    alpha = 1.0 / tau
+    e = math.exp(-alpha * dt)
+    # expm1 keeps the CA limit (tau -> inf, alpha*dt -> 0) numerically exact:
+    # (alpha*dt - 1 + e) cancels catastrophically in plain exp form.
+    em1 = math.expm1(-alpha * dt)  # e - 1, accurate for small alpha*dt
+    p_va = -em1 / alpha
+    p_pa = (alpha * dt + em1) / (alpha * alpha)
+
+    F = torch.eye(6, device=device, dtype=dtype)
+    F[0, 2] = dt
+    F[1, 3] = dt
+    F[0, 4] = p_pa
+    F[1, 5] = p_pa
+    F[2, 4] = p_va
+    F[3, 5] = p_va
+    F[4, 4] = e
+    F[5, 5] = e
+    return F
+
+
+def singer_process_noise(dt: float, tau: float, sigma_a: float, device=None, dtype=torch.float32) -> torch.Tensor:
+    """Discrete process-noise Q [6,6] for the planar Singer model (exact
+    closed form, Bar-Shalom eq. 8.2-3-style): ``sigma_a`` is the steady-state
+    maneuver-acceleration std (m/s^2), ``tau`` the Gauss-Markov correlation
+    time (s). Per axis the (p,v,a) block is ``2*alpha*sigma_a^2 * [q_ij]``
+    with the standard Singer integrals; the two axes are independent."""
+    a = 1.0 / tau
+    T = dt
+    em = math.exp(-a * T)
+    em2 = math.exp(-2.0 * a * T)
+
+    q11 = (1.0 - em2 + 2.0 * a * T + (2.0 * a**3 * T**3) / 3.0
+           - 2.0 * a**2 * T**2 - 4.0 * a * T * em) / (2.0 * a**5)
+    q12 = (em2 + 1.0 - 2.0 * em + 2.0 * a * T * em - 2.0 * a * T + a**2 * T**2) / (2.0 * a**4)
+    q13 = (1.0 - em2 - 2.0 * a * T * em) / (2.0 * a**3)
+    q22 = (4.0 * em - 3.0 - em2 + 2.0 * a * T) / (2.0 * a**3)
+    q23 = (em2 + 1.0 - 2.0 * em) / (2.0 * a**2)
+    q33 = (1.0 - em2) / (2.0 * a)
+
+    scale = 2.0 * a * sigma_a * sigma_a
+    Q = torch.zeros(6, 6, device=device, dtype=dtype)
+    for i, j, qv in ((0, 0, q11), (0, 2, q12), (0, 4, q13),
+                     (2, 2, q22), (2, 4, q23), (4, 4, q33)):
+        Q[i, j] = scale * qv
+        Q[j, i] = scale * qv
+        Q[i + 1, j + 1] = scale * qv
+        Q[j + 1, i + 1] = scale * qv
+    return Q
+
+
+def kf_predict(x: torch.Tensor, P: torch.Tensor, F: torch.Tensor, Q: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Batched Kalman prediction: ``x' = F x``, ``P' = F P F^T + Q``.
+    ``x`` is [N,6], ``P`` [N,6,6]; ``F``/``Q`` [6,6] shared across envs
+    (the policy-step dt is constant)."""
+    x_new = x @ F.T
+    P_new = F @ P @ F.T + Q
+    return x_new, P_new
+
+
+def kf_update_position(
+    x: torch.Tensor,
+    P: torch.Tensor,
+    z: torch.Tensor,
+    r_var: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Batched Kalman measurement update with a position-only measurement
+    ``z`` [N,2] (H = [I2 0 0]) and isotropic per-env measurement variance
+    ``r_var`` [N] (m^2 — range-dependent, supplied by the caller). Uses the
+    Joseph-form covariance update for numerical robustness at the strong
+    initial-covariance / tight-measurement corner. The 2x2 innovation
+    inverse is closed-form (no torch.linalg.solve on the hot path)."""
+    N = x.shape[0]
+    # S = P[0:2,0:2] + R
+    S00 = P[:, 0, 0] + r_var
+    S01 = P[:, 0, 1]
+    S11 = P[:, 1, 1] + r_var
+    det = (S00 * S11 - S01 * S01).clamp(min=1e-12)
+    i00 = S11 / det
+    i01 = -S01 / det
+    i11 = S00 / det
+
+    # K = P H^T S^-1  -> [N,6,2]
+    PHt = P[:, :, 0:2]
+    K0 = PHt[:, :, 0] * i00.unsqueeze(-1) + PHt[:, :, 1] * i01.unsqueeze(-1)
+    K1 = PHt[:, :, 0] * i01.unsqueeze(-1) + PHt[:, :, 1] * i11.unsqueeze(-1)
+    K = torch.stack([K0, K1], dim=-1)  # [N,6,2]
+
+    innov = z - x[:, 0:2]
+    x_new = x + (K @ innov.unsqueeze(-1)).squeeze(-1)
+
+    # Joseph form: P' = (I-KH) P (I-KH)^T + K R K^T
+    IKH = torch.eye(6, device=x.device, dtype=x.dtype).expand(N, 6, 6).clone()
+    IKH[:, :, 0:2] -= K
+    P_new = IKH @ P @ IKH.transpose(-1, -2) + (K * r_var.unsqueeze(-1).unsqueeze(-1)) @ K.transpose(-1, -2)
+    return x_new, P_new
+
+
 def impact_terminal_reward(real_err: torch.Tensor, w_impact: float, reward_scale: float) -> torch.Tensor:
     """Terminal reward for the real (domain-randomized physics) impact error
     at payload release (Phase 2+): ``w_impact * exp(-real_err / reward_scale)``.

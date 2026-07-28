@@ -66,6 +66,33 @@ parser.add_argument("--aim_reward_scale", type=float, default=None,
 parser.add_argument("--release_terminal", action="store_true",
                     help="Phase 1 Stage B (exp_018): the scripted CCIP referee's fire event ends the "
                          "episode as success (replaces d_xy proximity success; failure gates unchanged).")
+# --- moving target (X marker) + Singer-KF tracker (base env only) ---
+parser.add_argument("--target_motion", type=str, default=None, choices=["gm", "cv", "ca", "ct"],
+                    help="Target (X marker) motion model: gm = Gauss-Markov/OU velocity walk (legacy "
+                         "Phase-3 default), cv = constant velocity, ca = constant acceleration, "
+                         "ct = coordinated turn. Active whenever the moving target is on "
+                         "(phase 3, or --moving_target).")
+parser.add_argument("--moving_target", action="store_true",
+                    help="Force the moving target ON regardless of --phase (lets Phase-1/2 tasks face "
+                         "a moving X marker without the Phase-3 residual/DR/release machinery).")
+parser.add_argument("--target_speed", type=float, default=None,
+                    help="Max initial target speed (m/s): |v0| ~ U[0, this]. Default keeps the cfg "
+                         "value (2.0).")
+parser.add_argument("--target_accel", type=float, default=None,
+                    help="CA model: max target acceleration (m/s^2), |a| ~ U[0, this]. Default 0.5.")
+parser.add_argument("--target_omega_min", type=float, default=None,
+                    help="CT model: min |turn rate| (rad/s). Default 0.2.")
+parser.add_argument("--target_omega_max", type=float, default=None,
+                    help="CT model: max |turn rate| (rad/s). Default 0.6.")
+parser.add_argument("--target_kf", action="store_true",
+                    help="Add the Singer (Gauss-Markov acceleration) Kalman-filter target tracker to "
+                         "the observation (14 -> 21 dims): the YOLO detections are back-projected to "
+                         "the ground and filtered, so the policy sees an estimated target position/"
+                         "velocity/acceleration + validity. NOT warm-startable from 14-dim checkpoints.")
+parser.add_argument("--kf_tau", type=float, default=None,
+                    help="Tracker: Gauss-Markov acceleration correlation time (s). Default 1.0.")
+parser.add_argument("--kf_sigma_a", type=float, default=None,
+                    help="Tracker: steady-state maneuver-acceleration std (m/s^2). Default 1.0.")
 parser.add_argument("--v11_test", action="store_true",
                     help="Isaac-v11 relaxed test env: single integrated phase, fixed marker ahead in "
                          "the cruise direction, policy drop_signal + release envelope, nominal physics. "
@@ -159,6 +186,24 @@ def run_orchestrator(phases: list[int]) -> int:
             cmd += ["--aim_reward_scale", str(args_cli.aim_reward_scale)]
         if args_cli.release_terminal:
             cmd += ["--release_terminal"]
+        if args_cli.moving_target:
+            cmd += ["--moving_target"]
+        if args_cli.target_motion is not None:
+            cmd += ["--target_motion", args_cli.target_motion]
+        if args_cli.target_speed is not None:
+            cmd += ["--target_speed", str(args_cli.target_speed)]
+        if args_cli.target_accel is not None:
+            cmd += ["--target_accel", str(args_cli.target_accel)]
+        if args_cli.target_omega_min is not None:
+            cmd += ["--target_omega_min", str(args_cli.target_omega_min)]
+        if args_cli.target_omega_max is not None:
+            cmd += ["--target_omega_max", str(args_cli.target_omega_max)]
+        if args_cli.target_kf:
+            cmd += ["--target_kf"]
+        if args_cli.kf_tau is not None:
+            cmd += ["--kf_tau", str(args_cli.kf_tau)]
+        if args_cli.kf_sigma_a is not None:
+            cmd += ["--kf_sigma_a", str(args_cli.kf_sigma_a)]
         if prev_ckpt:
             cmd += ["--resume", prev_ckpt]
 
@@ -272,6 +317,27 @@ def main():
             env_cfg.reward.aim_reward_scale = args_cli.aim_reward_scale
         if args_cli.release_terminal:
             env_cfg.release_terminal = True
+        # moving target (X marker) + Singer-KF tracker
+        if args_cli.moving_target:
+            env_cfg.moving_target_force = True
+        if args_cli.target_motion is not None:
+            env_cfg.phase_cfg.target_motion_model = args_cli.target_motion
+        if args_cli.target_speed is not None:
+            env_cfg.phase_cfg.target_init_speed = args_cli.target_speed
+        if args_cli.target_accel is not None:
+            env_cfg.phase_cfg.target_accel_max = args_cli.target_accel
+        if args_cli.target_omega_min is not None or args_cli.target_omega_max is not None:
+            lo, hi = env_cfg.phase_cfg.target_omega_range
+            env_cfg.phase_cfg.target_omega_range = (
+                args_cli.target_omega_min if args_cli.target_omega_min is not None else lo,
+                args_cli.target_omega_max if args_cli.target_omega_max is not None else hi,
+            )
+        if args_cli.target_kf:
+            env_cfg.target_kf_obs = True
+        if args_cli.kf_tau is not None:
+            env_cfg.tracker.tau = args_cli.kf_tau
+        if args_cli.kf_sigma_a is not None:
+            env_cfg.tracker.sigma_a = args_cli.kf_sigma_a
     env_cfg.scene.num_envs = args_cli.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else "cuda:0"
     env_cfg.seed = args_cli.seed

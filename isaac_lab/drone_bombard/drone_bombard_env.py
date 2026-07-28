@@ -49,7 +49,13 @@ from isaaclab.utils import configclass
 
 from isaaclab_assets import CRAZYFLIE_CFG
 
-from .mdp.domain_rand import sample_drag_coefficient, sample_wind, sample_target_velocity
+from .mdp.domain_rand import (
+    sample_drag_coefficient,
+    sample_wind,
+    sample_target_velocity,
+    sample_target_accel,
+    sample_target_turn_rate,
+)
 from .math_utils import (
     rate_limit_action,
     lpf_step,
@@ -59,7 +65,7 @@ from .math_utils import (
     predict_impact_nominal,
     apply_ccip_residual,
     time_to_fall,
-    step_target_velocity,
+    step_target_motion,
     impact_terminal_reward,
     lead_prediction_reward,
     aim_error_reward,
@@ -68,6 +74,11 @@ from .math_utils import (
     stagnation_guard,
     hold_buffer_update,
     quat_apply_inverse_pure,
+    pixel_to_ground_xy,
+    singer_transition_matrix,
+    singer_process_noise,
+    kf_predict,
+    kf_update_position,
 )
 
 # All action/vision/ballistic/reward/guard math lives in math_utils.py
@@ -292,13 +303,53 @@ class DroneBombardPhaseCfg:
     no_release_penalty: float = -20.0  # applied if the episode times out without releasing
 
     # --- moving target (Phase 3) ---
+    # Motion model for the target ("X marker"), selected via train.py
+    # --target_motion:
+    #   "gm" (default) — Gauss-Markov/OU velocity walk (legacy Phase-3
+    #                    behavior, bit-identical to before this knob existed)
+    #   "cv"          — constant velocity (straight line)
+    #   "ca"          — constant acceleration (per-episode sampled accel)
+    #   "ct"          — coordinated turn (per-episode signed turn rate,
+    #                    |v| preserved, exact arc integration)
+    target_motion_model: str = "gm"
     target_init_speed: float = 2.0   # m/s, initial |target velocity| ~ U[0, this]
     target_vel_theta: float = 0.3    # Gauss-Markov mean-reversion rate (1/s)
     target_vel_sigma: float = 0.5    # Gauss-Markov volatility
+    target_accel_max: float = 0.5    # m/s^2, CA model: |a| ~ U[0, this]
+    target_omega_range: tuple[float, float] = (0.2, 0.6)  # rad/s, CT model: |w| ~ U[lo, hi], random sign
 
     # --- lead-prediction reward (Phase 3) ---
     w_lead: float = 10.0
     lead_reward_scale: float = 3.0  # m
+
+
+@configclass
+class DroneBombardTrackerCfg:
+    """Singer (Gauss-Markov acceleration) Kalman-filter target tracker.
+
+    State per env: ``[x, y, vx, vy, ax, ay]`` with the acceleration a
+    first-order Gauss-Markov process (correlation time ``tau``, steady-state
+    std ``sigma_a``) — the classic Singer maneuvering-target model, which
+    tracks CV targets (a ~= 0), CA targets (slowly-varying a) and
+    approximates CT turns. Measurements are the YOLO-pipeline detections
+    back-projected to the ground plane (``pixel_to_ground_xy``), applied only
+    on FRESH detections (hold-buffer repeats are stale copies, not new
+    information) with range-dependent measurement noise
+    ``sigma = max(pixel_noise_std * slant / fx, meas_std_floor)``.
+
+    The tracker is purely observational: it feeds the policy observation
+    (``DroneBombardEnvCfg.target_kf_obs``) and diagnostics, and never touches
+    the privileged referee/reward quantities."""
+
+    tau: float = 1.0        # s, Gauss-Markov acceleration correlation time
+    sigma_a: float = 1.0    # m/s^2, steady-state maneuver-acceleration std
+    meas_std_floor: float = 0.15  # m, lower bound on the ground-plane measurement std
+    # initial covariance (applied when the filter (re)initializes on the
+    # first fresh detection of an episode)
+    init_pos_var: float = 1.0    # m^2
+    init_vel_var: float = 4.0    # (m/s)^2
+    init_acc_var: float = 1.0    # (m/s^2)^2
+    acc_obs_scale: float = 3.0   # m/s^2, normalization for the accel obs dims
 
 
 @configclass
@@ -323,6 +374,19 @@ class DroneBombardEnvCfg(DirectRLEnvCfg):
     dr_enabled: bool = False
     moving_target_enabled: bool = False
     release_enabled: bool = False
+
+    # Force the moving target ON regardless of phase (train.py
+    # --moving_target). Lets Phase-1/2 tasks face a moving X marker without
+    # dragging in the Phase-3 residual/DR/release machinery. Independent of
+    # ``phase`` like release_terminal; default False = phase-derived only.
+    moving_target_force: bool = False
+
+    # Singer/Gauss-Markov Kalman target tracker in the observation (train.py
+    # --target_kf). When True the observation grows 14 -> 21 with the
+    # tracker's estimate (see _get_observations); checkpoints trained without
+    # it CANNOT be warm-started into it (input layer differs) — fresh start.
+    target_kf_obs: bool = False
+    tracker: DroneBombardTrackerCfg = DroneBombardTrackerCfg()
 
     # --- airframe wind disturbance (v15 hook; INERT unless enabled) ---
     # Until this is on, ``_wind_xy`` only ever displaced the PAYLOAD's ballistic
@@ -405,7 +469,9 @@ class DroneBombardEnvCfg(DirectRLEnvCfg):
         self.residual_enabled = self.phase >= 2
         self.dr_enabled = self.phase >= 2
         self.release_enabled = self.phase >= 2
-        self.moving_target_enabled = self.phase >= 3
+        self.moving_target_enabled = (self.phase >= 3) or self.moving_target_force
+        if self.target_kf_obs:
+            self.observation_space = 21  # 14 base + 7 tracker dims
 
 
 # =====================================================================
@@ -417,6 +483,12 @@ class DroneBombardEnv(DirectRLEnv):
     cfg: DroneBombardEnvCfg
 
     def __init__(self, cfg: DroneBombardEnvCfg, render_mode: str | None = None, **kwargs):
+        # The observation space is consumed inside super().__init__ (space
+        # construction), and train.py sets cfg.target_kf_obs AFTER the cfg's
+        # __post_init__ already ran — so the tracker-obs resize must happen
+        # here, before the DirectRLEnv machinery reads it.
+        if cfg.target_kf_obs:
+            cfg.observation_space = 21  # 14 base + 7 tracker dims
         super().__init__(cfg, render_mode, **kwargs)
 
         # Re-derive the per-phase flags from cfg.phase here too: train.py sets
@@ -426,7 +498,7 @@ class DroneBombardEnv(DirectRLEnv):
         self.cfg.residual_enabled = self.cfg.phase >= 2
         self.cfg.dr_enabled = self.cfg.phase >= 2
         self.cfg.release_enabled = self.cfg.phase >= 2
-        self.cfg.moving_target_enabled = self.cfg.phase >= 3
+        self.cfg.moving_target_enabled = (self.cfg.phase >= 3) or self.cfg.moving_target_force
 
         N, device = self.num_envs, self.device
         # 6-dim action pipeline: [0:4] velocity setpoint, [4:6] CCIP residual.
@@ -438,6 +510,32 @@ class DroneBombardEnv(DirectRLEnv):
 
         self._target_xy = torch.zeros(N, 2, device=device)
         self._target_vel_xy = torch.zeros(N, 2, device=device)  # Phase 3 moving target
+        # Per-episode motion-model parameters (constant within an episode,
+        # resampled in _reset_idx; read only by their own model — CA reads
+        # _target_acc_xy, CT reads _target_omega, CV/GM read neither).
+        self._target_acc_xy = torch.zeros(N, 2, device=device)
+        self._target_omega = torch.zeros(N, device=device)
+
+        # Singer-KF target tracker state (allocated always — negligible
+        # memory — but stepped only when cfg.target_kf_obs is on).
+        # _kf_x: [x, y, vx, vy, ax, ay] in env-local ENU; _kf_valid latches
+        # True at the first fresh detection of the episode (until then the
+        # tracker obs dims read zero with validity 0).
+        self._kf_x = torch.zeros(N, 6, device=device)
+        self._kf_P = torch.zeros(N, 6, 6, device=device)
+        self._kf_valid = torch.zeros(N, dtype=torch.bool, device=device)
+        tr = self.cfg.tracker
+        policy_dt = self.cfg.sim.dt * self.cfg.decimation
+        self._kf_F = singer_transition_matrix(policy_dt, tr.tau, device=device)
+        self._kf_Q = singer_process_noise(policy_dt, tr.tau, tr.sigma_a, device=device)
+        self._kf_P0 = torch.diag(torch.tensor(
+            [tr.init_pos_var, tr.init_pos_var, tr.init_vel_var,
+             tr.init_vel_var, tr.init_acc_var, tr.init_acc_var], device=device))
+        # fresh-detection info stashed by _update_vision for the tracker
+        # (raw noisy pixels BEFORE the hold buffer — hold repeats are stale)
+        self._fresh_detected = torch.zeros(N, dtype=torch.bool, device=device)
+        self._fresh_u_px = torch.zeros(N, device=device)
+        self._fresh_v_px = torch.zeros(N, device=device)
         self._d_xy_prev = torch.zeros(N, device=device)
         self._d_xy_min = torch.full((N,), float("inf"), device=device)
         self._d_xy_history = torch.zeros(N, self.max_episode_length, device=device)
@@ -903,11 +1001,72 @@ class DroneBombardEnv(DirectRLEnv):
         dropout = torch.rand_like(conf) < (vc.dropout_prob / edge_factor.clamp(min=0.1))
         detected = visible & ~dropout
 
+        # Stash the FRESH detection (raw noisy pixel, pre-hold-buffer) for the
+        # Singer-KF target tracker: hold-buffer repeats are stale copies of an
+        # old measurement, so feeding them to the filter would double-count.
+        self._fresh_detected = detected
+        self._fresh_u_px = u_px
+        self._fresh_v_px = v_px
+
         fresh_uv_conf = torch.stack([u_px, v_px, conf], dim=-1)
         u_out, v_out, conf_out, self._held_uv_conf, self._hold_remaining = hold_buffer_update(
             detected, fresh_uv_conf, self._held_uv_conf, self._hold_remaining, vc.hold_frames,
         )
         return u_out, v_out, conf_out
+
+    # ------------------------------------------------------------------
+    # Target tracker (Singer/Gauss-Markov KF over YOLO detections)
+    # ------------------------------------------------------------------
+    def _update_target_tracker(self, pos_local: torch.Tensor, quat_w: torch.Tensor):
+        """One tracker tick, run every policy step (from _get_observations,
+        right after _update_vision): Singer-KF predict, then a measurement
+        update on envs with a FRESH detection this step. The measurement is
+        the noisy detection pixel back-projected to the ground plane — the
+        same pixel the observation shows, so the tracker sees exactly what a
+        real YOLO+camera stack would. Envs without a fresh detection coast on
+        the prediction (covariance grows), which is precisely what lets the
+        policy keep an aim estimate through dropout/occlusion."""
+        tr = self.cfg.tracker
+        vc = self.cfg.vision
+
+        # predict (all initialized envs)
+        x_pred, P_pred = kf_predict(self._kf_x, self._kf_P, self._kf_F, self._kf_Q)
+        init_mask = self._kf_valid
+        self._kf_x = torch.where(init_mask.unsqueeze(-1), x_pred, self._kf_x)
+        self._kf_P = torch.where(init_mask.unsqueeze(-1).unsqueeze(-1), P_pred, self._kf_P)
+
+        # measurement: fresh detections back-projected to the ground plane
+        z_xy, backproj_ok = pixel_to_ground_xy(
+            self._fresh_u_px, self._fresh_v_px, pos_local, quat_w,
+            vc.fx, vc.fy, vc.cx, vc.cy,
+        )
+        meas = self._fresh_detected & backproj_ok
+
+        # range-dependent measurement noise: one pixel of noise spans
+        # ~ slant/fx metres on the ground (near-nadir), floored so a
+        # point-blank detection never claims impossible precision.
+        rel = z_xy - pos_local[:, :2]
+        slant = torch.sqrt((rel * rel).sum(dim=-1) + pos_local[:, 2] ** 2)
+        sigma = (vc.pixel_noise_std * slant / vc.fx).clamp(min=tr.meas_std_floor)
+        r_var = sigma * sigma
+
+        # first fresh detection of the episode initializes the filter
+        init_now = meas & ~self._kf_valid
+        if bool(init_now.any()):
+            x0 = torch.zeros_like(self._kf_x)
+            x0[:, 0:2] = z_xy
+            self._kf_x = torch.where(init_now.unsqueeze(-1), x0, self._kf_x)
+            self._kf_P = torch.where(
+                init_now.unsqueeze(-1).unsqueeze(-1),
+                self._kf_P0.expand_as(self._kf_P), self._kf_P)
+            self._kf_valid = self._kf_valid | init_now
+
+        # standard update on already-initialized envs with a fresh detection
+        upd = meas & ~init_now & self._kf_valid
+        if bool(upd.any()):
+            x_new, P_new = kf_update_position(self._kf_x, self._kf_P, z_xy, r_var)
+            self._kf_x = torch.where(upd.unsqueeze(-1), x_new, self._kf_x)
+            self._kf_P = torch.where(upd.unsqueeze(-1).unsqueeze(-1), P_new, self._kf_P)
 
     # ------------------------------------------------------------------
     # Observations
@@ -940,6 +1099,24 @@ class DroneBombardEnv(DirectRLEnv):
             u_norm.unsqueeze(-1), v_norm.unsqueeze(-1), conf_clamped.unsqueeze(-1),
             rel_dx.unsqueeze(-1), rel_dy.unsqueeze(-1),
         ], dim=-1)
+
+        if self.cfg.target_kf_obs:
+            # Singer-KF tracker estimate (obs[14:21]): relative estimated
+            # target position (2), estimated target velocity (2), estimated
+            # target acceleration (2), validity (1). Same normalization
+            # conventions as the base dims (rel = drone - target, pos_scale/
+            # vel_scale); all-zero until the first fresh detection, so a
+            # blind policy sees an explicit "no track" signal rather than a
+            # stale estimate.
+            self._update_target_tracker(pos, quat_w=self._robot.data.root_quat_w)
+            tr = self.cfg.tracker
+            valid = self._kf_valid.unsqueeze(-1).float()
+            kf_rel = torch.clamp(
+                (pos[:, 0:2] - self._kf_x[:, 0:2]) / oc.pos_scale, -1.0, 1.0) * valid
+            kf_vel = torch.clamp(self._kf_x[:, 2:4] / oc.vel_scale, -1.0, 1.0) * valid
+            kf_acc = torch.clamp(self._kf_x[:, 4:6] / tr.acc_obs_scale, -1.0, 1.0) * valid
+            obs = torch.cat([obs, kf_rel, kf_vel, kf_acc, valid], dim=-1)
+
         obs = torch.nan_to_num(obs, nan=0.0)
         return {"policy": obs}
 
@@ -962,11 +1139,12 @@ class DroneBombardEnv(DirectRLEnv):
         if self.cfg.moving_target_enabled:
             dt = self.cfg.sim.dt * self.cfg.decimation  # policy-step period (0.1 s @ 10 Hz)
             pc = self.cfg.phase_cfg
-            noise = torch.randn_like(self._target_vel_xy)
-            self._target_vel_xy = step_target_velocity(
-                self._target_vel_xy, pc.target_vel_theta, pc.target_vel_sigma, dt, noise
+            self._target_xy, self._target_vel_xy = step_target_motion(
+                self._target_xy, self._target_vel_xy,
+                self._target_acc_xy, self._target_omega, dt,
+                pc.target_motion_model,
+                theta=pc.target_vel_theta, sigma=pc.target_vel_sigma,
             )
-            self._target_xy = self._target_xy + self._target_vel_xy * dt
 
         if self.cfg.release_enabled:
             self._evaluate_release()
@@ -1365,7 +1543,23 @@ class DroneBombardEnv(DirectRLEnv):
         pc = self.cfg.phase_cfg
         self._drag_coef[env_ids] = sample_drag_coefficient(pc, n, device, self.cfg.dr_enabled)
         self._wind_xy[env_ids] = sample_wind(pc, n, device, self.cfg.dr_enabled)
-        self._target_vel_xy[env_ids] = sample_target_velocity(pc, n, device, self.cfg.moving_target_enabled)
+        moving = self.cfg.moving_target_enabled
+        self._target_vel_xy[env_ids] = sample_target_velocity(pc, n, device, moving)
+        # Per-episode motion-model parameters. Sampled only for the model
+        # that reads them (others get the zero identity) so cross-model runs
+        # consume identical RNG streams for the shared samplers above.
+        self._target_acc_xy[env_ids] = sample_target_accel(
+            pc, n, device, moving and pc.target_motion_model == "ca")
+        self._target_omega[env_ids] = sample_target_turn_rate(
+            pc, n, device, moving and pc.target_motion_model == "ct")
+
+        # Target tracker: fully forget the previous episode's track (the
+        # target teleported at reset — coasting the old state through would
+        # feed the policy a confidently wrong estimate until re-detection).
+        self._kf_x[env_ids] = 0.0
+        self._kf_P[env_ids] = 0.0
+        self._kf_valid[env_ids] = False
+        self._fresh_detected[env_ids] = False
 
         d_xy0 = torch.linalg.norm(spawn_xy - target_xy, dim=-1)
         self._d_xy_prev[env_ids] = d_xy0
@@ -1405,6 +1599,9 @@ class DroneBombardEnv(DirectRLEnv):
             "release_aim_xy": self._release_aim_xy[env_ids].clone(),
             "release_target_xy": self._release_target_xy[env_ids].clone(),
             "aim_err_min": self._aim_err_min[env_ids].clone(),
+            "target_vel_xy": self._target_vel_xy[env_ids].clone(),
+            "kf_valid": self._kf_valid[env_ids].clone(),
+            "kf_est": self._kf_x[env_ids].clone(),
         }
 
     def _predicted_impact_from_snapshot(self, snap: dict) -> torch.Tensor:
@@ -1475,6 +1672,20 @@ class DroneBombardEnv(DirectRLEnv):
             impact = self._predicted_impact_from_snapshot(snap)
             impact_error = torch.linalg.norm(impact - snap["target_xy"], dim=-1)
             log["Episode_Metric/drop_impact_error_terminal_m"] = impact_error.mean().item()
+
+        if self.cfg.target_kf_obs:
+            # Tracker quality at episode end: how far the Singer-KF estimate
+            # was from the true target state (position/velocity), over the
+            # envs that ever acquired a track this episode.
+            kv = snap["kf_valid"]
+            log["Episode_Metric/kf_track_rate"] = kv.float().mean().item()
+            if bool(kv.any()):
+                kf_pos_err = torch.linalg.norm(
+                    snap["kf_est"][kv, 0:2] - snap["target_xy"][kv], dim=-1)
+                kf_vel_err = torch.linalg.norm(
+                    snap["kf_est"][kv, 2:4] - snap["target_vel_xy"][kv], dim=-1)
+                log["Episode_Metric/kf_pos_err_m"] = kf_pos_err.mean().item()
+                log["Episode_Metric/kf_vel_err_mps"] = kf_vel_err.mean().item()
 
         aim_min = snap["aim_err_min"]
         finite_aim = torch.isfinite(aim_min)

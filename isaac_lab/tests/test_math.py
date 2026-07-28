@@ -606,5 +606,171 @@ def test_release_gate_returns_bool_mask_shape():
     assert out.shape == (n,) and out.dtype == torch.bool and out.all()
 
 
+# =====================================================================
+# Moving target: CV / CA / CT motion models
+# =====================================================================
+
+
+def test_target_cv_is_straight_line():
+    pos = torch.tensor([[1.0, 2.0]])
+    vel = torch.tensor([[2.0, -1.0]])
+    p, v = mu.step_target_motion(pos, vel, torch.zeros_like(vel), torch.zeros(1), 0.1, "cv")
+    assert torch.allclose(p, torch.tensor([[1.2, 1.9]]))
+    assert torch.allclose(v, vel)  # CV never changes the velocity
+
+
+def test_target_ca_matches_closed_form():
+    pos = torch.zeros(1, 2)
+    vel = torch.tensor([[1.0, 0.0]])
+    acc = torch.tensor([[0.0, 2.0]])
+    dt = 0.1
+    p, v = pos.clone(), vel.clone()
+    for _ in range(10):  # 1.0 s of exact discrete CA integration
+        p, v = mu.step_target_ca(p, v, acc, dt)
+    # x = v0*t, y = 0.5*a*t^2 (the discrete sum matches exactly because each
+    # step uses the exact within-step quadratic)
+    assert torch.allclose(p, torch.tensor([[1.0, 1.0]]), atol=1e-6)
+    assert torch.allclose(v, torch.tensor([[1.0, 2.0]]), atol=1e-6)
+
+
+def test_target_ct_preserves_speed_and_closes_circle():
+    vel = torch.tensor([[2.0, 0.0]])
+    omega = torch.tensor([2.0 * math.pi])  # one full turn per second
+    pos = torch.zeros(1, 2)
+    p, v = pos.clone(), vel.clone()
+    for _ in range(100):  # 1.0 s at dt=0.01 -> full circle
+        p, v = mu.step_target_ct(p, v, omega, 0.01)
+        assert torch.allclose(torch.linalg.norm(v, dim=-1), torch.tensor([2.0]), atol=1e-5)
+    assert torch.allclose(p, pos, atol=1e-4)   # back to the start
+    assert torch.allclose(v, vel, atol=1e-4)   # heading restored
+
+
+def test_target_ct_zero_omega_reduces_to_cv():
+    pos = torch.tensor([[0.0, 0.0], [0.0, 0.0]])
+    vel = torch.tensor([[1.5, -0.5], [1.5, -0.5]])
+    omega = torch.tensor([0.0, 1e-9])  # exactly zero and inside the guard
+    p, v = mu.step_target_ct(pos, vel, omega, 0.1)
+    expected = pos + vel * 0.1
+    assert torch.allclose(p, expected, atol=1e-6)
+    assert torch.allclose(v, vel, atol=1e-6)
+
+
+def test_target_motion_gm_matches_step_target_velocity():
+    torch.manual_seed(0)
+    pos = torch.zeros(3, 2)
+    vel = torch.randn(3, 2)
+    noise = torch.randn(3, 2)
+    v_ref = mu.step_target_velocity(vel, 0.3, 0.5, 0.1, noise)
+    p, v = mu.step_target_motion(
+        pos, vel, torch.zeros_like(vel), torch.zeros(3), 0.1, "gm",
+        theta=0.3, sigma=0.5, noise=noise)
+    assert torch.allclose(v, v_ref)
+    assert torch.allclose(p, v_ref * 0.1)
+
+
+def test_target_motion_unknown_model_raises():
+    with pytest.raises(ValueError):
+        mu.step_target_motion(
+            torch.zeros(1, 2), torch.zeros(1, 2), torch.zeros(1, 2),
+            torch.zeros(1), 0.1, "warp")
+
+
+# =====================================================================
+# Target tracker: pixel back-projection + Singer KF
+# =====================================================================
+
+
+def test_pixel_to_ground_roundtrips_pinhole_projection():
+    fx = _fx()
+    torch.manual_seed(1)
+    n = 32
+    pos = torch.zeros(n, 3)
+    pos[:, 0:2] = torch.randn(n, 2) * 3.0
+    pos[:, 2] = 8.0 + torch.rand(n) * 4.0
+    yaw = torch.rand(n) * 2.0 * math.pi
+    quat = torch.stack([torch.cos(yaw / 2), torch.zeros(n), torch.zeros(n), torch.sin(yaw / 2)], dim=-1)
+    target = pos[:, 0:2] + torch.randn(n, 2) * 2.0
+
+    u, v, visible = mu.project_target_pinhole(
+        pos, quat, target, fx, fx, 320.0, 240.0, 640, 480, 0.1, 100.0)
+    ground, valid = mu.pixel_to_ground_xy(u, v, pos, quat, fx, fx, 320.0, 240.0)
+    ok = visible & valid
+    assert bool(ok.any())
+    assert torch.allclose(ground[ok], target[ok], atol=1e-4)
+
+
+def test_singer_transition_limits_to_ca_for_large_tau():
+    dt = 0.1
+    F = mu.singer_transition_matrix(dt, tau=1e6)
+    # near the CA limit: p += v*dt + 0.5*a*dt^2, v += a*dt, a persists
+    # (tolerances sized for float32 storage of the entries)
+    assert abs(F[0, 2].item() - dt) < 1e-7
+    assert abs(F[0, 4].item() - 0.5 * dt * dt) < 1e-6
+    assert abs(F[2, 4].item() - dt) < 1e-6
+    assert abs(F[4, 4].item() - 1.0) < 1e-6
+
+
+def test_singer_process_noise_symmetric_psd():
+    Q = mu.singer_process_noise(0.1, tau=1.0, sigma_a=1.0)
+    assert torch.allclose(Q, Q.T, atol=1e-9)
+    eig = torch.linalg.eigvalsh(Q.double())
+    assert bool((eig > -1e-12).all())
+
+
+def test_kf_update_pulls_toward_measurement_and_shrinks_covariance():
+    x = torch.zeros(1, 6)
+    P = torch.eye(6).unsqueeze(0) * 4.0
+    z = torch.tensor([[2.0, -2.0]])
+    r_var = torch.tensor([0.01])
+    x1, P1 = mu.kf_update_position(x, P, z, r_var)
+    # tight measurement vs loose prior -> estimate lands almost on z
+    assert torch.allclose(x1[0, 0:2], z[0], atol=0.02)
+    assert P1[0, 0, 0] < P[0, 0, 0] and P1[0, 1, 1] < P[0, 1, 1]
+    assert torch.allclose(P1[0], P1[0].T, atol=1e-6)  # Joseph form stays symmetric
+
+
+def test_kf_tracks_cv_target_through_noisy_detections():
+    torch.manual_seed(2)
+    dt = 0.1
+    F = mu.singer_transition_matrix(dt, tau=1.0)
+    Q = mu.singer_process_noise(dt, tau=1.0, sigma_a=1.0)
+    true_pos = torch.tensor([[0.0, 0.0]])
+    true_vel = torch.tensor([[1.5, -0.8]])
+    meas_std = 0.3
+
+    x = torch.zeros(1, 6)
+    x[:, 0:2] = true_pos + torch.randn(1, 2) * meas_std  # init on first detection
+    P = torch.diag(torch.tensor([1.0, 1.0, 4.0, 4.0, 1.0, 1.0])).unsqueeze(0)
+    r_var = torch.tensor([meas_std**2])
+
+    pos_errs, vel_errs = [], []
+    for k in range(80):  # 8 s of CV motion @ 10 Hz
+        true_pos = true_pos + true_vel * dt
+        x, P = mu.kf_predict(x, P, F, Q)
+        z = true_pos + torch.randn(1, 2) * meas_std
+        x, P = mu.kf_update_position(x, P, z, r_var)
+        if k >= 40:  # converged tail
+            pos_errs.append(torch.linalg.norm(x[0, 0:2] - true_pos[0]).item())
+            vel_errs.append(torch.linalg.norm(x[0, 2:4] - true_vel[0]).item())
+    # converged: position error well under the raw measurement noise,
+    # velocity recovered though never directly measured
+    assert sum(pos_errs) / len(pos_errs) < meas_std
+    assert sum(vel_errs) / len(vel_errs) < 0.5
+
+
+def test_kf_coasts_prediction_through_dropout():
+    dt = 0.1
+    F = mu.singer_transition_matrix(dt, tau=1.0)
+    Q = mu.singer_process_noise(dt, tau=1.0, sigma_a=1.0)
+    # a track that already knows the velocity exactly, then loses detections
+    x = torch.tensor([[0.0, 0.0, 2.0, 0.0, 0.0, 0.0]])
+    P = torch.diag(torch.tensor([0.01, 0.01, 0.01, 0.01, 0.1, 0.1])).unsqueeze(0)
+    P0 = P.clone()
+    for _ in range(10):  # 1 s with no measurement updates
+        x, P = mu.kf_predict(x, P, F, Q)
+    assert torch.allclose(x[0, 0:2], torch.tensor([2.0, 0.0]), atol=1e-5)  # coasts along v
+    assert P[0, 0, 0] > P0[0, 0, 0]  # honesty: uncertainty grows while blind
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

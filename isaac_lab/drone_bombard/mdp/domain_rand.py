@@ -50,9 +50,34 @@ def sample_target_velocity(cfg, num_envs: int, device: torch.device, enabled: bo
     """Phase 1/2: identity (stationary target). Phase 3: initial target
     velocity as an [N, 2] ENU vector with random heading and speed
     ``U[0, cfg.target_init_speed]`` (m/s). Evolved thereafter by
-    ``math_utils.step_target_velocity`` (Gauss-Markov)."""
+    ``math_utils.step_target_motion`` (per ``cfg.target_motion_model``)."""
     if not enabled:
         return torch.zeros(num_envs, 2, device=device)
     speed = torch.rand(num_envs, device=device) * cfg.target_init_speed
     heading = torch.rand(num_envs, device=device) * 2.0 * math.pi
     return torch.stack([speed * torch.cos(heading), speed * torch.sin(heading)], dim=-1)
+
+
+def sample_target_accel(cfg, num_envs: int, device: torch.device, enabled: bool = False) -> torch.Tensor:
+    """Per-episode target acceleration for the CA motion model: [N, 2] ENU
+    vector with random direction and magnitude ``U[0, cfg.target_accel_max]``
+    (m/s^2). Identity (zero) when the moving target is off or the model does
+    not use acceleration — ``step_target_motion`` reads it only in "ca"."""
+    if not enabled:
+        return torch.zeros(num_envs, 2, device=device)
+    mag = torch.rand(num_envs, device=device) * cfg.target_accel_max
+    heading = torch.rand(num_envs, device=device) * 2.0 * math.pi
+    return torch.stack([mag * torch.cos(heading), mag * torch.sin(heading)], dim=-1)
+
+
+def sample_target_turn_rate(cfg, num_envs: int, device: torch.device, enabled: bool = False) -> torch.Tensor:
+    """Per-episode signed turn rate for the CT motion model: [N] rad/s with
+    magnitude ``U[cfg.target_omega_range[0], cfg.target_omega_range[1]]`` and
+    a random sign (left/right turns equally likely). Identity (zero) when the
+    moving target is off — ``step_target_motion`` reads it only in "ct"."""
+    if not enabled:
+        return torch.zeros(num_envs, device=device)
+    lo, hi = cfg.target_omega_range
+    mag = lo + torch.rand(num_envs, device=device) * (hi - lo)
+    sign = torch.where(torch.rand(num_envs, device=device) < 0.5, -1.0, 1.0)
+    return mag * sign

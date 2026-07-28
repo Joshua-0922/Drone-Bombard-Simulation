@@ -41,6 +41,26 @@ parser.add_argument("--release-terminal", action="store_true",
                     help="Evaluate under the Stage-B (exp_018) release-as-terminal semantics — "
                          "must match how the policy was trained, or proximity termination "
                          "truncates the loiter behavior being measured.")
+# --- moving target (X marker) + Singer-KF tracker — must match training ---
+parser.add_argument("--moving_target", action="store_true",
+                    help="Force the moving target ON (must match how the policy was trained).")
+parser.add_argument("--target_motion", type=str, default=None, choices=["gm", "cv", "ca", "ct"],
+                    help="Target motion model: gm (Gauss-Markov, default) / cv / ca / ct.")
+parser.add_argument("--target_speed", type=float, default=None,
+                    help="Max initial target speed (m/s): |v0| ~ U[0, this].")
+parser.add_argument("--target_accel", type=float, default=None,
+                    help="CA model: max target acceleration (m/s^2).")
+parser.add_argument("--target_omega_min", type=float, default=None,
+                    help="CT model: min |turn rate| (rad/s).")
+parser.add_argument("--target_omega_max", type=float, default=None,
+                    help="CT model: max |turn rate| (rad/s).")
+parser.add_argument("--target_kf", action="store_true",
+                    help="Singer-KF tracker in the observation (obs 14 -> 21) — must match training "
+                         "(a 21-dim policy cannot run on 14-dim obs and vice versa).")
+parser.add_argument("--kf_tau", type=float, default=None,
+                    help="Tracker: Gauss-Markov acceleration correlation time (s).")
+parser.add_argument("--kf_sigma_a", type=float, default=None,
+                    help="Tracker: steady-state maneuver-acceleration std (m/s^2).")
 parser.add_argument("--out-csv", type=str, default="/workspace/logs/isaac_lab/step_response.csv")
 parser.add_argument("--wandb", action="store_true",
                     help="Log the --policy eval summary + distribution figures (histograms, "
@@ -409,6 +429,27 @@ def main():
         env_cfg.show_markers = True
     if args_cli.release_terminal:
         env_cfg.release_terminal = True
+    # moving target (X marker) + Singer-KF tracker — must mirror train.py
+    if args_cli.moving_target:
+        env_cfg.moving_target_force = True
+    if args_cli.target_motion is not None:
+        env_cfg.phase_cfg.target_motion_model = args_cli.target_motion
+    if args_cli.target_speed is not None:
+        env_cfg.phase_cfg.target_init_speed = args_cli.target_speed
+    if args_cli.target_accel is not None:
+        env_cfg.phase_cfg.target_accel_max = args_cli.target_accel
+    if args_cli.target_omega_min is not None or args_cli.target_omega_max is not None:
+        lo, hi = env_cfg.phase_cfg.target_omega_range
+        env_cfg.phase_cfg.target_omega_range = (
+            args_cli.target_omega_min if args_cli.target_omega_min is not None else lo,
+            args_cli.target_omega_max if args_cli.target_omega_max is not None else hi,
+        )
+    if args_cli.target_kf:
+        env_cfg.target_kf_obs = True
+    if args_cli.kf_tau is not None:
+        env_cfg.tracker.tau = args_cli.kf_tau
+    if args_cli.kf_sigma_a is not None:
+        env_cfg.tracker.sigma_a = args_cli.kf_sigma_a
     env = gym.make(args_cli.task, cfg=env_cfg)
     env = RslRlVecEnvWrapper(env)
 
