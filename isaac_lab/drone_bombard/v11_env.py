@@ -263,6 +263,28 @@ class DroneBombardV19Cfg(DroneBombardV18Cfg):
     change). Keeps v18's eased params for the same gate-deadlock reason."""
     payload_physics_enabled: bool = True
 
+    # --- anti-"hover forever" reward fixes (v19 collapse fix) ---
+    # The iter-499 checkpoint collapsed to release_rate 0 (aim still perfect, drop
+    # never fired): the standing CCIP aim reward (w_ccip*exp(-k*d_impact)) paid a
+    # guaranteed +w_ccip every step for holding aim, so hovering-without-dropping
+    # out-earned the noisy physical drop. Fix A makes that shaping potential-based
+    # (rewards only IMPROVING aim, zero for holding it). Fix B adds an escalating
+    # penalty for loitering IN the release envelope without dropping, so once the
+    # gate is open the only way out of the growing cost is to actually release.
+    ccip_potential_shaping: bool = True   # A: telescoping aim shaping (no standing reward)
+    v19_w_loiter: float = 0.02            # B: per-step penalty * steps-in-envelope-not-dropped
+
+    # --- precision push (v19 accuracy fix) ---
+    # The original landing reward was FLAT (reward_success) everywhere inside
+    # success_radius, so a 0.1 m hit and a 0.9 m hit paid identically -> the policy
+    # had no gradient to land tighter and med_err plateaued ~0.56 m. Make it a
+    # continuous exp that keeps pulling toward 0 m even inside the zone, plus a
+    # discrete bonus for crossing the success threshold (keeps the "get inside"
+    # signal). Warm-start the existing best model into this to sharpen accuracy.
+    precise_landing_reward: bool = True   # continuous (vs flat-inside) landing reward
+    v19_k_landing: float = 2.0            # steeper falloff -> strong sub-metre gradient
+    v19_success_bonus: float = 100.0      # discrete bump for err <= success_radius
+
 
 class DroneBombardV11Env(DroneBombardEnv):
     cfg: DroneBombardV11Cfg
@@ -972,6 +994,10 @@ class DroneBombardV19Env(DroneBombardV18Env):
         super().__init__(cfg, render_mode, **kwargs)
         if not hasattr(self, "_perceived_target_xy"):
             self._perceived_target_xy = torch.zeros(self.num_envs, 2, device=self.device)
+        # Fix B: consecutive policy steps spent IN the release envelope without
+        # dropping. Self-heals to 0 whenever the gate is not open or after release
+        # (drone spawns far each episode -> gate closed -> counter zeroed on step 1).
+        self._gate_steps = torch.zeros(self.num_envs, device=self.device)
 
     def _pre_physics_step(self, actions: torch.Tensor):
         super()._pre_physics_step(actions)  # v18->v14: vel + drop_signal + residual capture
@@ -1062,18 +1088,45 @@ class DroneBombardV19Env(DroneBombardV18Env):
         r = r + (1.0 - det) * cfg.v13_undetected_penalty * flying
 
         progress = cfg.v11_w_progress * (self._d_xy_prev - d_xy)
-        ccip = cfg.v11_w_ccip * torch.exp(-cfg.v11_k_ccip * d_impact)
+        if cfg.ccip_potential_shaping:
+            # Fix A: potential-based aim shaping. Reward the CHANGE in aim quality
+            # (telescopes to a fixed total over the episode), so HOLDING aim without
+            # dropping earns ~0 — this removes the standing +w_ccip/step that made
+            # "hover perfectly aimed forever" out-earn the noisy physical drop.
+            ccip = cfg.v11_w_ccip * (torch.exp(-cfg.v11_k_ccip * d_impact)
+                                     - torch.exp(-cfg.v11_k_ccip * self._d_impact_prev))
+        else:
+            ccip = cfg.v11_w_ccip * torch.exp(-cfg.v11_k_ccip * d_impact)
         r = r + det * flying * (progress + ccip)
         r = r + det * flying * f["gate_open"].float() * cfg.v11_gate_reward
         r = r + det * flying * (self._wants_drop & f["gate_open"]).float() * cfg.v11_drop_signal_reward
 
+        # Fix B: escalating loiter penalty. Count consecutive steps spent in the
+        # release envelope without dropping and charge w_loiter * that count, so
+        # sitting aimed-but-not-releasing costs more every step -> the only way to
+        # stop the growing penalty is to actually release.
+        in_env = f["gate_open"] & (~self._released)
+        self._gate_steps = torch.where(
+            in_env, self._gate_steps + 1.0, torch.zeros_like(self._gate_steps))
+        r = r - flying * cfg.v19_w_loiter * self._gate_steps
+
         # terminal reward on the REAL payload landing
         landing_err = self._release_impact_err
-        landing_reward = torch.where(
-            landing_err <= cfg.v11_success_radius,
-            torch.full_like(landing_err, cfg.v11_reward_success),
-            cfg.v11_reward_success * torch.exp(-cfg.v11_k_landing * landing_err),
-        )
+        if cfg.precise_landing_reward:
+            # Continuous precision reward: exp keeps pulling toward 0 m even INSIDE
+            # the success zone (a 0.1 m hit out-earns a 0.9 m hit), + a discrete
+            # bonus for crossing the success threshold. Removes the flat-inside cap
+            # that plateaued med_err. reward_success is the exp peak at err=0.
+            landing_reward = (
+                cfg.v11_reward_success * torch.exp(-cfg.v19_k_landing * landing_err)
+                + (landing_err <= cfg.v11_success_radius).float() * cfg.v19_success_bonus
+            )
+        else:
+            landing_reward = torch.where(
+                landing_err <= cfg.v11_success_radius,
+                torch.full_like(landing_err, cfg.v11_reward_success),
+                cfg.v11_reward_success * torch.exp(-cfg.v11_k_landing * landing_err),
+            )
         r = r + f["landed"].float() * landing_reward
 
         r = r + f["crash"].float() * cfg.v11_crash_penalty

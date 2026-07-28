@@ -316,6 +316,8 @@ pytest isaac_lab/tests/test_math.py -v          # 30/30
 
 ## 9. 관련 문서
 
+- [`REVIEW_GUI.md`](REVIEW_GUI.md) — **검토용 GUI(play.py) 사용법 (모든 버전 공통, 버전별 `--task` 매핑)**
+- [`checkpoints/v19/WARMSTART.md`](checkpoints/v19/WARMSTART.md) — **v19 학습 결과 이어받기(warm-start/resume) 방법 + 공유 체크포인트**
 - `isaac_lab/README.md` — Isaac Lab 코드 실행 상세
 - `notes/research/isaac_lab_architecture.md` — 폴더 구조·데이터 흐름·Gazebo 대비 차이
 - `notes/experiments/exp_012_isaac_migration_phase2.md` — 이전 작업·parity 표·검증 결과
@@ -347,8 +349,23 @@ cd /workspace/drone-bombard
 /workspace/isaaclab/isaaclab.sh -p isaac_lab/train.py --headless --num_envs 256 --max_iterations 20
 ```
 
+### Warm-start (v19 학습 결과 이어받기)
+공유된 v19 체크포인트에서 이어서 학습할 수 있다. 상세·주의사항: [`checkpoints/v19/WARMSTART.md`](checkpoints/v19/WARMSTART.md)
+```bash
+# 이어학습(옵티마이저까지) — precise 예시
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/train.py \
+  --task Isaac-DroneBombard-V19-Direct-v0 \
+  --resume ./checkpoints/v19/precise/model_final.pt
+```
+
 ### GUI 모니터링 (드라이버 ≥ 580 필요)
 ```bash
 # 컨테이너 진입 후:
 /workspace/isaaclab/isaaclab.sh -p isaac_lab/play.py --zero-actions
 # (디스플레이가 있는 머신에서만 작동)
+
+# 학습된 정책을 검토용 GUI로 재생 (비컨/마커 + 체이스 카메라)
+/workspace/isaaclab/isaaclab.sh -p isaac_lab/play.py \
+  --task Isaac-DroneBombard-V19-Direct-v0 \
+  --policy ./checkpoints/v19/precise/model_best.pt --show
+# 버전별 --task 매핑·화면 보는 법(X11/WebRTC/영상): REVIEW_GUI.md 참조

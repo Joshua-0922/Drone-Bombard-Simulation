@@ -397,10 +397,13 @@ def main():
     # the drone flies off-frame at ~10 m altitude). Pulled in from (-8,-8,4) —
     # that framed the drone too small; this sits just behind/above it.
     env_cfg.viewer.origin_type = "asset_root"
-    env_cfg.viewer.asset_name = "robot"
+    # Track the PAYLOAD (scene rigid object) instead of the drone: while carried
+    # it rides under the drone (so we see the drone), and after release the camera
+    # FOLLOWS the payload down as it falls + lands — the separation reads clearly.
+    env_cfg.viewer.asset_name = "payload"
     env_cfg.viewer.env_index = 0
-    env_cfg.viewer.eye = (-4.5, -3.5, 2.2)
-    env_cfg.viewer.lookat = (1.5, 0.0, -0.5)
+    env_cfg.viewer.eye = (-2.5, -2.0, 1.1)
+    env_cfg.viewer.lookat = (0.0, 0.0, 0.0)
     if args_cli.show:
         # visual aids for watching: the target beacon/disc + payload marker.
         env_cfg.show_markers = True
