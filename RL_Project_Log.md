@@ -17,9 +17,15 @@
 > 컨테이너 `/workspace/v19_warmstart/`, md5 검증) — **원본 무접촉**. 검증: 유닛 57/57 +
 > `_probe_moving_v19.py` 3모션 PASS + 2-iter 스모크. 학습 `exp021_mt_{cv,ct,ca}` 각 2048 envs ×
 > 1000 iters(~4.05 s/iter), wandb `a6saa42b`/`29jqq1lu`/`ntumqwoz` (project drone-bombard-isaac).
-> **종반 5-iter 창: cv release 0.67–0.90/drop@release 0.39–0.90 m · ct 0.43–0.80/0.24–1.24 m ·
-> ca 0.40–0.78/0.32–1.96 m(reward 음수 잔존)** — 난이도 cv<ct<ca, 정지-타겟(100%/0.39 m) 대비
-> 하락은 과제 난이도 상승분. **det 200-ep eval 미실행(후속; play.py는 동일 플래그로 무변경 지원).**
+> **det 200-ep eval(동일 플래그, wandb `exp021_eval_{cv,ct,ca}`=1nvvuogg/prdqujah/gdow3vfg):
+> cv success 44.5%/release 81.5%/drop med 0.775 m · ct 33.8%/82.6%/0.783 m ·
+> ca 16.5%/63.5%/1.063 m.** 판정: 릴리스 능력은 이월되나 **리드 부재로 명중이 성공반경
+> 경계에 몰림**(released-miss>success; CCIP=현재 위치 조준, 낙하 t_f 동안 타겟 이동 |v|·t_f
+> ≤2–3 m 구조적 편차). ca는 가속 이탈 OOR 25% 추가 병목. **개선 1순위 = 리드 개입**(Singer-KF
+> obs v19 포팅 28→35 / privileged target-vel obs 28→30 분리검증 / Phase-3 w_lead 이식),
+> 이후 target_accel 커리큘럼·게이트 리드 반영, iter 확대는 구조 개입 후(Rule 20f).
+> play.py `--wandb` 잠복 NameError(`impacted` 미정의, a099de3 머지 이후) 수정. eval seed
+> 미고정 → 동일 ckpt 32.0↔44.5% 표본 변동 확인(seed 옵션 추가 권장).
 > ckpt: 컨테이너 `/workspace/exp021/` + 호스트 `/opt/drone-bombard/checkpoints/exp021/`.
 > → [[experiments/exp_021_v19_moving_target]] / [[research/moving_target_models]] §5
 
@@ -350,3 +356,4 @@
 | 2026-07-06 | **exp018 Stage B — 릴리스-종단 이벤트 (xt0hrr1c/0ns10yso/4vaodj0o/kk06wsbx, Isaac PPO, 병행 트랙)** | 4 runs × 400 iters (전부 v1 warm-start) | **릴리스-종단 구조 → det release_rate 100.00%, drop err 0.125 m (Rule 23).** 종단 교체 단독(B0)으로 5.5%→100%(학습 내 23→99.6% 단조 상승 — Stage A 하락 반전, Rule 22a 인과 확정). aim 보상 노브 불감(w 0/1.5 100%, knee 0.75만 98.5%) — 자동 발화 referee가 노이즈를 +100 샘플러로 전환. done-flag alias 버그 사전 수정(eval success 0% 위험). 호버-드롭 수렴(종단 속도 0.11 m/s). **Stage C warm-start = exp018_B0_final.pt.** → [[experiments/exp_018_release_terminal]] / [[research/release_terminal_stageB]] |
 | 2026-07-23 | **exp020 물리 페이로드 부착 첫 학습 (o5jn9xzk train / vryuc6mu eval, Isaac PPO, 병행 트랙)** | 400 iters (2048 envs, warm-start=exp018_B0, 보상 bit-match) | **물리 페이로드(kinematic weld) 학습 비용 = 0 — det 200-ep success/release 100.00%, drop err 0.169 m.** `physical_payload=True`가 유일한 델타, release_rate 첫 롤아웃부터 100%(재학습 과도기 없음). σ 드리프트 1.41→1.71 모니터 대상. `play.py --wandb` eval-figure 파이프라인 신설. 컨테이너 빈 WANDB_API_KEY 함정(`--env-file` 필수). ckpt 호스트 `/opt/drone-bombard/checkpoints/exp020/`. → [[experiments/exp_020_o5jn9xzk_payload_training]] |
 | 2026-07-30 | **exp021 v19 + 이동 타겟 CV/CT/CA warm-start 학습 (a6saa42b/29jqq1lu/ntumqwoz, Isaac PPO, 병행 트랙)** | 3 runs × 1000 iters (2048 envs, warm-start=준상 v19 precise 사본) | **이동타겟 모션(CV/CT/CA)을 v19에 obs-보존 포팅 → 3종 학습 완주.** 종반 창: cv release 0.67–0.90/drop 0.39–0.90 m, ct 0.43–0.80/0.24–1.24 m, ca 0.40–0.78/0.32–1.96 m(reward 음수 잔존 — 가속 타겟 최난). 난이도 cv<ct<ca. det eval 후속. ckpt `/opt/drone-bombard/checkpoints/exp021/`. → [[experiments/exp_021_v19_moving_target]] |
+| 2026-07-30 | **exp021 det 200-ep eval 3종 (1nvvuogg/prdqujah/gdow3vfg, eval)** | 0 (deterministic eval only) | **cv success 44.5%/release 81.5%/drop med 0.775 m · ct 33.8%/82.6%/0.783 m · ca 16.5%/63.5%/1.063 m.** 릴리스 이월·명중은 리드 부재로 경계 몰림(released-miss>success). 개선 1순위=리드 개입(KF obs 포팅/target-vel obs/w_lead). play.py --wandb NameError(impacted) 수정, eval seed 미고정 표본 변동(32↔44.5%) 확인. → [[experiments/exp_021_v19_moving_target]] §3b |

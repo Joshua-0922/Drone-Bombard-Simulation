@@ -347,6 +347,13 @@ def run_policy(env, policy_path, episodes=10):
         print(f"[policy] timeout_near_miss_rate={near_miss_wsum/max(log_w,1):.2%}")
 
         if args_cli.wandb:
+            # The final-episode snapshot carries no separate payload channel:
+            # in the land-terminal envs (v16/v19) release_impact_err IS the
+            # real payload landing error (latched on landing), and in the
+            # analytic envs the drop resolves at release — either way the
+            # payload-impact population is the released episodes.
+            impacted = released
+            cat = dict(cat, payload_impact_err=cat["release_impact_err"])
             _log_eval_to_wandb(policy_path, n_done, cause_counts, causes, cat,
                                released, impacted, near_miss_wsum / max(log_w, 1))
 
