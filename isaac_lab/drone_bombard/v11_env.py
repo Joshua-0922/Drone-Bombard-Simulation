@@ -42,6 +42,7 @@ from .math_utils import (
     ballistic_impact,
     release_gate,
     apply_ccip_residual,
+    step_target_motion,
 )
 
 
@@ -346,6 +347,26 @@ class DroneBombardV11Env(DroneBombardEnv):
         t_f = time_to_fall(altitude, dc.gravity)
         return ccip_err, d_impact, t_f
 
+    def _step_moving_target(self):
+        """Advance the target (X marker) once per policy step when the moving
+        target is on (``--moving_target`` -> cfg.moving_target_force; the
+        v-track keeps phase=1). Same integration point as the base env's
+        ``_advance_phase_dynamics``: the top of ``_get_dones``, so the gate,
+        rewards, and the following observation all see the same target state.
+        Initial velocity / accel / turn rate come from the base ``_reset_idx``
+        samplers; obs stays unchanged (the marker channels just move), so
+        stationary-target checkpoints warm-start losslessly."""
+        if not self.cfg.moving_target_enabled:
+            return
+        dt = self.cfg.sim.dt * self.cfg.decimation
+        pc = self.cfg.phase_cfg
+        self._target_xy, self._target_vel_xy = step_target_motion(
+            self._target_xy, self._target_vel_xy,
+            self._target_acc_xy, self._target_omega, dt,
+            pc.target_motion_model,
+            theta=pc.target_vel_theta, sigma=pc.target_vel_sigma,
+        )
+
     # ------------------------------------------------------------------
     # Observation: 24-D (doc 53 §3), no vision
     # ------------------------------------------------------------------
@@ -457,6 +478,7 @@ class DroneBombardV11Env(DroneBombardEnv):
     # Dones: drop_signal + release-envelope -> release-terminal + landing
     # ------------------------------------------------------------------
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        self._step_moving_target()
         cfg = self.cfg
         tc = cfg.termination
         dc = cfg.drop
@@ -644,6 +666,7 @@ class DroneBombardV16Env(DroneBombardV11Env):
             self._wants_drop[held] = False
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        self._step_moving_target()
         cfg = self.cfg
         tc = cfg.termination
         pos, vel, ang, roll, pitch, _ = self._kinematics()
@@ -1008,6 +1031,7 @@ class DroneBombardV19Env(DroneBombardV18Env):
             self._wants_drop[held] = False
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
+        self._step_moving_target()
         cfg = self.cfg
         tc = cfg.termination
         pos, vel, ang, roll, pitch, _ = self._kinematics()

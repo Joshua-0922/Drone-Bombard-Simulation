@@ -6,9 +6,24 @@
 
 # 1. Current State
 
-**업데이트:** 2026-07-23
+**업데이트:** 2026-07-30
 
-> **🔀 병행 트랙 (2026-07-23): Isaac Lab exp_020 — 물리 페이로드 부착 첫 학습 완주, 학습 비용 0 확증 + wandb eval-figure 파이프라인** —
+> **🔀 병행 트랙 (2026-07-30): Isaac Lab exp_021 — 이동 타겟(CV/CT/CA) v19 포팅 + 준상 v19 warm-start 학습 3종 완주** —
+> `isaac_jk` 워크트리, `isaac-verify`/L4. 07-28 브리핑의 "이동타겟/KF v19 포팅 여부" 실행:
+> `V11Env._step_moving_target()`(base `_advance_phase_dynamics`와 동일 지점) + V11/V16/V19
+> `_get_dones` wire — **obs 28-D 불변 = 준상 v19 ckpt lossless warm-start**. train.py 이동타겟
+> 플래그 전 env 공통화, `--target_kf`+v-track 명시적 에러(KF는 base env 전용 유지). warm-start는
+> `checkpoints/v19/precise/model_best.pt`의 **사본**(`/opt/drone-bombard/checkpoints/v19_junsang_copy/`,
+> 컨테이너 `/workspace/v19_warmstart/`, md5 검증) — **원본 무접촉**. 검증: 유닛 57/57 +
+> `_probe_moving_v19.py` 3모션 PASS + 2-iter 스모크. 학습 `exp021_mt_{cv,ct,ca}` 각 2048 envs ×
+> 1000 iters(~4.05 s/iter), wandb `a6saa42b`/`29jqq1lu`/`ntumqwoz` (project drone-bombard-isaac).
+> **종반 5-iter 창: cv release 0.67–0.90/drop@release 0.39–0.90 m · ct 0.43–0.80/0.24–1.24 m ·
+> ca 0.40–0.78/0.32–1.96 m(reward 음수 잔존)** — 난이도 cv<ct<ca, 정지-타겟(100%/0.39 m) 대비
+> 하락은 과제 난이도 상승분. **det 200-ep eval 미실행(후속; play.py는 동일 플래그로 무변경 지원).**
+> ckpt: 컨테이너 `/workspace/exp021/` + 호스트 `/opt/drone-bombard/checkpoints/exp021/`.
+> → [[experiments/exp_021_v19_moving_target]] / [[research/moving_target_models]] §5
+
+> **🔀 (이전 2026-07-23): Isaac Lab exp_020 — 물리 페이로드 부착 첫 학습 완주, 학습 비용 0 확증 + wandb eval-figure 파이프라인** —
 > `isaac_jk` 워크트리, `isaac-verify`/L4. Phase 1 `--release_terminal`, 2048 envs × 400 iters,
 > **warm-start `exp018_B0_final.pt` + `--w_aim 1.0 --aim_reward_scale 0.5`(B0 보상 bit-match)**
 > → `physical_payload=True`(cfg 기본)가 유일한 델타. wandb `o5jn9xzk`(train)/`vryuc6mu`(eval).
@@ -334,3 +349,4 @@
 | 2026-07-06 | **exp017 Stage A — 밀집 CCIP 조준 보상 (750gpldr/6z0gpnhy/fv5qqmtz, Isaac PPO, 병행 트랙)** | 3 runs (P1 400 + v1 400 + v2 600 iters, 2048 envs) | **보상-변경-단독은 release_rate 못 올림 — 판정 (b), Rule 22.** det 200-ep: 기준선 2.5% → v1(w=1) 5.5%(aim 0.889m·speed 2.72, 방향 실재·p≈0.13) → v2(w=2/knee 1.0) 3.5% 회귀. P1 기준선 학습 내 12→3.7% 단조 하락(근접 최적화가 릴리스 능력 파괴). 원인=γ-할인 완주 보너스·CCIP 노이즈 증폭(×1.53s)·성공 조기 종단. 5-lens 사전 검증, farm 0. ckpt 3종 분리 보존(+호스트 백업) — 차기 warm-start=stageA(v1). → [[experiments/exp_017_stageA_aim_reward]] / [[research/ccip_aim_reward_stageA]] |
 | 2026-07-06 | **exp018 Stage B — 릴리스-종단 이벤트 (xt0hrr1c/0ns10yso/4vaodj0o/kk06wsbx, Isaac PPO, 병행 트랙)** | 4 runs × 400 iters (전부 v1 warm-start) | **릴리스-종단 구조 → det release_rate 100.00%, drop err 0.125 m (Rule 23).** 종단 교체 단독(B0)으로 5.5%→100%(학습 내 23→99.6% 단조 상승 — Stage A 하락 반전, Rule 22a 인과 확정). aim 보상 노브 불감(w 0/1.5 100%, knee 0.75만 98.5%) — 자동 발화 referee가 노이즈를 +100 샘플러로 전환. done-flag alias 버그 사전 수정(eval success 0% 위험). 호버-드롭 수렴(종단 속도 0.11 m/s). **Stage C warm-start = exp018_B0_final.pt.** → [[experiments/exp_018_release_terminal]] / [[research/release_terminal_stageB]] |
 | 2026-07-23 | **exp020 물리 페이로드 부착 첫 학습 (o5jn9xzk train / vryuc6mu eval, Isaac PPO, 병행 트랙)** | 400 iters (2048 envs, warm-start=exp018_B0, 보상 bit-match) | **물리 페이로드(kinematic weld) 학습 비용 = 0 — det 200-ep success/release 100.00%, drop err 0.169 m.** `physical_payload=True`가 유일한 델타, release_rate 첫 롤아웃부터 100%(재학습 과도기 없음). σ 드리프트 1.41→1.71 모니터 대상. `play.py --wandb` eval-figure 파이프라인 신설. 컨테이너 빈 WANDB_API_KEY 함정(`--env-file` 필수). ckpt 호스트 `/opt/drone-bombard/checkpoints/exp020/`. → [[experiments/exp_020_o5jn9xzk_payload_training]] |
+| 2026-07-30 | **exp021 v19 + 이동 타겟 CV/CT/CA warm-start 학습 (a6saa42b/29jqq1lu/ntumqwoz, Isaac PPO, 병행 트랙)** | 3 runs × 1000 iters (2048 envs, warm-start=준상 v19 precise 사본) | **이동타겟 모션(CV/CT/CA)을 v19에 obs-보존 포팅 → 3종 학습 완주.** 종반 창: cv release 0.67–0.90/drop 0.39–0.90 m, ct 0.43–0.80/0.24–1.24 m, ca 0.40–0.78/0.32–1.96 m(reward 음수 잔존 — 가속 타겟 최난). 난이도 cv<ct<ca. det eval 후속. ckpt `/opt/drone-bombard/checkpoints/exp021/`. → [[experiments/exp_021_v19_moving_target]] |

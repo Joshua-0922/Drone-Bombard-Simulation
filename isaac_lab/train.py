@@ -317,27 +317,41 @@ def main():
             env_cfg.reward.aim_reward_scale = args_cli.aim_reward_scale
         if args_cli.release_terminal:
             env_cfg.release_terminal = True
-        # moving target (X marker) + Singer-KF tracker
-        if args_cli.moving_target:
-            env_cfg.moving_target_force = True
-        if args_cli.target_motion is not None:
-            env_cfg.phase_cfg.target_motion_model = args_cli.target_motion
-        if args_cli.target_speed is not None:
-            env_cfg.phase_cfg.target_init_speed = args_cli.target_speed
-        if args_cli.target_accel is not None:
-            env_cfg.phase_cfg.target_accel_max = args_cli.target_accel
-        if args_cli.target_omega_min is not None or args_cli.target_omega_max is not None:
-            lo, hi = env_cfg.phase_cfg.target_omega_range
-            env_cfg.phase_cfg.target_omega_range = (
-                args_cli.target_omega_min if args_cli.target_omega_min is not None else lo,
-                args_cli.target_omega_max if args_cli.target_omega_max is not None else hi,
-            )
-        if args_cli.target_kf:
-            env_cfg.target_kf_obs = True
-        if args_cli.kf_tau is not None:
-            env_cfg.tracker.tau = args_cli.kf_tau
-        if args_cli.kf_sigma_a is not None:
-            env_cfg.tracker.sigma_a = args_cli.kf_sigma_a
+
+    # --- moving target (X marker): base env AND v-track ---
+    # Every env cfg inherits DroneBombardEnvCfg's moving_target_force/phase_cfg;
+    # the v-track steps the target via V11Env._step_moving_target with the obs
+    # layout unchanged (the marker channels just move), so stationary-target
+    # checkpoints (e.g. the shared v19 ones) warm-start losslessly.
+    _vtrack = (args_cli.v11_test or args_cli.v12 or args_cli.v13 or args_cli.v14
+               or args_cli.v15 or args_cli.v16 or args_cli.v17 or args_cli.v18
+               or args_cli.v19)
+    if args_cli.target_kf and _vtrack:
+        # The KF obs extension lives only in the base env's observation builder;
+        # on the v-track the flag would silently do nothing — refuse instead.
+        print("[ERROR] --target_kf is base-env only (the v-track obs builders do not "
+              "include the tracker channels).", flush=True)
+        sys.exit(2)
+    if args_cli.moving_target:
+        env_cfg.moving_target_force = True
+    if args_cli.target_motion is not None:
+        env_cfg.phase_cfg.target_motion_model = args_cli.target_motion
+    if args_cli.target_speed is not None:
+        env_cfg.phase_cfg.target_init_speed = args_cli.target_speed
+    if args_cli.target_accel is not None:
+        env_cfg.phase_cfg.target_accel_max = args_cli.target_accel
+    if args_cli.target_omega_min is not None or args_cli.target_omega_max is not None:
+        lo, hi = env_cfg.phase_cfg.target_omega_range
+        env_cfg.phase_cfg.target_omega_range = (
+            args_cli.target_omega_min if args_cli.target_omega_min is not None else lo,
+            args_cli.target_omega_max if args_cli.target_omega_max is not None else hi,
+        )
+    if args_cli.target_kf:
+        env_cfg.target_kf_obs = True
+    if args_cli.kf_tau is not None:
+        env_cfg.tracker.tau = args_cli.kf_tau
+    if args_cli.kf_sigma_a is not None:
+        env_cfg.tracker.sigma_a = args_cli.kf_sigma_a
     env_cfg.scene.num_envs = args_cli.num_envs
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else "cuda:0"
     env_cfg.seed = args_cli.seed

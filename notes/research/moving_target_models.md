@@ -7,8 +7,8 @@ type: research
 
 # 이동 타겟 모션 모델(CV/CA/CT) + Singer-KF 타겟 트래커
 
-> 2026-07-28 구현. base env(`drone_bombard_env.py`) 전용 — v-track(v11~v19)은 미적용.
-> 단위테스트 57/57 PASS + isaac-verify 스모크 4종(2-iter) PASS.
+> 2026-07-28 구현. base env(`drone_bombard_env.py`) + **v-track(v11~v19, 2026-07-30 포팅 —
+> 모션만, KF obs 제외)**. 단위테스트 57/57 PASS + isaac-verify 스모크 4종(2-iter) PASS.
 
 ## 1. 타겟(X marker) 모션 모델 — `--target_motion {gm,cv,ca,ct}`
 
@@ -54,6 +54,24 @@ type: research
 - `--target_motion`/`--moving_target`만 쓰면 obs 불변 → warm-start 가능(단 과제 분포가 바뀌므로 보상 변화 관찰 필요).
 - play.py에 동일 플래그 세트 미러링 — **학습과 동일 플래그로 평가**해야 함(21-dim 정책 ↔ 14-dim env 불일치 즉사).
 
+## 5. v-track(v11~v19) 포팅 (2026-07-30, exp_021)
+
+- **모션만 포팅, KF obs 제외** — v19 warm-start(obs 28-D)와의 양립이 목적:
+  `V11Env._step_moving_target()` 신설, base env `_advance_phase_dynamics`와 동일 통합
+  지점(`_get_dones` 최상단)에서 `step_target_motion` 호출. V11/V16/V19 세 `_get_dones`
+  전부 wire(오버라이드 체인이 super를 안 타는 구조라 각각 명시 호출).
+- 초기 |v0|/accel/omega 샘플링은 base `_reset_idx`가 이미 처리(`moving_target_enabled` =
+  `phase>=3 or moving_target_force`, v-track은 phase=1이라 `--moving_target` 필수).
+  v11 `_reset_idx`의 marker 배치가 `_target_xy`를 덮어쓰므로 위치=v-track 시나리오,
+  속도=base 샘플러로 자연 합성. 마커 viz는 `_update_markers`가 `_target_xy`를 매 스텝
+  읽어 자동 추종.
+- **obs 불변** → v19 정지-타겟 ckpt lossless warm-start (exp_021에서 실증).
+- `--target_kf`+v-track은 train.py가 명시적 에러(v-track obs builder에 KF 채널 없음 —
+  silent no-op 방지). KF 관측이 필요하면 base env + fresh start.
+- 검증: `_probe_moving_v19.py`(8 envs × 30 steps zero-action) — CV |v| bit-불변 /
+  CT |v| 보존 ~1e-6(원호 적분) / CA |v| 증가, obs 28-D assert, NaN 0.
+- 역링크: [[experiments/exp_021_v19_moving_target]]
+
 ## 관련
 - [[experiments/training_history]] / [[research/rl_rules]] / [[research/phased_curriculum]]
-- 코드: `math_utils.py`(step_target_ca/ct/motion, pixel_to_ground_xy, singer_*, kf_*), `mdp/domain_rand.py`, `drone_bombard_env.py`(`DroneBombardTrackerCfg`, `_update_target_tracker`), `train.py`/`play.py` CLI
+- 코드: `math_utils.py`(step_target_ca/ct/motion, pixel_to_ground_xy, singer_*, kf_*), `mdp/domain_rand.py`, `drone_bombard_env.py`(`DroneBombardTrackerCfg`, `_update_target_tracker`), `v11_env.py`(`_step_moving_target`), `train.py`/`play.py` CLI
