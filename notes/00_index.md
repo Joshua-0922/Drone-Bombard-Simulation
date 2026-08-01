@@ -12,8 +12,9 @@ type: index
 
 ---
 
-## 현재 상태 (2026-07-24)
+## 현재 상태 (2026-08-01)
 
+- **브랜치 정리: `main` = `isaac_jk`로 승격 (2026-08-01).** 그동안 `main`이 07-03 시점(`Isaac Lab migration Phase 1 skeleton`)에 정체돼 있었음 — `isaac_jk`가 실제 진행 중인 유일한 통합 브랜치임을 확인 후 승격. 구 `main`(junsang `_junsang` 연구노트 20여 개 + 초기 `isaac_lab_tasks/` 스켈레톤)은 태그 `archive/main-pre-isaac_jk-promotion`으로 보존. `Isaac-JS`(제균 개인 브랜치, 07-02 이후 Gazebo/SAC 트랙만 진행돼 Isaac Lab 코드 없음)는 고유 연구노트(`daily_2026-07-05_gazebo_v15_regression`/`daily_2026-07-07`, Rule 25/26)만 `isaac_jk`로 포팅 후 삭제. `Issac_JS`(junsang, 오타 아님)는 미변경 — 단, 세션 중 junsang이 새 커밋(v20 task 등록)을 푸시해 아직 `main` 미반영 상태. → [[daily/daily_2026-08-01]]
 - **팀 브리핑(2026-07-28): [[daily/daily_2026-07-28_team_briefing]]** — isaac_jk 머지/이동타겟·KF 현황 + 팀원별 할 일
 - **병행 트랙 — Isaac Lab: 이동 타겟(CV/CA/CT) + Singer-KF 트래커 구현 (2026-07-28).** `--target_motion {gm,cv,ca,ct}`·`--moving_target`·`--target_kf`(obs 14→21) 신설, 단위테스트 57/57 + 스모크 4종 PASS, KF 추적오차 0.09–0.12 m. **--target_kf는 14-dim ckpt warm-start 불가(Fresh Start).** → [[research/moving_target_models]]
 - **병행 트랙 — Isaac Lab: exp020 시연 영상 파이프라인 + 렌더러 포렌식 (2026-07-24).** `record_episode.py` 재작성(metric-only referee로 발화→detach→실낙하 관측, trajectory NPZ 덤프) + `animate_episode.py`(matplotlib 3D/탑다운 mp4) + `sdg_dtype_patch.py`(annotator attach 차단 해제 핫패치). **실측 첫 데이터: CCIP pred err 0.111 m vs 실낙하 측정 miss 0.342 m** (seed 0, ×3 결정론 재현). **RTX 렌더 붕괴의 근본 원인 = 07-05 ultralytics pip이 교체한 numpy 2.4.6(omni ABI 파괴) — numpy 1.26.4 다운그레이드로 완전 해결, TiledCamera 진단도 같은 뿌리로 재해석.** 산출물: `logs/recordings/drone_bombard_exp020_payload_final.mp4`(실사 RTX 체이스캠) + `_anim.mp4`(matplotlib). → [[errors/err_20260724_isaac_render_frozen_fabric]]
@@ -223,6 +224,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-08-01]] — 브랜치 정리: 10개 브랜치 계보 조사, push 용량초과 원인 규명(실수로 커밋된 SAC/영상 바이너리), `Isaac-JS` 고유 노트 `isaac_jk`로 포팅 후 삭제, `main`을 `isaac_jk`로 승격(구 main은 태그로 보존)
 - [[daily/daily_2026-07-30]] — exp_021: 이동 타겟(CV/CT/CA) v19 포팅 + 준상 v19 warm-start(사본) 학습 3종 완주, wandb 3 runs
 - [[daily/daily_2026-07-23]] — exp_020 물리 페이로드 부착 학습 완주(100%, 학습 비용 0) + wandb eval-figure 파이프라인 + wandb 키 공백 함정 해결
 - [[daily/daily_2026-07-13]] — exp_015 이어학습(2차) P2/P3 ext 완주: iter 예산 확대로 0.8m 미돌파, P3 회귀, VM 종료
