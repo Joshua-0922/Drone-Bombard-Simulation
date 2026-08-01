@@ -102,6 +102,10 @@ parser.add_argument("--v19", action="store_true",
                     help="Staged integration #3: v18 (perception+physics) + REAL physical payload drop "
                          "(v16). Land-terminal, reward from real landing. Warm-start from a v18 ckpt with "
                          "--resume. DroneBombardV19Cfg + Isaac-DroneBombard-V19-Direct-v0.")
+parser.add_argument("--v20", action="store_true",
+                    help="Pipeline re-establishment: BIT-IDENTICAL to v19 (v19_precise spec) but "
+                         "retrained FROM SCRATCH in one monolithic run (no v18->v19 warm-start). "
+                         "Same 28-D obs / 7-D action. DroneBombardV20Cfg + Isaac-DroneBombard-V20-Direct-v0.")
 parser.add_argument("--v18_hard", action="store_true",
                     help="Phase 2 for --v18: tighten the eased Phase-1 params back to the full target "
                          "(gate 1.0, residual_scale 3.0, wind_std 2.0, pixel_cell_k 0.15). Warm-start from "
@@ -202,7 +206,7 @@ from drone_bombard.drone_bombard_env import DroneBombardEnvCfg  # noqa: E402
 from drone_bombard.v11_env import (  # noqa: E402
     DroneBombardV11Cfg, DroneBombardV12Cfg, DroneBombardV13Cfg, DroneBombardV14Cfg,
     DroneBombardV15Cfg, DroneBombardV16Cfg, DroneBombardV17Cfg, DroneBombardV18Cfg,
-    DroneBombardV19Cfg,
+    DroneBombardV19Cfg, DroneBombardV20Cfg,
 )
 from drone_bombard.agents.rsl_rl_ppo_cfg import DroneBombardPPORunnerCfg  # noqa: E402
 
@@ -215,7 +219,11 @@ def main():
 
     # --- env cfg (built directly — the path proven by verify_one_episode.py) ---
     task = args_cli.task
-    if args_cli.v19:
+    if args_cli.v20:
+        # pipeline re-establishment: v19 spec, retrained from scratch (monolithic).
+        task = "Isaac-DroneBombard-V20-Direct-v0"
+        env_cfg = DroneBombardV20Cfg()
+    elif args_cli.v19:
         # staged integration #3: perception + physics + physical drop.
         task = "Isaac-DroneBombard-V19-Direct-v0"
         env_cfg = DroneBombardV19Cfg()
@@ -284,6 +292,7 @@ def main():
     agent_cfg.logger = args_cli.logger
     agent_cfg.wandb_project = args_cli.wandb_project
     agent_cfg.run_name = args_cli.run_name if args_cli.run_name else (
+        "v20" if args_cli.v20 else
         "v19" if args_cli.v19 else
         ("v18_hard" if args_cli.v18_hard else "v18") if args_cli.v18 else
         "v17" if args_cli.v17 else

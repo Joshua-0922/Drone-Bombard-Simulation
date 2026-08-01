@@ -286,6 +286,23 @@ class DroneBombardV19Cfg(DroneBombardV18Cfg):
     v19_success_bonus: float = 100.0      # discrete bump for err <= success_radius
 
 
+@configclass
+class DroneBombardV20Cfg(DroneBombardV19Cfg):
+    """v20 = pipeline re-establishment: BIT-IDENTICAL to v19 (the final v19_precise
+    spec — perception + physics + real physical drop + potential aim shaping (A) +
+    loiter penalty (B) + continuous precise landing reward). NOTHING changes in the
+    environment or reward.
+
+    The only reason v20 exists is procedural: we retrain the full v19 spec FROM
+    SCRATCH in a single monolithic run (no v18->v19 warm-start chain) to see whether
+    the integrated task is learnable end-to-end. If it is, the pipeline collapses to
+    one clean stage. If a metric collapses, we decompose from here using the proven
+    toolbox (release_radius / residual_scale / wind_std / analytic-vs-physical drop /
+    reward toggles / best-checkpoint retention). Same 28-D obs / 7-D action, so any
+    v19 checkpoint still loads losslessly if we ever want to compare."""
+    pass
+
+
 class DroneBombardV11Env(DroneBombardEnv):
     cfg: DroneBombardV11Cfg
 
@@ -1136,3 +1153,10 @@ class DroneBombardV19Env(DroneBombardV18Env):
         self._d_xy_prev = d_xy
         self._d_impact_prev = d_impact
         return torch.nan_to_num(r, nan=0.0)
+
+
+class DroneBombardV20Env(DroneBombardV19Env):
+    """v20 = v19 environment, unchanged. Distinct class only so the v20 task id
+    registers cleanly; all dynamics/reward are inherited verbatim from v19.
+    See DroneBombardV20Cfg for why v20 exists (fresh-from-scratch pipeline run)."""
+    cfg: DroneBombardV20Cfg

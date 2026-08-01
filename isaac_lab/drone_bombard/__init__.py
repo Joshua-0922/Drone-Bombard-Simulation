@@ -12,6 +12,7 @@ from .v11_env import (
     DroneBombardV17Env, DroneBombardV17Cfg,
     DroneBombardV18Env, DroneBombardV18Cfg,
     DroneBombardV19Env, DroneBombardV19Cfg,
+    DroneBombardV20Env, DroneBombardV20Cfg,
 )
 
 gym.register(
@@ -134,6 +135,18 @@ gym.register(
     },
 )
 
+gym.register(
+    # v20: pipeline re-establishment — BIT-IDENTICAL to v19 (v19_precise spec),
+    # retrained from scratch in one monolithic run. Same env class behavior.
+    id="Isaac-DroneBombard-V20-Direct-v0",
+    entry_point="drone_bombard.v11_env:DroneBombardV20Env",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": DroneBombardV20Cfg,
+        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
+    },
+)
+
 __all__ = [
     "DroneBombardEnv", "DroneBombardEnvCfg",
     "DroneBombardV11Env", "DroneBombardV11Cfg", "DroneBombardV12Cfg",
@@ -143,4 +156,5 @@ __all__ = [
     "DroneBombardV17Env", "DroneBombardV17Cfg",
     "DroneBombardV18Env", "DroneBombardV18Cfg",
     "DroneBombardV19Env", "DroneBombardV19Cfg",
+    "DroneBombardV20Env", "DroneBombardV20Cfg",
 ]
