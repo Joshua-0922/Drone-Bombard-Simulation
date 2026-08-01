@@ -1,0 +1,37 @@
+# .graphifyignore — gitignore 문법. graphify가 지식 그래프를 만들 때 제외할 경로.
+#
+# 왜 필요한가: 이 repo를 그냥 그래프화하면 4,789 파일 / 7.1M 단어가 잡히는데
+# 그 중 코드는 110개뿐이고 나머지는 YOLO 학습 데이터셋과 비행 영상이다.
+# 코드(tree-sitter AST)는 LLM 없이 무료로 파싱되지만 이미지·영상·문서는
+# LLM/비전 패스를 타므로, 걸러내지 않으면 토큰을 아끼려다 오히려 대량 소모한다.
+
+# ── YOLO 학습 데이터셋 (이미지 2,243 + 라벨 .txt 2,225) ────────────────
+# 구조적 가치 0. 그래프에 넣을 이유가 없다.
+ros2_ws/yolo_workspace/datasets/
+ros2_ws/yolo_workspace/runs/
+yolo_workspace/runs/
+
+# ── 비행 영상 / 평가 산출물 ────────────────────────────────────────────
+*.mp4
+ros2_ws/rl_eval_results/
+ros2_ws/rl_abtest_*/
+ros2_ws/rl_dryrun_*/
+ros2_ws/rl_softreset_test/
+local/evals/
+
+# ── 런타임 산출물 ──────────────────────────────────────────────────────
+ros2_ws/rl_checkpoints/
+ros2_ws/rl_logs/
+*.pt
+*.zip
+*.pkl
+
+# ── Obsidian vault 설정/플러그인 ───────────────────────────────────────
+# notes/.obsidian/plugins/dataview/main.js 는 미니파이된 서드파티 번들이라
+# 첫 빌드에서 그래프 상위 허브를 DateTime/Duration/DataviewApi 같은
+# 플러그인 내부 심볼이 전부 차지해버렸다. vault의 *노트*는 그래프에 넣되
+# vault *설정*은 반드시 제외할 것.
+notes/.obsidian/
+
+# ── graphify 자체 출력 ─────────────────────────────────────────────────
+graphify-out/

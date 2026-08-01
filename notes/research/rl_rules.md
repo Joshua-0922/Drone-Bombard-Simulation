@@ -544,6 +544,66 @@ fixed joint가 아니라 **kinematic weld**(부착 env만 매 physics step pose+
 
 ---
 
+## Rule 25 — smoothness/속도 댐핑 반경이 종단 실패 반경을 덮으면 회귀 유발
+
+**상세:** [[daily/daily_2026-07-05_gazebo_v15_regression]] · [[experiments/exp_011_wobble_lpf_reward_damping]] · [[experiments/exp_010_byxyaf4d_v14_195k_eval]]
+
+> Gazebo/SAC 트랙(jekyun/Isaac-JS 브랜치, isaac_jk 분기 이전 07-01~07-05 구간)에서 나온 규칙. Isaac Lab 트랙과는 별개 시뮬레이터/보상 코드다.
+
+v14의 지배적 실패 모드는 **final-approach stagnation**(0.5–1.2m에서 정체, `success_radius` 직전).
+Rule 15의 wobble 교정(B: 근접-게이팅 속도 댐핑)을 `vel_damp_radius=3.0m`로 도입했는데, 이는
+`success_radius=0.8m`보다 훨씬 넓다 — 결과적으로 **정체가 이미 벌어지던 바로 그 구간 전체에
+"가까울수록 감속" 유인이 추가로 걸림.** `w_ang_vel`/`w_action_smooth` 상향도 방향은 같아서, 종단
+gap을 closing하는 데 필요한 결정적 보정 기동에 비용을 물릴 수 있다.
+
+**교훈 — smoothness/속도 댐핑 보상을 도입할 때:**
+- 댐핑 반경(`*_damp_radius`)은 반드시 **success/termination 반경보다 작게** 설정할 것. 크면
+  "wobble 억제"가 "종단 접근 억제"로 새는 회귀를 유발할 수 있다.
+- 기존에 알려진 실패 모드(여기선 stagnation)가 있는 상태에서 새 댐핑/스무딩 보상을 얹을 땐,
+  그 실패 모드가 발생하던 정확한 거리 구간과 새 보상의 활성 구간이 겹치는지 **먼저 겹쳐 그려볼 것**.
+- 완화(값 축소, 0.15→0.08처럼)는 리스크를 줄이지만 **제거하지는 않는다** — "완화했으니 됐다"로
+  넘기지 말고 반드시 eval outcome breakdown으로 재발 여부를 확인.
+
+**추가로:** crash-resume 서포바이저(`run_train_supervised.sh`)는 재개 시 정책 가중치만 복원하고
+**replay buffer는 매번 초기화**된다. "recurring abort"가 있었다면 최종 스텝 카운트만큼의 연속 학습이
+실제로는 이뤄지지 않았을 수 있다 — 반복 크래시가 있었던 run을 평가할 땐 재개 횟수를 로그에서
+정량화하고, 가능하면 crash-resume 시 replay buffer도 함께 보존하도록 체크포인트 로직을 개선할 것.
+
+**⚠️ 07-05 정정:** v15의 310K 정지는 애초 계획된 eval-stop이 아니라, **호스트 GPU 드라이버가 Isaac Lab
+트랙용으로 580으로 업그레이드되면서 `drone-bombard-harmonic` 컨테이너(NVML/CUDA lib 535 빌드)가 깨져
+강제 중단된 것**으로 확인됨. → Rule 26.
+
+---
+
+## Rule 26 — GPU 드라이버는 트랙 간 공유 자원이다: 한쪽 업그레이드가 다른 쪽 컨테이너를 깬다
+
+**상세:** [[daily/daily_2026-07-05_gazebo_v15_regression]]
+
+> Gazebo/SAC 트랙 쪽 발견. Isaac Lab 컨테이너(`isaac-verify`)와 Gazebo 컨테이너(`drone-bombard-harmonic`)가
+> 같은 호스트 GPU를 공유하던 시절(07-03)의 인시던트 — isaac_jk 워크플로우가 `isaac-verify` 전용으로 굳어진
+> 지금은 재발 가능성이 낮지만, 호스트 드라이버를 바꿀 일이 있으면 여전히 유효한 경고.
+
+Isaac Lab 트랙 작업을 위해 호스트 GPU 드라이버를 535→580으로 업그레이드했는데, 이 호스트는
+Gazebo/SAC 트랙(`drone-bombard-harmonic` 컨테이너, NVML/CUDA userspace lib 535 빌드)과 **GPU를 공유**한다.
+드라이버 업그레이드 시점(07-03)에 v15 학습이 마침 진행 중이었고, 이후 조사 결과:
+
+- 컨테이너 내부 `nvidia-smi` → `Failed to initialize NVML: Driver/library version mismatch`.
+- `gz sim -s -r --headless-rendering ...` 단독 실행 시 **45초간 로그 무출력**, `gz topic -l`은
+  `timeout 8` 래핑에도 **행(hang)** — CUDA(추론)만이 아니라 gz sim의 헤드리스 GPU 렌더링
+  (Ogre2/EGL) 경로 자체가 깨졌을 가능성.
+- PX4가 position data를 못 받아 **CRUISE timeout → full restart ×3 → forced reset**을 반복
+  — v15 학습 말기에 관측된 reset-recursion과 동일 시그니처.
+
+**교훈:**
+- 한 트랙(Isaac)의 드라이버 업그레이드가 다른 트랙(Gazebo/SAC)의 컨테이너를 조용히 깰 수 있다.
+  드라이버 변경 후에는 **양쪽 컨테이너 모두** `nvidia-smi`/`gz sim` 기동을 검증할 것.
+- "학습이 특정 스텝에서 멈췄다"는 사실만으로 계획된 stop인지 강제 중단인지 판단하지 말 것 —
+  체크포인트 타임스탬프와 그 시점의 다른 트랙 작업(드라이버·인프라 변경) 이력을 대조 확인.
+- 인프라(드라이버/컨테이너) 문제는 보상/정책 진단보다 **우선순위가 높다** — 인프라가 죽어 있으면
+  eval 실패가 정책 실패처럼 보일 수 있다(reset-recursion 시그니처가 두 경우 모두 동일하게 나타난다).
+
+---
+
 ## Known Failure Modes
 
 | 증상 | 원인 | 해결 |

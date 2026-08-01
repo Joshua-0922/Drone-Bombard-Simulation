@@ -6,6 +6,54 @@
 
 MEMORY.md는 자동 로드됨. 추가 컨텍스트 필요 시 최근 daily 노트 읽기.
 
+**코드 구조를 파악해야 할 때는 grep 전에 지식 그래프부터 조회** (아래 graphify 섹션).
+
+---
+
+## graphify — 코드·노트 지식 그래프 (탐색 우선순위)
+
+`graphify-out/graph.json`에 코드 심볼과 `notes/` 문서가 **하나의 그래프로 연결**되어 있음.
+tree-sitter AST 기반이라 조회에 LLM 토큰이 들지 않음.
+
+### 언제 쓰나 — grep보다 먼저
+
+| 상황 | 쓸 명령 |
+|------|---------|
+| "X는 어디서 어떻게 동작하나" | `graphify query "X" --budget 2000` |
+| "X를 고치면 뭐가 깨지나" | `graphify affected "X" --depth 2` |
+| "이 심볼 주변 설명" | `graphify explain "X"` |
+| "A와 B가 어떻게 이어지나" | `graphify path "A" "B"` |
+| "핵심 모듈이 뭔가" | `graphify god-nodes --top 10` |
+
+> **파일명·심볼명을 이미 아는 단일 조회는 그냥 Read/Grep이 빠름.**
+> 그래프는 "여러 파일에 걸쳐 흩어진 구조를 훑어야 할 때"만 이득.
+
+조회 결과에는 `src=<파일> loc=<줄번호>`가 붙으므로, 그래프로 **후보를 좁힌 뒤 실제 파일을 Read**하는 순서로 쓸 것.
+그래프는 심볼 위치 인덱스이지 코드 내용이 아님 — 그래프만 보고 코드 동작을 단정하지 말 것.
+
+### 그래프 갱신
+
+```bash
+graphify update .    # 변경된 코드만 재추출 (LLM 불필요, 무료)
+```
+
+- **코드를 수정했으면 갱신할 것.** 안 하면 그래프가 옛 구조를 가리킴 (stale 위험).
+- `graphify-out/`은 `.gitignore` 대상 — 커밋하지 말 것. 로컬에서 재생성.
+- 제외 경로는 `.graphifyignore`에 있음. **이 파일은 반드시 유지할 것:**
+  없이 돌리면 YOLO 데이터셋·비행 영상까지 잡혀 4,789 파일/7.1M 단어가 되고
+  (있으면 253 파일/268K 단어), `notes/.obsidian/plugins/dataview/main.js`가
+  그래프 상위 허브를 전부 차지함.
+
+### Obsidian vault와의 관계
+
+`notes/`는 사람이 읽는 **연구 기록**(왜 이 값인가, 무엇을 시도했고 왜 실패했나),
+graphify 그래프는 기계가 조회하는 **구조 인덱스**(무엇이 무엇을 호출하나). 역할이 다르므로 **둘 다 유지**.
+
+그래프는 코드 심볼과 노트를 이미 교차 연결함 — 예: reset 관련 질의 하나로
+`DroneDropEnv._try_soft_reset()` (drone_drop_env.py:1592)와
+`notes/research/reset_throughput_bottleneck.md`가 같이 나옴.
+따라서 **"이 repo는 그래프화되어 있다"는 안내용 노트를 vault에 따로 만들지 않음** (내용 없는 포인터 노드 = 관리 부채).
+
 ---
 
 ## Obsidian 연구 비서 규칙 (MANDATORY)
