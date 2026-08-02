@@ -21,6 +21,9 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(description="Play / sanity-check Isaac-DroneBombard-Direct-v0.")
 parser.add_argument("--task", type=str, default="Isaac-DroneBombard-Direct-v0")
 parser.add_argument("--num_envs", type=int, default=4)
+parser.add_argument("--seed", type=int, default=42,
+                    help="Env seed (same default as train.py) — without it eval resets are random "
+                         "and runs are not comparable.")
 parser.add_argument("--policy", type=str, default=None)
 parser.add_argument("--zero-actions", action="store_true")
 parser.add_argument("--scripted", action="store_true")
@@ -419,6 +422,7 @@ def _log_eval_to_wandb(policy_path, n_done, cause_counts, causes, cat,
 
 def main():
     env_cfg = parse_env_cfg(args_cli.task, num_envs=args_cli.num_envs)
+    env_cfg.seed = args_cli.seed
     # Chase camera locked on the drone so --policy playback is actually visible
     # in the livestream/GUI (default world camera stares at the ground grid and
     # the drone flies off-frame at ~10 m altitude). Pulled in from (-8,-8,4) —
