@@ -11,6 +11,10 @@ type: research
 > 코드(`v11_env.py`, `drone_bombard_env.py`)를 **한 문서**로 합쳐, "각 버전이 무엇을 추가했고 /
 > 어디서 warm-start 했고 / 무엇이 증명됐는가"를 정리하고 **논문 ablation·차별점**을 설계한다.
 > 근거 노트는 각 절에 wikilink. 허브: [[00_index]] · [[research/rl_rules]] · [[experiments/training_history]]
+>
+> ➡️ **앞으로의 설계도는 [[research/paper_research_plan]]** (문헌 105편 스윕 결과, 차별점 3종의 방어 문구,
+> 베이스라인 T0~T5 / 잔차 위치 R0~R3 / 구조 vs 보상 S0~S4 표 설계, 지표 5종, 실행 순서 P0~P4).
+> 본 문서 §8.3의 N1~N7은 그 계획의 P0~P3에 흡수되었다.
 
 > ⚠️ **문서 위생 이슈**
 > 1. ~~준상 v-track 연구노트가 `main`에 없다~~ → **✅ 2026-08-02 복원 완료.** `notes/**/*_junsang.md`

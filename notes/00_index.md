@@ -14,6 +14,7 @@ type: index
 
 ## 현재 상태 (2026-08-02)
 
+- **📄 논문 연구 계획 (앞으로의 설계도): [[research/paper_research_plan]]** — 문헌 105편 스윕 + `Learning to Throw`/`AeroThrow` 정독 기반. **비어 있는 칸 = 자유낙하·멀티로터·순항 릴리스·학습 트리거·유도레벨 잔차·탐지 조건화·바람 DR·이동표적의 조합.** 주장 3종(C1 유도레벨 잔차 / C2 좌표 비복원 탐지 조건화 / C3 릴리스=종단 구조 귀속)을 각각 최근접 선행에 대해 헷지한 문구로 고정. 표 7종 설계(T0~T5 베이스라인 · R0~R3 잔차 위치 · S0~S4 구조 vs 보상 · 보상 병리 · 충실도 사다리 · 인지 사다리 · 리드 L0~L5), 지표 5종(+CEP, 반송시간), 실행 순서 P0~P4, 리뷰어 공격 8종 선제 대응.
 - **📄 연구 전체 통합 개요 (논문용): [[research/research_overview_for_paper]]** — 두 트랙(Gazebo/SAC, Isaac Lab) + 세 계보(base env 커리큘럼 / v-track 사다리 v11~v20 / 이동타겟)를 한 문서로 합침. 각 v가 추가한 기능·obs/action·warm-start 출처·결과 표, 체크포인트 혈통도, 확정 발견 12종(F1~F12), **이미 확보한 ablation 13축 + 추가로 필요한 실험 N1~N7**, 방법론 약점 7종(단일 시드·select_best 선택편향·rule-based 베이스라인 부재 등).
 - **준상 v-track 연구노트 34개 `main` 복원 (2026-08-02).** 구 main 아카이빙 때 태그 `archive/main-pre-isaac_jk-promotion`에만 남아 있던 `notes/**/*_junsang.md`(v11~v19 1차 사료 + 모델 스펙 + 붕괴 진단 + SAC 초기 연구)를 전부 복원. 진입점: [[research/isaac_model_spec_junsang]] · [[research/isaac_expansion_roadmap_junsang]] · [[research/isaac_v19_collapse_nodrop_junsang]] · [[00_index_junsang]]. ⚠️ `exp_006`~`exp_016` 번호가 제균 트랙과 충돌하니 인용 시 `_junsang` 접미사로 구분할 것.
 - **`.gitignore` 정비 (2026-08-02).** `ros2_ws/` 접두사 누락으로 YOLO datasets/epoch 가중치 규칙이 무효였던 것 수정 + `rl_abtest_*`/`rl_dryrun_*`/`rl_softreset_test`(현재 untracked 148MB) 제외 → `git add .` 사고 방지. Obsidian 로컬 UI 상태(`workspace.json`)는 추적 해제. **이미 커밋된 367MB(datasets .jpg 173MB + epoch*.pt 180MB + ign_recording.mp4 14MB)는 `git rm --cached` 별도 판단 필요.**
@@ -169,6 +170,7 @@ type: index
 ## 노트 인덱스
 
 ### 연구 (research/)
+- [[research/paper_research_plan]] — **(08-02) 논문 연구 계획 — 문헌 지도·차별점 3종·표 7종(베이스라인/잔차 위치/구조 vs 보상/충실도/인지/리드)·실행 순서 P0~P4**
 - [[research/research_overview_for_paper]] — **(08-02) 전 연구 통합 개요 — 계보·warm-start 체인·발견 F1~F12·ablation 설계(논문용)**
 - [[research/vision_obs_refactor]] — Vision 기반 obs 리팩토링 (GPS 제거, YOLO 전환)
 - [[research/phase1_plan]] — Phase 1 CCIP 기반 자율 접근 연구 계획 (8주, 5/8-6/30)
