@@ -78,6 +78,28 @@ isaac_lab/logs/
 *.mp4
 isaac_lab/_probe_out/
 
+# ----------------------
+# ros2_ws/ 접두사 판(위 YOLO 규칙들이 접두사 없는 경로만 잡고 있어 누락돼 있었음).
+# 이미 커밋된 분량(datasets .jpg 173MB + epoch*.pt 180MB + ign_recording.mp4 14MB)은
+# .gitignore로 안 빠짐 — 추적 해제는 `git rm --cached` 필요(별도 판단).
+# ----------------------
+ros2_ws/yolo_workspace/datasets/
+ros2_ws/yolo_workspace/runs/train/*/weights/epoch*.pt
+ros2_ws/yolo_workspace/runs/train/*/weights/last.pt
+
+# A/B·dry-run·평가 산출물 디렉터리 (현재 untracked 148MB — `git add .` 사고 방지)
+ros2_ws/rl_abtest_*/
+ros2_ws/rl_dryrun_*/
+ros2_ws/rl_softreset_test/
+ros2_ws/rl_logs/
+ros2_ws/rl_eval_results*/*.mp4
+ros2_ws/rl_eval_results*/*.avi
+
+# Obsidian 로컬 UI 상태 (사람마다 다름, 커밋할 이유 없음) + 서드파티 플러그인 번들
+notes/.obsidian/workspace.json
+notes/.obsidian/workspace-mobile.json
+notes/.obsidian/plugins/
+
 # ======================
 # graphify (knowledge graph)
 # ======================

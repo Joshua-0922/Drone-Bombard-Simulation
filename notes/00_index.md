@@ -12,6 +12,12 @@ type: index
 
 ---
 
+## 현재 상태 (2026-08-02)
+
+- **📄 연구 전체 통합 개요 (논문용): [[research/research_overview_for_paper]]** — 두 트랙(Gazebo/SAC, Isaac Lab) + 세 계보(base env 커리큘럼 / v-track 사다리 v11~v20 / 이동타겟)를 한 문서로 합침. 각 v가 추가한 기능·obs/action·warm-start 출처·결과 표, 체크포인트 혈통도, 확정 발견 12종(F1~F12), **이미 확보한 ablation 13축 + 추가로 필요한 실험 N1~N7**, 방법론 약점 7종(단일 시드·select_best 선택편향·rule-based 베이스라인 부재 등).
+- **준상 v-track 연구노트 34개 `main` 복원 (2026-08-02).** 구 main 아카이빙 때 태그 `archive/main-pre-isaac_jk-promotion`에만 남아 있던 `notes/**/*_junsang.md`(v11~v19 1차 사료 + 모델 스펙 + 붕괴 진단 + SAC 초기 연구)를 전부 복원. 진입점: [[research/isaac_model_spec_junsang]] · [[research/isaac_expansion_roadmap_junsang]] · [[research/isaac_v19_collapse_nodrop_junsang]] · [[00_index_junsang]]. ⚠️ `exp_006`~`exp_016` 번호가 제균 트랙과 충돌하니 인용 시 `_junsang` 접미사로 구분할 것.
+- **`.gitignore` 정비 (2026-08-02).** `ros2_ws/` 접두사 누락으로 YOLO datasets/epoch 가중치 규칙이 무효였던 것 수정 + `rl_abtest_*`/`rl_dryrun_*`/`rl_softreset_test`(현재 untracked 148MB) 제외 → `git add .` 사고 방지. Obsidian 로컬 UI 상태(`workspace.json`)는 추적 해제. **이미 커밋된 367MB(datasets .jpg 173MB + epoch*.pt 180MB + ign_recording.mp4 14MB)는 `git rm --cached` 별도 판단 필요.**
+
 ## 현재 상태 (2026-08-01)
 
 - **브랜치 정리: `main` = `isaac_jk`로 승격 (2026-08-01).** 그동안 `main`이 07-03 시점(`Isaac Lab migration Phase 1 skeleton`)에 정체돼 있었음 — `isaac_jk`가 실제 진행 중인 유일한 통합 브랜치임을 확인 후 승격. 구 `main`(junsang `_junsang` 연구노트 20여 개 + 초기 `isaac_lab_tasks/` 스켈레톤)은 태그 `archive/main-pre-isaac_jk-promotion`으로 보존. `Isaac-JS`(제균 개인 브랜치, 07-02 이후 Gazebo/SAC 트랙만 진행돼 Isaac Lab 코드 없음)는 고유 연구노트(`daily_2026-07-05_gazebo_v15_regression`/`daily_2026-07-07`, Rule 25/26)만 `isaac_jk`로 포팅 후 삭제. `Issac_JS`(junsang, 오타 아님)는 미변경 — 단, 세션 중 junsang이 새 커밋(v20 task 등록)을 푸시해 아직 `main` 미반영 상태. → [[daily/daily_2026-08-01]]
@@ -163,6 +169,7 @@ type: index
 ## 노트 인덱스
 
 ### 연구 (research/)
+- [[research/research_overview_for_paper]] — **(08-02) 전 연구 통합 개요 — 계보·warm-start 체인·발견 F1~F12·ablation 설계(논문용)**
 - [[research/vision_obs_refactor]] — Vision 기반 obs 리팩토링 (GPS 제거, YOLO 전환)
 - [[research/phase1_plan]] — Phase 1 CCIP 기반 자율 접근 연구 계획 (8주, 5/8-6/30)
 - [[research/reward_design]] — 4-layer 보상 함수 (LaTeX 수식)
