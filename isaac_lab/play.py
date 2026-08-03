@@ -40,6 +40,16 @@ parser.add_argument("--drop-test", action="store_true",
                     help="Verify the v16 physical payload: cruise, force a release, and check the payload "
                          "physically falls along the drag-free ballistic curve (mid-air, before landing).")
 parser.add_argument("--episodes", type=int, default=10)
+parser.add_argument("--no_handoff_dr", action="store_true",
+                    help="Evaluate with the FIXED v19 handoff (heading/speed/altitude/attitude) even if the "
+                         "task randomizes it — the train/test-mismatch protocol needs both directions.")
+parser.add_argument("--no_dyn_dr", action="store_true",
+                    help="Evaluate with the nominal plant: no mass-belief/gain/ballistic-coefficient "
+                         "mismatch and no obs/action noise, even if the task randomizes them.")
+parser.add_argument("--handoff_heading_deg", type=float, default=None,
+                    help="Override the handoff heading range to +/- this many degrees (0 = the fixed +X "
+                         "cruise). Isolates world-frame heading generalization from the rest of the "
+                         "handoff randomization.")
 parser.add_argument("--release-terminal", action="store_true",
                     help="Evaluate under the Stage-B (exp_018) release-as-terminal semantics — "
                          "must match how the policy was trained, or proximity termination "
@@ -461,6 +471,14 @@ def main():
         env_cfg.tracker.tau = args_cli.kf_tau
     if args_cli.kf_sigma_a is not None:
         env_cfg.tracker.sigma_a = args_cli.kf_sigma_a
+    # train/test distribution mismatch knobs (P0): turn OFF what the task turns on.
+    if args_cli.no_handoff_dr and hasattr(env_cfg, "handoff"):
+        env_cfg.handoff.enabled = False
+    if args_cli.handoff_heading_deg is not None and hasattr(env_cfg, "handoff"):
+        h = abs(args_cli.handoff_heading_deg)
+        env_cfg.handoff.heading_range_deg = (-h, h)
+    if args_cli.no_dyn_dr:
+        env_cfg.dyn_dr.enabled = False
     env = gym.make(args_cli.task, cfg=env_cfg)
     env = RslRlVecEnvWrapper(env)
 

@@ -12,8 +12,14 @@ type: index
 
 ---
 
-## 현재 상태 (2026-08-02)
+## 현재 상태 (2026-08-03)
 
+- **🧪 P0 착수 — 핸드오프 랜덤화 + 동역학/센싱 DR (`v20` env 신설): [[experiments/exp_022_p0_handoff_dyn_dr]]**
+  v11~v19의 완전 고정 핸드오프(원점·10 m·+X 4 m/s·수평)를 토글로 제거하고, PhysX 런타임 쓰기 없이
+  플랜트/센서 DR을 추가(질량→컨트롤러 *신념*, 페이로드 질량→*탄도계수* 등가). 유닛 66/66 + 프로브 27/27 PASS,
+  v19 ckpt 무손실 warm-start 확인. **동일 ckpt 4조건 판정: 고정 91.0% → +동역학DR 91.5% → +속도/고도/자세 77.1%
+  → +방위±180° 7.5%** — 동역학 DR은 공짜, **월드프레임 방위 랜덤화가 파괴적**(접근만 붕괴, 투하 스킬은 불변)
+  → [[research/handoff_generalization_p0]] (Rule 27). 다음: v20 학습 vs 방위불변 obs 갈림길.
 - **📄 논문 연구 계획 (앞으로의 설계도): [[research/paper_research_plan]]** — 문헌 105편 스윕 + `Learning to Throw`/`AeroThrow` 정독 기반. **비어 있는 칸 = 자유낙하·멀티로터·순항 릴리스·학습 트리거·유도레벨 잔차·탐지 조건화·바람 DR·이동표적의 조합.** 주장 3종(C1 유도레벨 잔차 / C2 좌표 비복원 탐지 조건화 / C3 릴리스=종단 구조 귀속)을 각각 최근접 선행에 대해 헷지한 문구로 고정. 표 7종 설계(T0~T5 베이스라인 · R0~R3 잔차 위치 · S0~S4 구조 vs 보상 · 보상 병리 · 충실도 사다리 · 인지 사다리 · 리드 L0~L5), 지표 5종(+CEP, 반송시간), 실행 순서 P0~P4, 리뷰어 공격 8종 선제 대응.
 - **📄 연구 전체 통합 개요 (논문용): [[research/research_overview_for_paper]]** — 두 트랙(Gazebo/SAC, Isaac Lab) + 세 계보(base env 커리큘럼 / v-track 사다리 v11~v20 / 이동타겟)를 한 문서로 합침. 각 v가 추가한 기능·obs/action·warm-start 출처·결과 표, 체크포인트 혈통도, 확정 발견 12종(F1~F12), **이미 확보한 ablation 13축 + 추가로 필요한 실험 N1~N7**, 방법론 약점 7종(단일 시드·select_best 선택편향·rule-based 베이스라인 부재 등).
 - **준상 v-track 연구노트 34개 `main` 복원 (2026-08-02).** 구 main 아카이빙 때 태그 `archive/main-pre-isaac_jk-promotion`에만 남아 있던 `notes/**/*_junsang.md`(v11~v19 1차 사료 + 모델 스펙 + 붕괴 진단 + SAC 초기 연구)를 전부 복원. 진입점: [[research/isaac_model_spec_junsang]] · [[research/isaac_expansion_roadmap_junsang]] · [[research/isaac_v19_collapse_nodrop_junsang]] · [[00_index_junsang]]. ⚠️ `exp_006`~`exp_016` 번호가 제균 트랙과 충돌하니 인용 시 `_junsang` 접미사로 구분할 것.
@@ -170,6 +176,7 @@ type: index
 ## 노트 인덱스
 
 ### 연구 (research/)
+- [[research/handoff_generalization_p0]] — **(08-03) 고정 초기조건은 표현을 암기시킨다 — 랜덤화 축 분류(표현 vs 강건성), Rule 27**
 - [[research/paper_research_plan]] — **(08-02) 논문 연구 계획 — 문헌 지도·차별점 3종·표 7종(베이스라인/잔차 위치/구조 vs 보상/충실도/인지/리드)·실행 순서 P0~P4**
 - [[research/research_overview_for_paper]] — **(08-02) 전 연구 통합 개요 — 계보·warm-start 체인·발견 F1~F12·ablation 설계(논문용)**
 - [[research/vision_obs_refactor]] — Vision 기반 obs 리팩토링 (GPS 제거, YOLO 전환)
@@ -223,6 +230,7 @@ type: index
 - [[experiments/exp_018_release_terminal]] — **(07-06) Stage B: 릴리스-종단 4-run(B0 종단만/B1 w↑/B2 knee↑/B3 aim 제거).** det 100/100/98.5/100%, drop err ~0.13 m, 학습 내 단조 상승. 호버-드롭 수렴, Stage C warm-start=B0. Rule 23.
 - [[experiments/exp_019_physical_payload]] — **(07-21) 물리 페이로드 attach/detach — kinematic weld 구현·검증 4/4 PASS.** 결함 6종 발견·3종 수정, 측정 착탄 vs 해석적 CCIP |Δ| ≤ 0.021 m, 보상/종단 bit-identical. Rule 24.
 - [[experiments/exp_020_o5jn9xzk_payload_training]] — **(07-23) 물리 페이로드 부착 첫 학습 — 학습 비용 0 확증.** B0 warm-start + 보상 bit-match, det 200-ep 100.00%/drop 0.169 m. σ 드리프트 1.41→1.71 관찰. `play.py --wandb` eval-figure 파이프라인 신설.
+- [[experiments/exp_022_p0_handoff_dyn_dr]] — **(08-03) P0: 핸드오프 랜덤화 + 동역학/센싱 DR, v20 env 신설.** 유닛 66/66 · 프로브 v19 12/12 + v20 15/15 · v19 warm-start 무손실. 분포전이 4조건 91.0/91.5/77.1/**7.5%** → Rule 27.
 - [[experiments/exp_021_v19_moving_target]] — **(07-30) 이동 타겟(CV/CT/CA) v19 obs-보존 포팅 + 준상 v19 warm-start 학습 3종 완주.** obs 28-D 불변 lossless 로드 실증, 난이도 cv<ct<ca(ca reward 음수 잔존), det eval 후속. wandb a6saa42b/29jqq1lu/ntumqwoz.
 
 ### 에러 (errors/)

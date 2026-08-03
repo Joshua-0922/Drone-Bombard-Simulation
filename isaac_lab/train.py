@@ -129,6 +129,18 @@ parser.add_argument("--v19", action="store_true",
                     help="Staged integration #3: v18 (perception+physics) + REAL physical payload drop "
                          "(v16). Land-terminal, reward from real landing. Warm-start from a v18 ckpt with "
                          "--resume. DroneBombardV19Cfg + Isaac-DroneBombard-V19-Direct-v0.")
+parser.add_argument("--v20", action="store_true",
+                    help="P0 generalization pass: v19 + randomized handoff (heading/speed/altitude/entry "
+                         "offset/attitude/body rates) + dynamics & sensing DR (controller mass belief, "
+                         "controller gains, payload ballistic coefficient, obs/action noise + per-episode "
+                         "bias). Same 28-D obs / 7-D action as v19 -> v19 checkpoints warm-start losslessly. "
+                         "DroneBombardV20Cfg + Isaac-DroneBombard-V20-Direct-v0.")
+parser.add_argument("--no_handoff_dr", action="store_true",
+                    help="Ablation arm for --v20: keep the dynamics/sensing DR but restore the FIXED v19 "
+                         "handoff (isolates how much of any performance change is the handoff distribution).")
+parser.add_argument("--no_dyn_dr", action="store_true",
+                    help="Ablation arm for --v20: keep the randomized handoff but restore the v19 plant "
+                         "(no mass-belief/gain/ballistic-coefficient mismatch, no obs/action noise).")
 parser.add_argument("--v18_hard", action="store_true",
                     help="Phase 2 for --v18: tighten the eased Phase-1 params back to the full target "
                          "(gate 1.0, residual_scale 3.0, wind_std 2.0, pixel_cell_k 0.15). Warm-start from "
@@ -247,7 +259,7 @@ from drone_bombard.drone_bombard_env import DroneBombardEnvCfg  # noqa: E402
 from drone_bombard.v11_env import (  # noqa: E402
     DroneBombardV11Cfg, DroneBombardV12Cfg, DroneBombardV13Cfg, DroneBombardV14Cfg,
     DroneBombardV15Cfg, DroneBombardV16Cfg, DroneBombardV17Cfg, DroneBombardV18Cfg,
-    DroneBombardV19Cfg,
+    DroneBombardV19Cfg, DroneBombardV20Cfg,
 )
 from drone_bombard.agents.rsl_rl_ppo_cfg import DroneBombardPPORunnerCfg  # noqa: E402
 
@@ -260,7 +272,15 @@ def main():
 
     # --- env cfg (built directly — the path proven by verify_one_episode.py) ---
     task = args_cli.task
-    if args_cli.v19:
+    if args_cli.v20:
+        # P0: v19 + randomized handoff + dynamics/sensing DR.
+        task = "Isaac-DroneBombard-V20-Direct-v0"
+        env_cfg = DroneBombardV20Cfg()
+        if args_cli.no_handoff_dr:
+            env_cfg.handoff.enabled = False
+        if args_cli.no_dyn_dr:
+            env_cfg.dyn_dr.enabled = False
+    elif args_cli.v19:
         # staged integration #3: perception + physics + physical drop.
         task = "Isaac-DroneBombard-V19-Direct-v0"
         env_cfg = DroneBombardV19Cfg()
@@ -325,7 +345,7 @@ def main():
     # checkpoints (e.g. the shared v19 ones) warm-start losslessly.
     _vtrack = (args_cli.v11_test or args_cli.v12 or args_cli.v13 or args_cli.v14
                or args_cli.v15 or args_cli.v16 or args_cli.v17 or args_cli.v18
-               or args_cli.v19)
+               or args_cli.v19 or args_cli.v20)
     if args_cli.target_kf and _vtrack:
         # The KF obs extension lives only in the base env's observation builder;
         # on the v-track the flag would silently do nothing — refuse instead.
@@ -364,6 +384,8 @@ def main():
     agent_cfg.logger = args_cli.logger
     agent_cfg.wandb_project = args_cli.wandb_project
     agent_cfg.run_name = args_cli.run_name if args_cli.run_name else (
+        ("v20_nohandoff" if args_cli.no_handoff_dr else
+         "v20_nodyn" if args_cli.no_dyn_dr else "v20") if args_cli.v20 else
         "v19" if args_cli.v19 else
         ("v18_hard" if args_cli.v18_hard else "v18") if args_cli.v18 else
         "v17" if args_cli.v17 else

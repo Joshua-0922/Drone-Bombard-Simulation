@@ -55,6 +55,8 @@ from .mdp.domain_rand import (
     sample_target_velocity,
     sample_target_accel,
     sample_target_turn_rate,
+    sample_scale,
+    sample_bias,
 )
 from .math_utils import (
     rate_limit_action,
@@ -272,6 +274,55 @@ class DroneBombardControllerCfg:
 
 
 @configclass
+class DroneBombardDynDRCfg:
+    """P0 dynamics/sensing domain randomization — the axes the wind/drag DR did
+    NOT cover (see notes/research/paper_research_plan.md §5 P0-4).
+
+    Design rule for every knob here: randomize what a real deployment cannot
+    measure exactly, WITHOUT touching PhysX properties at runtime (Rule 19 —
+    a runtime physics override that the controller does not see is exactly the
+    exp_013 plant bug). Two equivalences make that possible:
+
+    * ``ctrl_mass_rel`` randomizes the controller's mass BELIEF, not the plant
+      mass. For the thrust-sizing loop the two are the same disturbance: with
+      true mass m and belief m(1+d) the closed loop realises
+      ``a = (1+d)*a_des + d*g``, identical in form to flying an unknown mass
+      with a fixed belief. The plant stays exactly as authored at spawn.
+    * ``payload_bc_rel`` randomizes the released payload's drag coefficient,
+      which is EXACTLY equivalent to randomizing its mass: free flight obeys
+      ``dv/dt = g + (k/m)|v_air|v_air``, so only the ballistic coefficient k/m
+      enters the trajectory. Again no PhysX write.
+
+    Sensor/actuator noise follows the two-timescale model (per-step white noise
+    + per-EPISODE constant bias) — the bias term is the one that forces
+    robustness to calibration offsets, since white noise averages out within an
+    episode. Defaults are the Learning-to-Throw values (obs 0.01/0.001, act
+    0.025/0.02 on the normalized vectors).
+
+    ``enabled=False`` (default) makes every sampler return its identity WITHOUT
+    drawing random numbers, so v11-v19 stay bit-identical."""
+
+    enabled: bool = False
+
+    # --- plant / controller mismatch (multiplicative, U[1-rel, 1+rel]) ---
+    ctrl_mass_rel: float = 0.05        # controller mass belief vs the authored mass
+    kp_vel_rel: float = 0.10           # outer loop: velocity P gains
+    k_att_rate_rel: float = 0.10       # inner loop: attitude P + rate P gains
+    payload_bc_rel: float = 0.20       # payload ballistic coefficient (== payload mass)
+
+    # --- two-timescale observation noise (on the NORMALIZED obs vector) ---
+    obs_noise_std: float = 0.01        # per policy step
+    obs_bias_std: float = 0.001        # per episode, constant
+
+    # --- two-timescale action noise (velocity dims [0:4] only) ---
+    # Deliberately NOT applied to the drop-signal dim or the CCIP residual dims:
+    # jittering the release decision or the guidance correction would confound
+    # the two mechanisms the paper measures. This is the control channel.
+    act_noise_std: float = 0.025       # per policy step
+    act_bias_std: float = 0.02         # per episode, constant
+
+
+@configclass
 class DroneBombardPhaseCfg:
     """Curriculum-phase parameters for the CCIP-residual / domain-randomization
     / moving-target stages (see the image's 3-stage table). Which of these are
@@ -451,6 +502,7 @@ class DroneBombardEnvCfg(DirectRLEnvCfg):
     drop: DroneBombardDropCfg = DroneBombardDropCfg()
     controller: DroneBombardControllerCfg = DroneBombardControllerCfg()
     phase_cfg: DroneBombardPhaseCfg = DroneBombardPhaseCfg()
+    dyn_dr: DroneBombardDynDRCfg = DroneBombardDynDRCfg()
 
     # Visualization markers (payload cylinder under the drone + target X on the
     # ground). Off by default so training pays no marker cost; turn on for
@@ -615,17 +667,32 @@ class DroneBombardEnv(DirectRLEnv):
         body_I = self._robot.root_physx_view.get_inertias()[0, bidx].reshape(-1).clone()
         self._inertia_diag = torch.stack([body_I[0], body_I[4], body_I[8]]).to(self.device)
 
-        self._ctrl_mass = float(self._robot.root_physx_view.get_masses()[0].sum())
-        if self._ctrl_mass < 1.0:
+        self._ctrl_mass_nominal = float(self._robot.root_physx_view.get_masses()[0].sum())
+        if self._ctrl_mass_nominal < 1.0:
             raise RuntimeError(
                 f"spawn-time mass authoring did not reach PhysX (total mass "
-                f"{self._ctrl_mass:.4f} kg — expected ~{self.cfg.asset.loaded_mass:.2f} kg). "
+                f"{self._ctrl_mass_nominal:.4f} kg — expected ~{self.cfg.asset.loaded_mass:.2f} kg). "
                 "The controller would fly the native 28 g Crazyflie shell; aborting."
             )
-        self._max_thrust = self.cfg.asset.thrust_to_weight_unloaded * self._ctrl_mass * 9.81
+        # max_thrust stays a SCALAR: thrust-to-weight is a physical airframe/motor
+        # property, not something the controller can be wrong about. Only the mass
+        # BELIEF (and the P gains) are randomized — see DroneBombardDynDRCfg.
+        self._max_thrust = self.cfg.asset.thrust_to_weight_unloaded * self._ctrl_mass_nominal * 9.81
         self._k_rate = torch.tensor(self.cfg.controller.k_rate, device=self.device)
-        print(f"[DroneBombardEnv] control mass={self._ctrl_mass:.3f}kg max_thrust={self._max_thrust:.2f}N "
-              f"inertia_diag={self._inertia_diag.detach().cpu().numpy()} body_id={self._body_id}")
+
+        # --- per-env dynamics-DR state (identity until cfg.dyn_dr.enabled) ---
+        # _ctrl_mass is per-env so the controller can fly a WRONG mass belief; the
+        # authored plant mass is untouched (Rule 19: never override PhysX props at
+        # runtime). All of these are resampled in _reset_idx.
+        self._ctrl_mass = torch.full((N,), self._ctrl_mass_nominal, device=device)
+        self._kp_vel_scale = torch.ones(N, device=device)
+        self._k_att_rate_scale = torch.ones(N, device=device)
+        self._payload_bc_scale = torch.ones(N, device=device)
+        self._obs_bias = torch.zeros(N, int(self.cfg.observation_space), device=device)
+        self._act_bias = torch.zeros(N, 4, device=device)
+        print(f"[DroneBombardEnv] control mass={self._ctrl_mass_nominal:.3f}kg max_thrust={self._max_thrust:.2f}N "
+              f"inertia_diag={self._inertia_diag.detach().cpu().numpy()} body_id={self._body_id} "
+              f"dyn_dr={'ON' if self.cfg.dyn_dr.enabled else 'off'}")
 
         self._setup_markers()
 
@@ -768,9 +835,54 @@ class DroneBombardEnv(DirectRLEnv):
             self.scene.filter_collisions(global_prim_paths=[])
 
     # ------------------------------------------------------------------
+    # Sensing / actuation noise (two-timescale: per-step white + per-episode bias)
+    # ------------------------------------------------------------------
+    def _perturb_obs(self, obs: torch.Tensor) -> torch.Tensor:
+        """Add the per-episode observation bias + per-step observation noise.
+
+        Applied to the WHOLE normalized observation vector, including the binary
+        flag channels (payload_attached / detected) and the prev-action echo. At
+        the default magnitudes (bias 1e-3, noise 1e-2) a flag reads 0.99 vs 0.01
+        — unambiguous — so the alternative (a per-version index mask that breaks
+        every time the obs layout changes) buys nothing.
+
+        Identity passthrough when dyn_dr is off, so this is safe to call from any
+        observation builder."""
+        dd = self.cfg.dyn_dr
+        if not dd.enabled:
+            return obs
+        if obs.shape[-1] != self._obs_bias.shape[-1]:
+            raise RuntimeError(
+                f"observation width {obs.shape[-1]} != cfg.observation_space "
+                f"{self._obs_bias.shape[-1]} — the dyn_dr obs bias buffer was "
+                "allocated from the cfg; fix the cfg before enabling dyn_dr."
+            )
+        out = obs + self._obs_bias
+        if dd.obs_noise_std > 0.0:
+            out = out + torch.randn_like(out) * dd.obs_noise_std
+        return out
+
+    def _perturb_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        """Add the per-episode actuation bias + per-step actuation noise to the
+        VELOCITY dims [0:4] only (see DroneBombardDynDRCfg for why the drop
+        signal and the CCIP residual are deliberately left clean). Runs BEFORE
+        the saturation accounting and the [-1, 1] clip, i.e. the noise can push
+        a command over the rail exactly like a real actuator would."""
+        dd = self.cfg.dyn_dr
+        if not dd.enabled:
+            return actions
+        pert = self._act_bias
+        if dd.act_noise_std > 0.0:
+            pert = pert + torch.randn_like(pert) * dd.act_noise_std
+        out = actions.clone()
+        out[:, :4] = out[:, :4] + pert
+        return out
+
+    # ------------------------------------------------------------------
     # Action pipeline
     # ------------------------------------------------------------------
     def _pre_physics_step(self, actions: torch.Tensor):
+        actions = self._perturb_actions(actions)
         self._action_sat_sum += (actions.abs() > 1.0).float().mean(dim=-1)
         clipped = torch.clamp(actions, -1.0, 1.0)
 
@@ -843,7 +955,11 @@ class DroneBombardEnv(DirectRLEnv):
                                  self._wind_xy[:, 1] - v[:, 1],
                                  -v[:, 2]], dim=-1)
             speed = torch.linalg.norm(v_air, dim=-1, keepdim=True)
-            f = self.cfg.payload_phys_drag_k * speed * v_air
+            # _payload_bc_scale (1.0 unless dyn_dr) randomizes the ballistic
+            # coefficient k/m — equivalent to randomizing the payload MASS, since
+            # free flight depends on the pair only through this ratio. No PhysX
+            # mass write, so the authored plant stays exactly as spawned.
+            f = (self.cfg.payload_phys_drag_k * self._payload_bc_scale.unsqueeze(-1)) * speed * v_air
             forces[:, 0, :] = torch.where(active.unsqueeze(-1), f, torch.zeros_like(f))
         self._payload.set_external_force_and_torque(forces, torch.zeros_like(forces))
         self._payload.write_data_to_sim()
@@ -879,10 +995,15 @@ class DroneBombardEnv(DirectRLEnv):
         quat_w = self._robot.data.root_quat_w
         ang_vel_b = self._robot.data.root_ang_vel_b
 
+        # Per-env gain scales (all 1.0 unless cfg.dyn_dr.enabled) model a
+        # controller that is not perfectly tuned for THIS airframe.
+        kp_vel = self._kp_vel_scale.unsqueeze(-1)
+
         vel_err_xy = v_filt[:, :2] - vel_w[:, :2]
         vel_err_z = v_filt[:, 2] - vel_w[:, 2]
-        accel_des_xy = torch.clamp(c.kp_vel_xy * vel_err_xy, min=-c.accel_xy_clamp, max=c.accel_xy_clamp)
-        accel_des_z = torch.clamp(c.kp_vel_z * vel_err_z, min=-c.accel_z_clamp, max=c.accel_z_clamp)
+        accel_des_xy = torch.clamp(c.kp_vel_xy * kp_vel * vel_err_xy, min=-c.accel_xy_clamp, max=c.accel_xy_clamp)
+        accel_des_z = torch.clamp(
+            c.kp_vel_z * self._kp_vel_scale * vel_err_z, min=-c.accel_z_clamp, max=c.accel_z_clamp)
 
         # desired total force in WORLD frame: mass*(accel_cmd + gravity comp)
         f_des = torch.zeros_like(vel_w)
@@ -918,8 +1039,8 @@ class DroneBombardEnv(DirectRLEnv):
         rot_err_b = quat_apply_inverse_pure(quat_w, rot_err_w)
 
         rate_sp = torch.zeros_like(ang_vel_b)
-        rate_sp[:, 0] = c.k_att_rp * rot_err_b[:, 0]
-        rate_sp[:, 1] = c.k_att_rp * rot_err_b[:, 1]
+        rate_sp[:, 0] = c.k_att_rp * self._k_att_rate_scale * rot_err_b[:, 0]
+        rate_sp[:, 1] = c.k_att_rp * self._k_att_rate_scale * rot_err_b[:, 1]
         # yaw-rate is commanded directly (body z); roll/pitch attitude-controlled
         rate_sp[:, 2] = v_filt[:, 3]
 
@@ -929,7 +1050,7 @@ class DroneBombardEnv(DirectRLEnv):
         # airframe's ~0.022 kg.m^2 that is a ~46x over-torque that instantly
         # spins the drone past the attitude limits.
         rate_err = rate_sp - ang_vel_b
-        ang_accel_des = self._k_rate * rate_err
+        ang_accel_des = self._k_rate * self._k_att_rate_scale.unsqueeze(-1) * rate_err
         torque_b = self._inertia_diag * ang_accel_des
 
         forces_b = torch.zeros(self.num_envs, 1, 3, device=self.device)
@@ -1118,7 +1239,7 @@ class DroneBombardEnv(DirectRLEnv):
             obs = torch.cat([obs, kf_rel, kf_vel, kf_acc, valid], dim=-1)
 
         obs = torch.nan_to_num(obs, nan=0.0)
-        return {"policy": obs}
+        return {"policy": self._perturb_obs(obs)}
 
     def _current_d_xy(self) -> torch.Tensor:
         pos = self._robot.data.root_pos_w - self.scene.env_origins
@@ -1553,6 +1674,18 @@ class DroneBombardEnv(DirectRLEnv):
         self._target_omega[env_ids] = sample_target_turn_rate(
             pc, n, device, moving and pc.target_motion_model == "ct")
 
+        # P0 dynamics/sensing DR (plant-controller mismatch + two-timescale
+        # noise). Every sampler is identity-without-RNG when dyn_dr is off, so
+        # the pre-P0 versions keep their exact random streams.
+        dd = self.cfg.dyn_dr
+        on = dd.enabled
+        self._ctrl_mass[env_ids] = self._ctrl_mass_nominal * sample_scale(n, device, dd.ctrl_mass_rel, on)
+        self._kp_vel_scale[env_ids] = sample_scale(n, device, dd.kp_vel_rel, on)
+        self._k_att_rate_scale[env_ids] = sample_scale(n, device, dd.k_att_rate_rel, on)
+        self._payload_bc_scale[env_ids] = sample_scale(n, device, dd.payload_bc_rel, on)
+        self._obs_bias[env_ids] = sample_bias(n, self._obs_bias.shape[-1], device, dd.obs_bias_std, on)
+        self._act_bias[env_ids] = sample_bias(n, 4, device, dd.act_bias_std, on)
+
         # Target tracker: fully forget the previous episode's track (the
         # target teleported at reset — coasting the old state through would
         # feed the policy a confidently wrong estimate until re-detection).
@@ -1602,6 +1735,16 @@ class DroneBombardEnv(DirectRLEnv):
             "target_vel_xy": self._target_vel_xy[env_ids].clone(),
             "kf_valid": self._kf_valid[env_ids].clone(),
             "kf_est": self._kf_x[env_ids].clone(),
+            # Delivery time = episode start -> the event that scores the drop.
+            # Both drop mechanisms END the episode on that event (analytic:
+            # release-terminal; physical: payload landing), so the terminated
+            # episode's step count IS the delivery time — no extra state needed.
+            # This is the agility metric ("throw duration" in the aerial-throwing
+            # literature); without it a hover-then-drop policy looks optimal.
+            "deliver_time_s": (
+                self.episode_length_buf[env_ids].float() * self.cfg.sim.dt * self.cfg.decimation
+            ).clone(),
+            "delivered": (self._released[env_ids] | self._payload_landed[env_ids]).clone(),
         }
 
     def _predicted_impact_from_snapshot(self, snap: dict) -> torch.Tensor:
@@ -1642,6 +1785,10 @@ class DroneBombardEnv(DirectRLEnv):
         ).float().mean().item()
 
         log["Episode_Metric/action_sat_frac"] = snap["action_sat_frac"].mean().item()
+
+        delivered = snap["delivered"]
+        if bool(delivered.any()):
+            log["Episode_Metric/deliver_time_s"] = snap["deliver_time_s"][delivered].mean().item()
 
         if self.cfg.release_enabled:
             # Phase 2/3: report the REAL (DR-physics) impact error measured at

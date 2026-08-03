@@ -70,6 +70,43 @@ def sample_target_accel(cfg, num_envs: int, device: torch.device, enabled: bool 
     return torch.stack([mag * torch.cos(heading), mag * torch.sin(heading)], dim=-1)
 
 
+def sample_uniform(lo: float, hi: float, num_envs: int, device: torch.device) -> torch.Tensor:
+    """Per-env ``U[lo, hi]`` as an [N] tensor.
+
+    ``hi <= lo`` returns the exact constant ``lo`` and draws NO random numbers —
+    so a "range" collapsed to a point is bit-identical to the old scalar code and
+    leaves the RNG stream untouched (see the handoff sampler in
+    ``DroneBombardV11Env._reset_idx``)."""
+    if hi <= lo:
+        return torch.full((num_envs,), lo, device=device)
+    return lo + torch.rand(num_envs, device=device) * (hi - lo)
+
+
+def sample_scale(num_envs: int, device: torch.device, rel: float, enabled: bool = False) -> torch.Tensor:
+    """Multiplicative model-mismatch factor ``U[1-rel, 1+rel]`` as an [N] tensor.
+
+    Identity (all ones, no RNG draw) when disabled or ``rel <= 0`` — the P0
+    dynamics-DR knobs (controller mass belief, controller gains, payload
+    ballistic coefficient) all go through this so an OFF config is bit-identical
+    to the pre-DR env."""
+    if not enabled or rel <= 0.0:
+        return torch.ones(num_envs, device=device)
+    return 1.0 + (torch.rand(num_envs, device=device) * 2.0 - 1.0) * rel
+
+
+def sample_bias(num_envs: int, dim: int, device: torch.device, std: float, enabled: bool = False) -> torch.Tensor:
+    """Per-EPISODE constant additive bias ``N(0, std)`` as an [N, dim] tensor.
+
+    The slow half of the two-timescale sensor/actuator noise model (per-step
+    white noise + per-episode constant bias). The bias term is what forces
+    robustness to *calibration* offsets: white noise alone averages out over an
+    episode, so a policy can ignore it. Identity (zeros, no RNG draw) when
+    disabled or ``std <= 0``."""
+    if not enabled or std <= 0.0:
+        return torch.zeros(num_envs, dim, device=device)
+    return torch.randn(num_envs, dim, device=device) * std
+
+
 def sample_target_turn_rate(cfg, num_envs: int, device: torch.device, enabled: bool = False) -> torch.Tensor:
     """Per-episode signed turn rate for the CT motion model: [N] rad/s with
     magnitude ``U[cfg.target_omega_range[0], cfg.target_omega_range[1]]`` and

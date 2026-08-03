@@ -33,9 +33,10 @@ import math
 import torch
 
 from isaaclab.utils import configclass
-from isaaclab.utils.math import euler_xyz_from_quat
+from isaaclab.utils.math import euler_xyz_from_quat, quat_from_euler_xyz
 
-from .drone_bombard_env import DroneBombardEnv, DroneBombardEnvCfg
+from .drone_bombard_env import DroneBombardDynDRCfg, DroneBombardEnv, DroneBombardEnvCfg
+from .mdp.domain_rand import sample_uniform
 from .math_utils import (
     predict_impact_nominal,
     time_to_fall,
@@ -44,6 +45,42 @@ from .math_utils import (
     apply_ccip_residual,
     step_target_motion,
 )
+
+
+@configclass
+class DroneBombardHandoffCfg:
+    """P0 handoff randomization for the v-track (notes/research/paper_research_plan.md §5 P0-3).
+
+    v11-v19 hand the policy an IDENTICAL initial condition every episode: spawn
+    at the env origin, exactly 10 m up, exactly 4 m/s along +X, perfectly level,
+    zero body rates. Only the marker moves (inside a 5 m disk). That makes every
+    generalization claim untestable — a policy can memorize one approach.
+
+    Turning this on samples the whole handoff per episode instead. The marker
+    stays ``marker_dist`` ahead ALONG THE SAMPLED HEADING (plus its own disk
+    offset), so the nominal geometry is preserved while its world-frame
+    orientation, the closing speed, the altitude and the entry offset all vary.
+
+    NOTE on ``heading_range_deg``: the v-track observation is world-frame
+    (rel_x/rel_y, velocities, ccip_err, wind), so a random cruise heading makes
+    the policy solve the task in every rotation rather than only along +X. That
+    is a real (and intended) generalization burden — if it proves to be the
+    binding constraint, the fix is a heading-invariant observation frame, which
+    is an obs-layout change and therefore NOT part of P0.
+
+    ``enabled=False`` (default) reproduces the fixed v11-v19 handoff exactly and
+    draws no random numbers."""
+
+    enabled: bool = False
+
+    speed_range: tuple[float, float] = (2.0, 6.0)          # m/s at handoff
+    heading_range_deg: tuple[float, float] = (-180.0, 180.0)  # world cruise heading
+    alt_range: tuple[float, float] = (8.0, 12.0)           # m
+    lateral_offset_max: float = 3.0   # m, spawn offset perpendicular to the cruise axis
+    along_offset_max: float = 2.0     # m, spawn offset along the cruise axis (range jitter)
+    vel_noise_std: float = 0.3        # m/s, added to all 3 velocity axes
+    attitude_std_deg: float = 5.0     # roll/pitch at handoff
+    ang_vel_std: float = 0.2          # rad/s, body rates at handoff
 
 
 @configclass
@@ -68,6 +105,9 @@ class DroneBombardV11Cfg(DroneBombardEnvCfg):
     # (area-uniform) inside a disk of radius marker_spawn_radius around that point.
     marker_random: bool = False
     marker_spawn_radius: float = 5.0
+
+    # --- P0 handoff randomization (inert unless handoff.enabled; see v20) ---
+    handoff: DroneBombardHandoffCfg = DroneBombardHandoffCfg()
 
     # --- release envelope (doc 53 §6) ---
     release_radius: float = 1.0
@@ -287,6 +327,34 @@ class DroneBombardV19Cfg(DroneBombardV18Cfg):
     v19_success_bonus: float = 100.0      # discrete bump for err <= success_radius
 
 
+@configclass
+class DroneBombardV20Cfg(DroneBombardV19Cfg):
+    """v20 = v19 + the P0 generalization pass: randomized handoff + dynamics/
+    sensing domain randomization (notes/research/paper_research_plan.md §5 P0).
+
+    Nothing about the task, the reward, the observation layout or the action
+    layout changes — obs stays 28-D and action 7-D, so a v19 checkpoint
+    warm-starts losslessly and the two are directly comparable. What changes is
+    the DISTRIBUTION the policy is trained and evaluated on:
+
+      * handoff: cruise heading / speed / altitude / entry offset / attitude /
+        body rates are sampled per episode instead of being one fixed condition.
+      * dyn_dr: controller mass belief +-5%, velocity-loop gains +-10%,
+        attitude+rate-loop gains +-10%, payload ballistic coefficient (== payload
+        mass) +-20%, plus per-step AND per-episode-bias noise on observations and
+        on the velocity commands.
+
+    Wind/drag DR is inherited from v18/v19 unchanged (wind_std 1.5, drag U[0,0.15],
+    wind pushing the airframe).
+
+    NOT this class: the "does the curriculum matter" ablation, which is v19 with
+    the same cfg trained fresh instead of warm-started — a RUN configuration, not
+    an env variant."""
+
+    handoff: DroneBombardHandoffCfg = DroneBombardHandoffCfg(enabled=True)
+    dyn_dr: DroneBombardDynDRCfg = DroneBombardDynDRCfg(enabled=True)
+
+
 class DroneBombardV11Env(DroneBombardEnv):
     cfg: DroneBombardV11Cfg
 
@@ -307,6 +375,10 @@ class DroneBombardV11Env(DroneBombardEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         from .math_utils import rate_limit_action
 
+        # Actuation noise on the velocity dims only (identity unless dyn_dr);
+        # the drop signal [4] and the CCIP residual [5:7] stay clean so the two
+        # mechanisms under study are not confounded — see DroneBombardDynDRCfg.
+        actions = self._perturb_actions(actions)
         self._action_sat_sum += (actions.abs() > 1.0).float().mean(dim=-1)
         clipped = torch.clamp(actions, -1.0, 1.0)
         vel_clipped = clipped[:, :4]
@@ -418,8 +490,25 @@ class DroneBombardV11Env(DroneBombardEnv):
         n = len(env_ids)
         device = self.device
 
-        # Marker center: marker_dist ahead along the cruise direction.
-        center = (self._cruise_unit * self.cfg.marker_dist).unsqueeze(0).expand(n, 2)
+        # --- handoff geometry: fixed (v11-v19) or sampled per episode (P0) ---
+        # Everything downstream reads the per-env tensors below, so the two paths
+        # share one code path. Disabled -> constants, and sample_uniform draws no
+        # RNG for a collapsed range, keeping v11-v19 streams bit-identical.
+        hc = self.cfg.handoff
+        if hc.enabled:
+            cruise_yaw = sample_uniform(
+                math.radians(hc.heading_range_deg[0]), math.radians(hc.heading_range_deg[1]), n, device)
+            cruise_speed = sample_uniform(hc.speed_range[0], hc.speed_range[1], n, device)
+            spawn_alt = sample_uniform(hc.alt_range[0], hc.alt_range[1], n, device)
+        else:
+            cruise_yaw = torch.full((n,), self._cruise_yaw, device=device)
+            cruise_speed = torch.full((n,), self.cfg.cruise_speed, device=device)
+            spawn_alt = torch.full((n,), self.cfg.v11_spawn_alt, device=device)
+        cruise_unit = torch.stack([torch.cos(cruise_yaw), torch.sin(cruise_yaw)], dim=-1)  # [n,2]
+        cruise_perp = torch.stack([-cruise_unit[:, 1], cruise_unit[:, 0]], dim=-1)
+
+        # Marker center: marker_dist ahead along the (per-env) cruise direction.
+        center = cruise_unit * self.cfg.marker_dist
         if self.cfg.marker_random:
             # v12: sample the marker center (area-uniform) inside a disk of radius
             # marker_spawn_radius around that point. The drone still spawns cruising
@@ -432,23 +521,42 @@ class DroneBombardV11Env(DroneBombardEnv):
             marker = center
         self._target_xy[env_ids] = marker
 
+        # Spawn offset in the CRUISE frame (zero unless handoff DR is on): a
+        # lateral component moves the entry off the marker bearing, an along
+        # component jitters the effective approach range.
+        spawn_xy = torch.zeros(n, 2, device=device)
+        if hc.enabled and (hc.lateral_offset_max > 0.0 or hc.along_offset_max > 0.0):
+            lat = (torch.rand(n, device=device) * 2.0 - 1.0) * hc.lateral_offset_max
+            along = (torch.rand(n, device=device) * 2.0 - 1.0) * hc.along_offset_max
+            spawn_xy = cruise_perp * lat.unsqueeze(-1) + cruise_unit * along.unsqueeze(-1)
+
         root = self._robot.data.default_root_state[env_ids].clone()
-        root[:, 0:2] = self.scene.env_origins[env_ids, :2]  # spawn at env origin (local 0,0)
-        root[:, 2] = self.cfg.v11_spawn_alt
-        half = self._cruise_yaw / 2.0
-        root[:, 3] = math.cos(half)
-        root[:, 4] = 0.0
-        root[:, 5] = 0.0
-        root[:, 6] = math.sin(half)
-        root[:, 7:9] = (self._cruise_unit * self.cfg.cruise_speed).unsqueeze(0).expand(n, 2)
+        root[:, 0:2] = self.scene.env_origins[env_ids, :2] + spawn_xy
+        root[:, 2] = spawn_alt
+        if hc.enabled and hc.attitude_std_deg > 0.0:
+            att_std = math.radians(hc.attitude_std_deg)
+            roll0 = torch.randn(n, device=device) * att_std
+            pitch0 = torch.randn(n, device=device) * att_std
+        else:
+            roll0 = torch.zeros(n, device=device)
+            pitch0 = torch.zeros(n, device=device)
+        # quat_from_euler_xyz with roll=pitch=0 reduces exactly to the old
+        # (cos(yaw/2), 0, 0, sin(yaw/2)) construction, so the disabled path is
+        # unchanged.
+        root[:, 3:7] = quat_from_euler_xyz(roll0, pitch0, cruise_yaw)
+        root[:, 7:9] = cruise_unit * cruise_speed.unsqueeze(-1)
         root[:, 9] = 0.0
         root[:, 10:13] = 0.0
+        if hc.enabled and hc.vel_noise_std > 0.0:
+            root[:, 7:10] = root[:, 7:10] + torch.randn(n, 3, device=device) * hc.vel_noise_std
+        if hc.enabled and hc.ang_vel_std > 0.0:
+            root[:, 10:13] = torch.randn(n, 3, device=device) * hc.ang_vel_std
         self._robot.write_root_pose_to_sim(root[:, :7], env_ids)
         self._robot.write_root_velocity_to_sim(root[:, 7:13], env_ids)
 
         self._wants_drop[env_ids] = False
-        # spawn is at local (0,0), so distance to marker = |marker| (per env).
-        d0 = torch.linalg.norm(marker, dim=-1)
+        # distance from the (possibly offset) spawn to the marker.
+        d0 = torch.linalg.norm(marker - spawn_xy, dim=-1)
         self._d_xy_prev[env_ids] = d0
         self._d_impact_prev[env_ids] = d0
 
@@ -462,8 +570,8 @@ class DroneBombardV11Env(DroneBombardEnv):
         # world-frame setpoint the snap re-applies) makes the handoff smooth:
         # "receive a drone already cruising, hold unless commanded otherwise".
         a = self.cfg.action
-        cruise_vx = self._cruise_unit[0] * self.cfg.cruise_speed
-        cruise_vy = self._cruise_unit[1] * self.cfg.cruise_speed
+        cruise_vx = cruise_unit[:, 0] * cruise_speed
+        cruise_vy = cruise_unit[:, 1] * cruise_speed
         self._prev_action[env_ids, 0] = torch.clamp(cruise_vx / a.vx_scale, -1.0, 1.0)
         self._prev_action[env_ids, 1] = torch.clamp(cruise_vy / a.vy_scale, -1.0, 1.0)
         self._prev_action[env_ids, 2] = 0.0
@@ -1029,6 +1137,14 @@ class DroneBombardV19Env(DroneBombardV18Env):
             held = self._released
             self._vel_cmd[held] = 0.0
             self._wants_drop[held] = False
+
+    def _get_observations(self) -> dict:
+        # v18's 28-D builder, then the two-timescale sensing noise. Applied at
+        # the OUTERMOST point on purpose: v17/v18 overwrite obs channels 0/1
+        # with the perceived target AFTER calling super(), so noise injected
+        # deeper in the chain would be partially overwritten.
+        out = super()._get_observations()
+        return {"policy": self._perturb_obs(out["policy"])}
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         self._step_moving_target()
