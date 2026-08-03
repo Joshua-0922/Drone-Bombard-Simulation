@@ -14,6 +14,10 @@ type: index
 
 ## 현재 상태 (2026-08-03)
 
+- **❌ (a)안 실패 — v20 warm-start 학습은 페널티 회피로 수렴: [[experiments/exp_024_v20_warmstart_failure]]**
+  reward −44.8→+10.8로 올랐지만 상승분 전부가 `out_of_range` 회피였고 **과제 지표(접근·조준·발화율)는 1000 iter 평탄**.
+  σ 2.10→6.27 단조 + 액션 포화 93% → det eval에서 **v20 13.0%(7.5%에서 CI 겹침), v19 100.00%→8.50% catastrophic forgetting**.
+  **관측 프레임 문제는 재학습으로 안 고쳐진다**는 확증 → Rule 29. 다음: (a′) 방위 커리큘럼 vs (b) obs 프레임 불변화 **판단 대기**.
 - **📊 P0 완료 — Table 1 1차 실측: [[experiments/exp_023_table1_baselines]]**
   공유 평가 하네스(`eval_harness.py`: paired 평가·CEP50/90·Wilson/부트스트랩 CI·반송시간·feasible window·JSON)와
   무학습 베이스라인(`baseline_drop.py`: T0 hover / T1 CCIP 임계 / T2 AeroThrow argmin / T3 wind-oracle 잔차) 신설.
