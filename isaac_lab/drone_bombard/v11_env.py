@@ -608,6 +608,8 @@ class DroneBombardV11Env(DroneBombardEnv):
             cfg.release_max_speed, cfg.release_max_vz, cfg.release_max_tilt, cfg.release_max_ang_vel,
         )
         self._gate_open = gate
+        # feasible release window: steps at which a release was admissible
+        self._window_steps += (gate & (~self._released)).float()
         fire = self._wants_drop & gate & (~self._released)
 
         # Real payload landing (nominal physics: drag/wind == 0 in this config,
@@ -794,6 +796,8 @@ class DroneBombardV16Env(DroneBombardV11Env):
             cfg.release_max_speed, cfg.release_max_vz, cfg.release_max_tilt, cfg.release_max_ang_vel,
         )
         self._gate_open = gate
+        # feasible release window: steps at which a release was admissible
+        self._window_steps += (gate & (~self._released)).float()
         fire = self._wants_drop & gate & (~self._released)
 
         # release: detach + hand to physics (falls next tick with inherited
@@ -1167,6 +1171,8 @@ class DroneBombardV19Env(DroneBombardV18Env):
             cfg.release_max_speed, cfg.release_max_vz, cfg.release_max_tilt, cfg.release_max_ang_vel,
         )
         self._gate_open = gate
+        # feasible release window: steps at which a release was admissible
+        self._window_steps += (gate & (~self._released)).float()
         fire = self._wants_drop & gate & (~self._released)
 
         # physical release: detach + fall (NOT terminal — wait for the landing)

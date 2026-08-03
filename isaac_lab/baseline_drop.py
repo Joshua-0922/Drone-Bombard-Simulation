@@ -1,0 +1,272 @@
+"""Rule-based (NO learning) release baselines — Table 1 arms T0-T3 (P0-6).
+
+These answer the question the paper cannot currently answer: *what does RL
+actually buy over classical release logic?* Every arm flies the SAME env, the
+SAME release envelope, and is scored by the SAME harness as the learned arms
+(``eval_harness.py``), so the rows are directly comparable.
+
+All four share one scripted approach controller (blind cruise -> steer at the
+perceived target -> descend into the release altitude band) and differ ONLY in
+the release rule:
+
+  T0 ``hover``  — fly over the target, stop, drop. The degenerate vision-drop
+                  strategy from the literature (detect, hover-align, release
+                  from rest). Should be accurate and SLOW: it exists to make
+                  the delivery-time axis mean something.
+  T1 ``ccip``   — fire at the first admissible instant, i.e. as soon as the
+                  CCIP impact-point error falls inside the release radius.
+                  The textbook continuously-computed-impact-point rule.
+  T2 ``argmin`` — port of AeroThrow's online release-timing reassessment:
+                  propagate the vehicle state over a short horizon, evaluate
+                  the predicted impact error at every step of it, and fire when
+                  the argmin collapses to NOW. Strongest non-privileged rule.
+  T3 ``oracle`` — T2 plus a PRIVILEGED analytic residual: the exact wind/drag
+                  drift is computed from the env's true per-episode wind and
+                  drag and emitted on the residual action channel, i.e. the
+                  correction the learned residual is trying to discover. This
+                  is the classical upper bound for the residual mechanism, and
+                  it saturates exactly like the learned one when the drift
+                  exceeds +-residual_scale.
+
+Fairness notes (state them in the paper):
+  * T0-T2 use only quantities the policy also observes: the PERCEIVED
+    (reveal-gated, pixel-quantized) target and the vehicle's own state.
+  * T3 additionally reads the true wind/drag and is labelled an oracle.
+  * The success criterion is the TRUE marker for every arm, as for the policy.
+  * No arm gets a widened release envelope: the same gate (impact radius,
+    altitude band, speed / vertical-speed / tilt / rate limits, payload
+    attached) applies to all, learned and rule-based alike.
+
+Usage (inside isaac-verify), 200 paired episodes per arm:
+
+    /workspace/isaaclab/isaaclab.sh -p baseline_drop.py --arm argmin \\
+        --task Isaac-DroneBombard-V20-Direct-v0 --episodes 200 --num_envs 200 \\
+        --seed 1000 --out-json /workspace/eval/T2_argmin.json
+"""
+
+import argparse
+
+from isaaclab.app import AppLauncher
+
+parser = argparse.ArgumentParser(description="Rule-based release baselines (T0-T3).")
+parser.add_argument("--arm", type=str, default="argmin",
+                    choices=["hover", "ccip", "argmin", "oracle"],
+                    help="Release rule: T0 hover / T1 ccip / T2 argmin / T3 oracle.")
+parser.add_argument("--task", type=str, default="Isaac-DroneBombard-V20-Direct-v0")
+parser.add_argument("--episodes", type=int, default=200)
+parser.add_argument("--num_envs", type=int, default=200,
+                    help="Paired evaluation needs num_envs >= episodes.")
+parser.add_argument("--seed", type=int, default=1000,
+                    help="Eval seed. Keep DISJOINT from the training seeds (42/43/44).")
+parser.add_argument("--unpaired", action="store_true",
+                    help="Score every episode instead of one per env slot (loses pairing).")
+parser.add_argument("--out-json", type=str, default=None)
+# --- approach controller knobs (shared by every arm) ---
+parser.add_argument("--approach_speed", type=float, default=4.0, help="m/s cap on the run-in.")
+parser.add_argument("--release_alt", type=float, default=6.0,
+                    help="Target altitude for the run-in (must sit inside the envelope band).")
+parser.add_argument("--kp_xy", type=float, default=0.6, help="Approach P gain (1/s).")
+parser.add_argument("--kp_z", type=float, default=0.8, help="Altitude P gain (1/s).")
+parser.add_argument("--horizon", type=int, default=12,
+                    help="argmin/oracle: predicted-impact horizon in policy steps.")
+parser.add_argument("--hover_radius", type=float, default=0.8,
+                    help="hover arm: fire once inside this horizontal distance of the perceived "
+                         "target. Cannot be tighter than the perception cell (pixel_cell_k*slant, "
+                         "~0.7 m at the release altitude) or the arm never fires at all.")
+parser.add_argument("--hover_speed", type=float, default=0.6,
+                    help="hover arm: fire only below this horizontal speed (the 'stopped' test).")
+# --- moving target (must mirror training) ---
+parser.add_argument("--moving_target", action="store_true")
+parser.add_argument("--target_motion", type=str, default=None, choices=["gm", "cv", "ca", "ct"])
+parser.add_argument("--no_handoff_dr", action="store_true")
+parser.add_argument("--no_dyn_dr", action="store_true")
+AppLauncher.add_app_launcher_args(parser)
+args_cli = parser.parse_args()
+
+app_launcher = AppLauncher(args_cli)
+simulation_app = app_launcher.app
+
+import gymnasium as gym  # noqa: E402
+import torch  # noqa: E402
+from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
+
+import drone_bombard  # noqa: F401,E402
+import eval_harness  # noqa: E402
+from drone_bombard.math_utils import ballistic_impact, predict_impact_nominal  # noqa: E402
+
+
+def _perceived(u: torch.nn.Module, pos_xy: torch.Tensor) -> torch.Tensor:
+    """The target the POLICY would see: the pixel-quantized / reveal-gated
+    estimate when the env models perception, the true marker otherwise."""
+    p = getattr(u, "_perceived_target_xy", None)
+    if p is None or not bool(getattr(u.cfg, "pixel_vision_enabled", False)):
+        return u._target_xy
+    return p
+
+
+def _predict_series(pos_xy, vel_xy, alt, vz, dc, steps, dt):
+    """Constant-velocity roll-out of the CCIP prediction over a short horizon.
+
+    The honest analogue of AeroThrow's NMPC-horizon propagation: we have no
+    NMPC, so the vehicle is extrapolated at its current velocity (the run-in is
+    near-constant-velocity by construction). Returns [N, steps+1] predicted
+    impact points and altitudes."""
+    out = []
+    for k in range(steps + 1):
+        t = k * dt
+        p_k = pos_xy + vel_xy * t
+        a_k = (alt + vz * t).clamp(min=0.05)
+        out.append(predict_impact_nominal(p_k, vel_xy, a_k, dc.release_delay, dc.gravity))
+    return torch.stack(out, dim=1)  # [N, steps+1, 2]
+
+
+class BaselineController:
+    """Scripted approach + one of the four release rules."""
+
+    def __init__(self, u, arm: str):
+        self.u, self.arm = u, arm
+        self.dt = u.cfg.sim.dt * u.cfg.decimation
+        self.act_dim = int(u.cfg.action_space)
+        self.res_scale = float(getattr(u.cfg, "v14_residual_scale", 0.0))
+        self.has_residual = self.act_dim >= 7 and bool(getattr(u.cfg, "v14_residual", False))
+        self.gate_radius = float(getattr(u.cfg, "release_radius", 1.0))
+
+    # -------- privileged residual (T3 only) --------
+    def _oracle_residual(self, pos_xy, vel_xy, alt):
+        """Analytic wind/drag correction on the impact-point PREDICTION — the
+        exact quantity the learned residual approximates. Emitted on the same
+        action channel and therefore subject to the same +-residual_scale
+        authority (it saturates when the drift exceeds it, reproducing the
+        v15 saturation regime)."""
+        u, dc = self.u, self.u.cfg.drop
+        nominal = predict_impact_nominal(pos_xy, vel_xy, alt, dc.release_delay, dc.gravity)
+        real = ballistic_impact(pos_xy, vel_xy, alt, dc.release_delay, dc.gravity,
+                                u._drag_coef, u._wind_xy)
+        drift = real - nominal                       # where the wind will take it
+        if self.res_scale <= 0.0:
+            return torch.zeros_like(drift)
+        # SIGN: the residual must make the PREDICTION track the REAL impact
+        # (pred + residual*scale == real), because that is the quantity the
+        # release gate tests. Correcting the other way (-drift) cancels the
+        # wind in the prediction and leaves the gate testing a fiction — it
+        # then fires where the payload does NOT land.
+        return torch.clamp(drift / self.res_scale, -1.0, 1.0)
+
+    # -------- release rules --------
+    def _want_drop(self, pos_xy, vel_xy, alt, vz, aim_xy, residual):
+        u, dc = self.u, self.u.cfg.drop
+        speed_xy = torch.linalg.norm(vel_xy, dim=-1)
+
+        def err_of(impact):
+            return torch.linalg.norm(impact + residual * self.res_scale - aim_xy, dim=-1)
+
+        if self.arm == "hover":
+            # T0: over the target and stopped. CCIP at rest reduces to "am I
+            # above it", so this is the classical detect -> hover -> drop.
+            d_xy = torch.linalg.norm(aim_xy - pos_xy, dim=-1)
+            return ((d_xy <= args_cli.hover_radius) & (speed_xy <= args_cli.hover_speed)
+                    & (vz.abs() <= 1.0))
+
+        nominal = predict_impact_nominal(pos_xy, vel_xy, alt, dc.release_delay, dc.gravity)
+        if self.arm == "ccip":
+            # T1: first admissible instant.
+            return err_of(nominal) <= self.gate_radius
+
+        # T2/T3: fire when the predicted-impact error is at its horizon minimum
+        # NOW (AeroThrow Alg. 1) and that minimum is admissible.
+        series = _predict_series(pos_xy, vel_xy, alt, vz, dc, args_cli.horizon, self.dt)
+        errs = torch.linalg.norm(
+            series + (residual * self.res_scale).unsqueeze(1) - aim_xy.unsqueeze(1), dim=-1)
+        return (errs.argmin(dim=1) == 0) & (errs[:, 0] <= self.gate_radius)
+
+    # -------- one policy step --------
+    def __call__(self, obs, u):
+        a = u.cfg.action
+        pos = u._robot.data.root_pos_w - u.scene.env_origins
+        vel = u._robot.data.root_lin_vel_w
+        pos_xy, alt, vel_xy, vz = pos[:, :2], pos[:, 2], vel[:, :2], vel[:, 2]
+
+        aim_xy = _perceived(u, pos_xy)
+        detected = getattr(u, "_detected", None)
+        if detected is None:
+            detected = torch.ones_like(alt, dtype=torch.bool)
+
+        residual = (self._oracle_residual(pos_xy, vel_xy, alt) if self.arm == "oracle"
+                    else torch.zeros(u.num_envs, 2, device=u.device))
+
+        # --- approach: P-control toward the target, capped at approach_speed.
+        # Before acquisition the marker position is not observable, so hold the
+        # handoff velocity (blind cruise) exactly as the policy must.
+        steer_xy = aim_xy
+        if self.arm == "oracle":
+            # A wind-corrected RELEASE RULE is useless if the vehicle still flies
+            # straight at the marker: hovering over the marker puts the REAL
+            # impact a full drift downwind of it, so the gate (which now tests
+            # the real impact) never opens. The oracle therefore also flies the
+            # upwind offset — target - drift — so that the real impact and the
+            # marker coincide. Both halves are needed; either alone is worse
+            # than doing nothing.
+            steer_xy = aim_xy - residual * self.res_scale
+        to_target = steer_xy - pos_xy
+        v_des = torch.clamp(args_cli.kp_xy * to_target, -args_cli.approach_speed, args_cli.approach_speed)
+        blind = ~detected
+        if bool(blind.any()):
+            v_now = vel_xy / torch.linalg.norm(vel_xy, dim=-1, keepdim=True).clamp(min=1e-6)
+            v_des = torch.where(blind.unsqueeze(-1), v_now * args_cli.approach_speed, v_des)
+        vz_des = torch.clamp(args_cli.kp_z * (args_cli.release_alt - alt), -2.0, 2.0)
+
+        drop = self._want_drop(pos_xy, vel_xy, alt, vz, aim_xy, residual)
+
+        act = torch.zeros(u.num_envs, self.act_dim, device=u.device)
+        act[:, 0] = torch.clamp(v_des[:, 0] / a.vx_scale, -1.0, 1.0)
+        act[:, 1] = torch.clamp(v_des[:, 1] / a.vy_scale, -1.0, 1.0)
+        act[:, 2] = torch.clamp(vz_des / a.vz_scale, -1.0, 1.0)
+        act[:, 3] = 0.0
+        if self.act_dim >= 5:
+            act[:, 4] = torch.where(drop, torch.ones_like(alt), -torch.ones_like(alt))
+        if self.has_residual:
+            act[:, 5:7] = residual
+        return act
+
+
+ARM_NAMES = {"hover": "T0_hover_drop", "ccip": "T1_ccip_threshold",
+             "argmin": "T2_predictive_argmin", "oracle": "T3_wind_oracle_residual"}
+
+
+def main():
+    env_cfg = parse_env_cfg(args_cli.task, num_envs=args_cli.num_envs)
+    env_cfg.seed = args_cli.seed
+    if args_cli.moving_target:
+        env_cfg.moving_target_force = True
+    if args_cli.target_motion is not None:
+        env_cfg.phase_cfg.target_motion_model = args_cli.target_motion
+    if args_cli.no_handoff_dr and hasattr(env_cfg, "handoff"):
+        env_cfg.handoff.enabled = False
+    if args_cli.no_dyn_dr:
+        env_cfg.dyn_dr.enabled = False
+
+    env = gym.make(args_cli.task, cfg=env_cfg)
+    u = env.unwrapped
+    ctrl = BaselineController(u, args_cli.arm)
+    print(f"[baseline] arm={ARM_NAMES[args_cli.arm]} task={args_cli.task} seed={args_cli.seed} "
+          f"gate_radius={ctrl.gate_radius:.2f} residual_scale={ctrl.res_scale:.2f} "
+          f"{'(PRIVILEGED wind/drag)' if args_cli.arm == 'oracle' else ''}", flush=True)
+
+    eval_harness.run_and_report(
+        env, ctrl,
+        name=ARM_NAMES[args_cli.arm],
+        episodes=args_cli.episodes,
+        paired=not args_cli.unpaired,
+        meta={"task": args_cli.task, "seed": args_cli.seed, "learned": False,
+              "privileged": args_cli.arm == "oracle",
+              "approach_speed": args_cli.approach_speed,
+              "release_alt": args_cli.release_alt, "horizon": args_cli.horizon,
+              "hover_radius": args_cli.hover_radius, "hover_speed": args_cli.hover_speed},
+        out_json=args_cli.out_json,
+    )
+    env.close()
+
+
+if __name__ == "__main__":
+    main()
+    simulation_app.close()

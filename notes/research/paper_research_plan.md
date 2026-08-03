@@ -121,11 +121,16 @@ v12 overshoot 트랩(Rule 10, env 특이 튜닝) · mass/inertia override 버그
 
 1. **거의 전부 단일 시드(42).** → §3 프로토콜에서 3–5 시드 강제.
 2. **`select_best_checkpoint.py` 선택 편향** (같은 eval 지표로 15개 훑어 best 선택) → **독립 held-out 재평가**.
-3. ~~eval 시드 미고정~~ → **2026-08-02 `play.py --seed` 추가 완료**(commit `bb18dc0`). 이제 고정 표본 비교 가능.
-4. **rule-based 베이스라인 부재** → §4 Table 1이 전부 이걸 메우는 실험.
+3. ~~eval 시드 미고정~~ → **해결.** `play.py --seed`(`bb18dc0`) + **paired 평가**(`eval_harness.py`) —
+   이제 두 arm이 *동일 시나리오 집합*을 본다(같은 시드만으로는 부족했다: 리셋 시점이 정책에 의존해 RNG가 갈라진다).
+4. ~~rule-based 베이스라인 부재~~ → **해결.** T0~T3 구현·실측 완료 (§4 Table 1, [[experiments/exp_023_table1_baselines]]).
 5. **v19_abd는 A·B·D 번들** → 귀속 분리 필요.
 6. **B/C 두 env 혼재** → **v-track(v19)을 본선 env로 단일화**, base env 결과는 포팅해 재현.
-7. **v-track 핸드오프가 완전 고정**(4 m/s, +X, 10 m, 원점, 수평) → 일반화 주장 불가. 랜덤화 필수(§5 P0).
+7. ~~v-track 핸드오프가 완전 고정~~ → **env 레벨 해결**(v20, §5 P0-3). 단 고정 분포로 학습된 기존
+   체크포인트는 방위 랜덤화에서 붕괴하므로(§5 P0 판정) **재학습 전까지 일반화 주장은 여전히 불가**.
+8. **착지 래치 버그로 v16/v19/v20 성공률이 과소 집계되어 있었다**(2026-08-03 수정). 이 env로 측정된
+   **모든 과거 절대 수치는 재측정 대상** — 방향은 한쪽(타임아웃→착지)이라 순서는 보존.
+   → [[errors/err_20260803_payload_landing_latch]]
 
 ---
 
@@ -169,6 +174,20 @@ n ≥ 500 episodes/조건. 체크포인트는 **학습 종료 시점 고정**(be
 | **T3** wind-oracle CARP | 참 바람을 주고 릴리스점 최적화 | 바람 보정 CCIP | ✗ | CARP/JPADS |
 | **T4** ours − residual | **학습된 트리거** | nominal CCIP | ✓ | — |
 | **T5** ours (full) | 학습된 트리거 | **CCIP + 학습 잔차** | ✓ | — |
+
+**1차 실측 (2026-08-03, V19 분포, paired 200 ep, seed 1000 — [[experiments/exp_023_table1_baselines]]):**
+
+| arm | success (95% CI) | delivery | CEP50 | CEP90 | $T_\text{deliver}$ med |
+|---|---|---|---|---|---|
+| T0 hover-drop | 91.50% (86.8–94.6) | 97.0% | 0.358 m | 0.733 m | **7.90 s** |
+| T1 CCIP 임계 | 6.50% (3.8–10.8) | 97.0% | 1.606 m | 2.164 m | 5.50 s |
+| T2 predictive argmin | 35.50% (29.2–42.4) | 97.0% | 1.097 m | 1.603 m | 5.80 s |
+| T3 wind-oracle (특권) | 47.50% (40.7–54.4) | 97.0% | 1.010 m | 1.836 m | 5.90 s |
+| **T5 ours (RL)** | **100.00%** (98.1–100) | 100% | **0.370 m** | **0.679 m** | 5.95 s |
+
+T1→T2 +29.0 pp(고전 타이밍 정교화) · T2→T3 +12.0 pp(참 바람) · **T3→T5 +52.5 pp, CEP −63%**.
+⚠️ 단, T0가 CEP 0.358 m로 T5와 대등하다 — **T5의 대-호버 우위는 정확도가 아니라 민첩성(−25% 시간)**이고
+정확도 우위는 순항-릴리스 arm(T1–T3) 대비다. T4(잔차 없는 학습 arm)는 P2에서 추가한다.
 
 읽는 법: **T1→T2** = 고전 타이밍 기법의 상한, **T2→T4** = 학습된 트리거의 순수 이득,
 **T4→T5** = 유도레벨 잔차의 순수 이득, **T3 vs T5** = 우리 잔차가 "참 바람 정보"의 몇 %를 회수하는가.
@@ -260,19 +279,24 @@ exp_021의 timeout 20–28%는 "게이트가 이동표적에서 안 열림"이�
 ### P0. 프로토콜·env 정비 (학습 없음, 비용 최저, 나머지 전부의 전제)
 
 1. ✅ `play.py --seed` (완료, `bb18dc0`)
-2. **eval 하네스 확장**: held-out 시드 집합, paired 표본, CEP50/90, $T_\text{deliver}$, feasible-window, JSON 출력.
+2. ✅ **eval 하네스 확장** (`isaac_lab/eval_harness.py`): **paired 평가**(num_envs=episodes로 돌려 각 env 슬롯의
+   *첫* 에피소드만 채점 → 첫 리셋은 정책 독립이므로 모든 arm이 bit-identical 시나리오를 봄), CEP50/90,
+   Wilson 구간 + 부트스트랩 CI, $T_\text{deliver}$, feasible release window, per-episode JSON.
+   학습 arm(`play.py --paired_eval`)과 규칙 arm이 **같은 코드 경로**를 쓴다. → [[experiments/exp_023_table1_baselines]]
 3. ✅ **핸드오프 랜덤화** (v-track): 방위 ±180° · 속도 U[2,6] · 고도 U[8,12] · 진입 오프셋(횡 ±3/종 ±2) ·
    자세 N(0,5°) · 각속도 N(0,0.2). `DroneBombardHandoffCfg`, 기본 OFF → v11~v19 무손상.
    → [[experiments/exp_022_p0_handoff_dyn_dr]]
 4. ✅ **DR 확장**: 컨트롤러 질량 *신념* ±5% · 속도P/자세P·rateP 게인 ±10% · 페이로드 **탄도계수**(=질량 등가) ±20% ·
    관측·행동 per-step 노이즈 + **에피소드 상수 bias**. `DroneBombardDynDRCfg`, **런타임 PhysX 쓰기 0**(Rule 19 우회).
 5. ✅ **$T_\text{deliver}$ 로깅**(`Episode_Metric/deliver_time_s`). 체공시간/반송시간 **페널티**는 보상 변경이므로 P2로 이관.
-6. `baseline_drop.py` — T0/T1/T2/T3 4종을 **같은 env·같은 obs 제약**으로 구현(학습 없음).
+6. ✅ `baseline_drop.py` — T0/T1/T2/T3 4종, **같은 env·같은 릴리스 엔벨로프·같은 접근 컨트롤러**,
+   릴리스 규칙만 상이(학습 없음). T3만 참 바람/항력을 쓰는 **명시적 oracle**.
 
-> **P0 중간 판정 (2026-08-03, [[research/handoff_generalization_p0]] / Rule 27):** 동일 v19 ckpt를
-> 4조건에서 평가하니 고정 91.0% → +동역학DR 91.5% → +속도/고도/자세 77.1% → **+방위±180° 7.5%**.
+> **P0 판정 (2026-08-03, [[research/handoff_generalization_p0]] / Rule 27):** 동일 v19 ckpt를
+> 4조건에서 평가하니(paired 200 ep, 착지 래치 버그 수정 후 재측정)
+> 고정 **100.0%** → +동역학DR **99.0%** → +속도/고도/자세 **87.5%** → **+방위±180° 7.5%**.
 > **플랜트·센서 DR은 사실상 공짜, 월드프레임 방위 랜덤화만 파괴적**(발화 시 착탄오차는 4조건 모두
-> 0.32–0.40 m 불변 → 조준/투하가 아니라 *접근*만 붕괴 = 관측 프레임 문제).
+> CEP50 0.37–0.53 m 불변 → 조준/투하가 아니라 *접근*만 붕괴 = 관측 프레임 문제).
 > → **P1 진입 전 갈림길:** (a) v20 그대로 학습 / (b) 방위불변 obs(레이아웃 변경 → fresh 필수) /
 > (c) 둘을 같은 예산으로 비교해 ablation 행으로 승격. 권고 = (c), 순서는 (a) → 곡선 보고 (b).
 

@@ -14,6 +14,12 @@ type: index
 
 ## 현재 상태 (2026-08-03)
 
+- **📊 P0 완료 — Table 1 1차 실측: [[experiments/exp_023_table1_baselines]]**
+  공유 평가 하네스(`eval_harness.py`: paired 평가·CEP50/90·Wilson/부트스트랩 CI·반송시간·feasible window·JSON)와
+  무학습 베이스라인(`baseline_drop.py`: T0 hover / T1 CCIP 임계 / T2 AeroThrow argmin / T3 wind-oracle 잔차) 신설.
+  **paired 200 ep: T0 91.5%(CEP50 0.358 m, 7.90 s) · T1 6.5%(1.606) · T2 35.5%(1.097) · T3 47.5%(1.010) · T5 ours 100.00%(0.370, 5.95 s)**
+  → 학습이 **특권 정보 고전 arm을 성공률 2.1배·CEP 2.7배** 상회. 단 T0 대비 우위는 정확도가 아니라 **민첩성**.
+  부수 발견: 착지 래치 버그 → [[errors/err_20260803_payload_landing_latch]] (Rule 28), v19 기준선 91.0%→**100.00%** 정정.
 - **🧪 P0 착수 — 핸드오프 랜덤화 + 동역학/센싱 DR (`v20` env 신설): [[experiments/exp_022_p0_handoff_dyn_dr]]**
   v11~v19의 완전 고정 핸드오프(원점·10 m·+X 4 m/s·수평)를 토글로 제거하고, PhysX 런타임 쓰기 없이
   플랜트/센서 DR을 추가(질량→컨트롤러 *신념*, 페이로드 질량→*탄도계수* 등가). 유닛 66/66 + 프로브 27/27 PASS,
@@ -234,6 +240,7 @@ type: index
 - [[experiments/exp_021_v19_moving_target]] — **(07-30) 이동 타겟(CV/CT/CA) v19 obs-보존 포팅 + 준상 v19 warm-start 학습 3종 완주.** obs 28-D 불변 lossless 로드 실증, 난이도 cv<ct<ca(ca reward 음수 잔존), det eval 후속. wandb a6saa42b/29jqq1lu/ntumqwoz.
 
 ### 에러 (errors/)
+- [[errors/err_20260803_payload_landing_latch]] — **(08-03)** 물리 페이로드 착지 래치가 정지한 페이로드를 영원히 놓침(실린더 half-height 0.03 > 판정면 0.0, 래치 0/32). 성공이 타임아웃으로 위장 → v19 기준선 91.0%→100.00% 정정. Rule 28.
 - [[errors/err_20260703_vision_env_origin_frame]] — Isaac `_update_vision` world/env-local 프레임 혼용 → 벡터화 학습 비전 완전 사멸. "정확히 0.0000인 보상 성분 = 채널 사멸 신호" 규칙.
 - [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] — armdiag dry-run이 YAML 중복 `checkpoint_dir` 키로 v13 30K 체크포인트 파괴. fresh-start 삭제 footgun + 격리 검증 규칙.
 - [[errors/err_20260615_cruise-timeout-arming]] — CRUISE 타임아웃 = teleport 후 PX4 arm 거부 (stale EKF). arm 게이팅 + early-bail.

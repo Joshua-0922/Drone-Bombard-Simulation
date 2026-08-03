@@ -46,6 +46,18 @@ parser.add_argument("--no_handoff_dr", action="store_true",
 parser.add_argument("--no_dyn_dr", action="store_true",
                     help="Evaluate with the nominal plant: no mass-belief/gain/ballistic-coefficient "
                          "mismatch and no obs/action noise, even if the task randomizes them.")
+parser.add_argument("--paired_eval", action="store_true",
+                    help="Score the policy through the shared eval harness (eval_harness.py): one "
+                         "episode per env slot, so this arm sees bit-identical scenarios to every "
+                         "baseline_drop.py arm run at the same --seed/--num_envs. Adds CEP50/90, "
+                         "Wilson/bootstrap CIs, delivery time, feasible release window, JSON out.")
+parser.add_argument("--unpaired", action="store_true",
+                    help="--paired_eval variant that scores every episode instead of one per env "
+                         "slot (larger n, but no cross-arm pairing).")
+parser.add_argument("--arm_name", type=str, default=None,
+                    help="Label for this arm in the JSON/report (e.g. T5_ours_full).")
+parser.add_argument("--out-json", dest="out_json", type=str, default=None,
+                    help="Write the per-episode records + summary here (--paired_eval).")
 parser.add_argument("--handoff_heading_deg", type=float, default=None,
                     help="Override the handoff heading range to +/- this many degrees (0 = the fixed +X "
                          "cruise). Isolates world-frame heading generalization from the rest of the "
@@ -287,14 +299,38 @@ def run_step_response(env, out_csv):
     print(f"[step-response] wrote {len(rows)} rows to {out_csv}")
 
 
-def run_policy(env, policy_path, episodes=10):
+def _load_policy(env, policy_path):
     from rsl_rl.runners import OnPolicyRunner
     from drone_bombard.agents.rsl_rl_ppo_cfg import DroneBombardPPORunnerCfg
 
     agent_cfg = DroneBombardPPORunnerCfg()
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
     runner.load(policy_path)
-    policy = runner.get_inference_policy(device=env.unwrapped.device)
+    return runner.get_inference_policy(device=env.unwrapped.device)
+
+
+def run_policy_paired(env, policy_path, episodes):
+    """Learned arm (T4/T5) through the SHARED harness — same collector, same
+    metric definitions, same JSON schema as the rule-based baselines, so Table 1
+    rows are produced by one code path. Scores each env slot's FIRST episode,
+    which is the only reset that is policy-independent and therefore the only
+    way two arms see bit-identical scenarios."""
+    import eval_harness
+
+    policy = _load_policy(env, policy_path)
+    eval_harness.run_and_report(
+        env, lambda obs, u: policy(obs),
+        name=args_cli.arm_name or f"policy:{os.path.basename(policy_path)}",
+        episodes=episodes,
+        paired=not args_cli.unpaired,
+        meta={"task": args_cli.task, "seed": args_cli.seed, "learned": True,
+              "privileged": False, "policy": policy_path},
+        out_json=args_cli.out_json,
+    )
+
+
+def run_policy(env, policy_path, episodes=10):
+    policy = _load_policy(env, policy_path)
 
     obs, _ = env.reset()
     causes = ("success", "crash", "overspeed", "bad_attitude", "out_of_range",
@@ -311,7 +347,7 @@ def run_policy(env, policy_path, episodes=10):
     near_miss_wsum, log_w = 0.0, 0
     while n_done < episodes:
         with torch.inference_mode():
-            action = policy(obs)
+            action = policy(obs)  # noqa: F821 (bound above)
         obs, rew, dones, info = env.step(action)
         done = dones.bool()
         if done.any():
@@ -493,7 +529,10 @@ def main():
     elif args_cli.step_response:
         run_step_response(env, args_cli.out_csv)
     elif args_cli.policy:
-        run_policy(env, args_cli.policy, episodes=args_cli.episodes)
+        if args_cli.paired_eval or args_cli.unpaired or args_cli.out_json:
+            run_policy_paired(env, args_cli.policy, episodes=args_cli.episodes)
+        else:
+            run_policy(env, args_cli.policy, episodes=args_cli.episodes)
     else:
         print("Specify one of --zero-actions / --scripted / --step-response / --wind-test / --policy CKPT")
 

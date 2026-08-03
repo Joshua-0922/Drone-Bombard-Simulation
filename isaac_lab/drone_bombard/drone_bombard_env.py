@@ -463,6 +463,17 @@ class DroneBombardEnvCfg(DirectRLEnvCfg):
     payload_phys_drag_k: float = 0.005  # N per (m/s)^2 = 0.5*rho*Cd*A for the ~0.008 m^2 payload
     payload_mount_z: float = -0.14     # carry offset below the drone body (m)
     payload_ground_z: float = 0.0      # landing plane (local frame)
+    # Height above the plane at which the impact is latched. MUST exceed the
+    # payload's resting height, or the latch can never fire: a cylinder at rest
+    # on the ground plane sits at half its height (0.03 m here) and the solver
+    # prevents penetration, so a `z <= 0.0` test only ever fires when a payload
+    # happens to tunnel through in one substep. Measured 2026-08-03: with the
+    # 0.0 test, 0/32 forced releases latched and every payload came to rest at
+    # exactly 0.0300 m; in evaluation this showed up as episodes with
+    # released=True that ran to the 30 s timeout (17/200 even on v19-on-v19).
+    # 0.10 m is the value exp_019 validated the analytic-vs-measured impact
+    # parity at (|delta| <= 0.021 m).
+    payload_land_eps: float = 0.10
 
     # Stage B (exp_018): scripted-release-as-terminal for Phase 1. When True,
     # the Phase-1 CCIP referee's fire event ENDS the episode as the success
@@ -623,6 +634,12 @@ class DroneBombardEnv(DirectRLEnv):
         # release window can be crossed between two evaluations — release_rate
         # then under-reports while this stays just above the tolerance.
         self._aim_err_min = torch.full((N,), float("inf"), device=device)
+        # Feasible release window: how many policy steps of THIS episode a
+        # release would have been admissible (the release envelope open, payload
+        # still carried). A wide window = a timing-robust approach; a 1-step
+        # window means the whole outcome hinges on hitting one control tick.
+        # Incremented wherever the fire condition is evaluated.
+        self._window_steps = torch.zeros(N, device=device)
         # This step's CCIP aim error, written by _advance_phase_dynamics at
         # the top of _get_dones — the same dones-before-rewards DirectRLEnv
         # contract _done_flags relies on — and consumed by _get_rewards for
@@ -967,7 +984,7 @@ class DroneBombardEnv(DirectRLEnv):
         # landing: local-frame z at/below the ground plane.
         if active.any():
             z_local = self._payload.data.root_pos_w[:, 2] - origins[:, 2]
-            newly = active & (z_local <= self.cfg.payload_ground_z)
+            newly = active & (z_local <= self.cfg.payload_ground_z + self.cfg.payload_land_eps)
             if newly.any():
                 self._payload_impact_xy[newly] = (
                     self._payload.data.root_pos_w[newly, :2] - origins[newly, :2])
@@ -1323,6 +1340,9 @@ class DroneBombardEnv(DirectRLEnv):
             & (altitude > pc.min_release_altitude)
             & (aim_err <= dc.release_tolerance)
         )
+        # feasible release window (see _window_steps): fire already
+        # excludes already-released envs, so this is exactly 'admissible now'.
+        self._window_steps += fire.float()
         if self.cfg.release_terminal:
             # Stage B: the fire event terminates the episode via _get_dones.
             # (_advance_phase_dynamics zeroed _just_released at the top of
@@ -1393,6 +1413,9 @@ class DroneBombardEnv(DirectRLEnv):
             & (altitude > pc.min_release_altitude)
             & (aim_err <= pc.release_tolerance)
         )
+        # feasible release window (see _window_steps): fire already
+        # excludes already-released envs, so this is exactly 'admissible now'.
+        self._window_steps += fire.float()
         if not bool(torch.any(fire)):
             return
 
@@ -1655,6 +1678,7 @@ class DroneBombardEnv(DirectRLEnv):
         self._release_target_xy[env_ids] = 0.0
         self._aim_err_min[env_ids] = float("inf")
         self._aim_err_last[env_ids] = float("inf")
+        self._window_steps[env_ids] = 0.0
 
         self._action_sat_sum[env_ids] = 0.0
 
@@ -1745,6 +1769,14 @@ class DroneBombardEnv(DirectRLEnv):
                 self.episode_length_buf[env_ids].float() * self.cfg.sim.dt * self.cfg.decimation
             ).clone(),
             "delivered": (self._released[env_ids] | self._payload_landed[env_ids]).clone(),
+            "landed": self._payload_landed[env_ids].clone(),
+            "feasible_window_s": (
+                self._window_steps[env_ids] * self.cfg.sim.dt * self.cfg.decimation
+            ).clone(),
+            # Which global env slots this snapshot batch belongs to — eval
+            # harnesses need it to attribute episodes to a fixed slot (paired
+            # evaluation), since a reset batch is only the envs that just ended.
+            "env_ids": env_ids.clone(),
         }
 
     def _predicted_impact_from_snapshot(self, snap: dict) -> torch.Tensor:
@@ -1789,6 +1821,7 @@ class DroneBombardEnv(DirectRLEnv):
         delivered = snap["delivered"]
         if bool(delivered.any()):
             log["Episode_Metric/deliver_time_s"] = snap["deliver_time_s"][delivered].mean().item()
+        log["Episode_Metric/feasible_window_s"] = snap["feasible_window_s"].mean().item()
 
         if self.cfg.release_enabled:
             # Phase 2/3: report the REAL (DR-physics) impact error measured at
