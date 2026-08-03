@@ -252,6 +252,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-08-03]] — **P0 전 항목 완료**(v20 랜덤화 env + 공유 평가 하네스 + 무학습 베이스라인 T0~T3) · Table 1 1차 실측 · 착지 래치 버그 수정(v19 기준선 91→100% 정정) · **(a)안 학습 음성 결과**(페널티 회피 수렴). Rule 27/28/29 신설
 - [[daily/daily_2026-08-01]] — 브랜치 정리: 10개 브랜치 계보 조사, push 용량초과 원인 규명(실수로 커밋된 SAC/영상 바이너리), `Isaac-JS` 고유 노트 `isaac_jk`로 포팅 후 삭제, `main`을 `isaac_jk`로 승격(구 main은 태그로 보존)
 - [[daily/daily_2026-07-30]] — exp_021: 이동 타겟(CV/CT/CA) v19 포팅 + 준상 v19 warm-start(사본) 학습 3종 완주, wandb 3 runs
 - [[daily/daily_2026-07-23]] — exp_020 물리 페이로드 부착 학습 완주(100%, 학습 비용 0) + wandb eval-figure 파이프라인 + wandb 키 공백 함정 해결
