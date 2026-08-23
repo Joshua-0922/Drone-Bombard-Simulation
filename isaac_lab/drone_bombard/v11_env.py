@@ -412,11 +412,11 @@ class DroneBombardV11Env(DroneBombardEnv):
 
     def _ccip(self, pos, vel):
         dc = self.cfg.drop
-        pos_xy, altitude, vel_xy = pos[:, :2], pos[:, 2], vel[:, :2]
-        impact = predict_impact_nominal(pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity)
+        pos_xy, altitude, vel_xy, vel_z = pos[:, :2], pos[:, 2], vel[:, :2], vel[:, 2]
+        impact = predict_impact_nominal(pos_xy, vel_xy, vel_z, altitude, dc.release_delay, dc.gravity)
         ccip_err = impact - self._target_xy
         d_impact = torch.linalg.norm(ccip_err, dim=-1)
-        t_f = time_to_fall(altitude, dc.gravity)
+        t_f = time_to_fall(altitude, vel_z, dc.gravity)
         return ccip_err, d_impact, t_f
 
     def _step_moving_target(self):
@@ -616,7 +616,8 @@ class DroneBombardV11Env(DroneBombardEnv):
         # so this equals the nominal CCIP prediction — but computed via the same
         # ballistic_impact so enabling DR later flows through unchanged).
         real_impact = ballistic_impact(
-            pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity, self._drag_coef, self._wind_xy
+            pos_xy, vel_xy, vel[:, 2], altitude, dc.release_delay, dc.gravity,
+            self._drag_coef, self._wind_xy,
         )
         landing_err = torch.linalg.norm(real_impact - self._target_xy, dim=-1)
 
@@ -736,14 +737,14 @@ class DroneBombardV14Env(DroneBombardV11Env):
         from .math_utils import apply_ccip_residual, predict_impact_nominal, time_to_fall
 
         dc = self.cfg.drop
-        pos_xy, altitude, vel_xy = pos[:, :2], pos[:, 2], vel[:, :2]
-        impact = predict_impact_nominal(pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity)
+        pos_xy, altitude, vel_xy, vel_z = pos[:, :2], pos[:, 2], vel[:, :2], vel[:, 2]
+        impact = predict_impact_nominal(pos_xy, vel_xy, vel_z, altitude, dc.release_delay, dc.gravity)
         if self.cfg.v14_residual:
             # learned model-uncertainty correction: nominal + residual ~= real impact
             impact = apply_ccip_residual(impact, self._residual_action, self.cfg.v14_residual_scale)
         ccip_err = impact - self._target_xy
         d_impact = torch.linalg.norm(ccip_err, dim=-1)
-        t_f = time_to_fall(altitude, dc.gravity)
+        t_f = time_to_fall(altitude, vel_z, dc.gravity)
         return ccip_err, d_impact, t_f
 
     def _get_observations(self) -> dict:
@@ -991,10 +992,11 @@ class DroneBombardV17Env(DroneBombardV13Env):
         perceived = self._quantize_target(pos[:, :2], pos[:, 2])
         self._perceived_target_xy = perceived
         dc = self.cfg.drop
-        impact = predict_impact_nominal(pos[:, :2], vel[:, :2], pos[:, 2], dc.release_delay, dc.gravity)
+        impact = predict_impact_nominal(
+            pos[:, :2], vel[:, :2], vel[:, 2], pos[:, 2], dc.release_delay, dc.gravity)
         ccip_err = impact - perceived
         d_impact = torch.linalg.norm(ccip_err, dim=-1)
-        t_f = time_to_fall(pos[:, 2], dc.gravity)
+        t_f = time_to_fall(pos[:, 2], vel[:, 2], dc.gravity)
         return ccip_err, d_impact, t_f
 
     def _get_observations(self) -> dict:
@@ -1046,12 +1048,13 @@ class DroneBombardV18Env(DroneBombardV14Env):
             perceived = self._target_xy
         self._perceived_target_xy = perceived
         dc = self.cfg.drop
-        impact = predict_impact_nominal(pos[:, :2], vel[:, :2], pos[:, 2], dc.release_delay, dc.gravity)
+        impact = predict_impact_nominal(
+            pos[:, :2], vel[:, :2], vel[:, 2], pos[:, 2], dc.release_delay, dc.gravity)
         if self.cfg.v14_residual:
             impact = apply_ccip_residual(impact, self._residual_action, self.cfg.v14_residual_scale)
         ccip_err = impact - perceived
         d_impact = torch.linalg.norm(ccip_err, dim=-1)
-        t_f = time_to_fall(pos[:, 2], dc.gravity)
+        t_f = time_to_fall(pos[:, 2], vel[:, 2], dc.gravity)
         return ccip_err, d_impact, t_f
 
     def _get_observations(self) -> dict:

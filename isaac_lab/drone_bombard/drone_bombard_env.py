@@ -1330,7 +1330,7 @@ class DroneBombardEnv(DirectRLEnv):
         vel_xy = vel[:, :2]
         altitude = pos[:, 2]
 
-        pred_impact = predict_impact_nominal(pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity)
+        pred_impact = predict_impact_nominal(pos_xy, vel_xy, vel[:, 2], altitude, dc.release_delay, dc.gravity)
         aim_err = torch.linalg.norm(pred_impact - self._target_xy, dim=-1)
         self._aim_err_min = torch.minimum(self._aim_err_min, aim_err)
         self._aim_err_last = aim_err
@@ -1357,7 +1357,8 @@ class DroneBombardEnv(DirectRLEnv):
         # semantic parity with the Phase-2 path (impact_err is always the
         # real-physics miss).
         real_impact = ballistic_impact(
-            pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity, self._drag_coef, self._wind_xy
+            pos_xy, vel_xy, vel[:, 2], altitude, dc.release_delay, dc.gravity,
+            self._drag_coef, self._wind_xy,
         )
         real_err = torch.linalg.norm(real_impact - self._target_xy, dim=-1)
 
@@ -1388,11 +1389,11 @@ class DroneBombardEnv(DirectRLEnv):
         altitude = pos[:, 2]
 
         # On-board prediction: nominal CCIP + learned residual (metres).
-        pred_nominal = predict_impact_nominal(pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity)
+        pred_nominal = predict_impact_nominal(pos_xy, vel_xy, vel[:, 2], altitude, dc.release_delay, dc.gravity)
         pred_impact = apply_ccip_residual(pred_nominal, self._residual_action, pc.residual_scale)
 
         # Aim point = target position at the predicted impact time (lead).
-        t_impact = time_to_fall(altitude, dc.gravity) + dc.release_delay
+        t_impact = time_to_fall(altitude, vel[:, 2], dc.gravity) + dc.release_delay
         target_at_impact = self._target_xy + self._target_vel_xy * t_impact.unsqueeze(-1)
 
         aim_err = torch.linalg.norm(pred_impact - target_at_impact, dim=-1)
@@ -1421,7 +1422,8 @@ class DroneBombardEnv(DirectRLEnv):
 
         # Real drop under domain-randomized physics -> true impact error.
         real_impact = ballistic_impact(
-            pos_xy, vel_xy, altitude, dc.release_delay, dc.gravity, self._drag_coef, self._wind_xy
+            pos_xy, vel_xy, vel[:, 2], altitude, dc.release_delay, dc.gravity,
+            self._drag_coef, self._wind_xy,
         )
         real_err = torch.linalg.norm(real_impact - target_at_impact, dim=-1)
 
@@ -1747,6 +1749,11 @@ class DroneBombardEnv(DirectRLEnv):
             "episode_sums": {k: v[env_ids].clone() for k, v in self._episode_sums.items()},
             "final_pos_xy": pos[:, :2].clone(),
             "final_vel_xy": vel[:, :2].clone(),
+            # ENU vertical velocity — required by the full-vz CCIP closed form
+            # (see math_utils.ballistic_impact HISTORY). Snapshotted alongside
+            # the horizontal pair so the post-reset prediction reflects the
+            # terminated episode's real descent rate, not an assumed hover.
+            "final_vel_z": vel[:, 2].clone(),
             "final_alt": pos[:, 2].clone(),
             "target_xy": self._target_xy[env_ids].clone(),
             "drag_coef": self._drag_coef[env_ids].clone(),
@@ -1789,7 +1796,7 @@ class DroneBombardEnv(DirectRLEnv):
         implementation."""
         dc = self.cfg.drop
         impact = ballistic_impact(
-            snap["final_pos_xy"], snap["final_vel_xy"], snap["final_alt"],
+            snap["final_pos_xy"], snap["final_vel_xy"], snap["final_vel_z"], snap["final_alt"],
             dc.release_delay, dc.gravity, snap["drag_coef"], snap["wind_xy"],
         )
         if dc.residual_enabled:

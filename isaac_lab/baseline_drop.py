@@ -116,7 +116,10 @@ def _predict_series(pos_xy, vel_xy, alt, vz, dc, steps, dt):
         t = k * dt
         p_k = pos_xy + vel_xy * t
         a_k = (alt + vz * t).clamp(min=0.05)
-        out.append(predict_impact_nominal(p_k, vel_xy, a_k, dc.release_delay, dc.gravity))
+        # vz is carried through the roll-out (constant-velocity extrapolation),
+        # so the CCIP at each horizon step uses the descent rate the vehicle
+        # would actually have there — see math_utils.ballistic_impact HISTORY.
+        out.append(predict_impact_nominal(p_k, vel_xy, vz, a_k, dc.release_delay, dc.gravity))
     return torch.stack(out, dim=1)  # [N, steps+1, 2]
 
 
@@ -132,15 +135,15 @@ class BaselineController:
         self.gate_radius = float(getattr(u.cfg, "release_radius", 1.0))
 
     # -------- privileged residual (T3 only) --------
-    def _oracle_residual(self, pos_xy, vel_xy, alt):
+    def _oracle_residual(self, pos_xy, vel_xy, alt, vz):
         """Analytic wind/drag correction on the impact-point PREDICTION — the
         exact quantity the learned residual approximates. Emitted on the same
         action channel and therefore subject to the same +-residual_scale
         authority (it saturates when the drift exceeds it, reproducing the
         v15 saturation regime)."""
         u, dc = self.u, self.u.cfg.drop
-        nominal = predict_impact_nominal(pos_xy, vel_xy, alt, dc.release_delay, dc.gravity)
-        real = ballistic_impact(pos_xy, vel_xy, alt, dc.release_delay, dc.gravity,
+        nominal = predict_impact_nominal(pos_xy, vel_xy, vz, alt, dc.release_delay, dc.gravity)
+        real = ballistic_impact(pos_xy, vel_xy, vz, alt, dc.release_delay, dc.gravity,
                                 u._drag_coef, u._wind_xy)
         drift = real - nominal                       # where the wind will take it
         if self.res_scale <= 0.0:
@@ -167,7 +170,7 @@ class BaselineController:
             return ((d_xy <= args_cli.hover_radius) & (speed_xy <= args_cli.hover_speed)
                     & (vz.abs() <= 1.0))
 
-        nominal = predict_impact_nominal(pos_xy, vel_xy, alt, dc.release_delay, dc.gravity)
+        nominal = predict_impact_nominal(pos_xy, vel_xy, vz, alt, dc.release_delay, dc.gravity)
         if self.arm == "ccip":
             # T1: first admissible instant.
             return err_of(nominal) <= self.gate_radius
@@ -191,7 +194,7 @@ class BaselineController:
         if detected is None:
             detected = torch.ones_like(alt, dtype=torch.bool)
 
-        residual = (self._oracle_residual(pos_xy, vel_xy, alt) if self.arm == "oracle"
+        residual = (self._oracle_residual(pos_xy, vel_xy, alt, vz) if self.arm == "oracle"
                     else torch.zeros(u.num_envs, 2, device=u.device))
 
         # --- approach: P-control toward the target, capped at approach_speed.

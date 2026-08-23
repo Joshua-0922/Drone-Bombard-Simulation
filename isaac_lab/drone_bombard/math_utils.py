@@ -105,27 +105,47 @@ def project_target_pinhole(
 def ballistic_impact(
     pos_xy: torch.Tensor,
     vel_xy: torch.Tensor,
+    vel_z: torch.Tensor,
     altitude: torch.Tensor,
     release_delay: float,
     gravity: float,
     drag_coef: torch.Tensor,
     wind_xy: torch.Tensor,
 ) -> torch.Tensor:
-    """Predicted impact point under free-fall ballistics — exact parity with
-    ``drop_calculator_node``'s ``t = (vz + sqrt(vz^2 + 2*g*H)) / g`` formula
-    specialised to release-from-rest-vertically (vz~=0 at release, matching
-    the Gazebo referee which triggers at/near success): ``t = sqrt(2H/g)``.
+    """Predicted impact point under free-fall ballistics — the full
+    ``drop_calculator_node`` closed form ``t = (vz + sqrt(vz^2 + 2*g*H)) / g``,
+    with ``vz`` the ENU (UP-positive) vertical velocity at release.
 
-    ``drag_coef`` / ``wind_xy`` are Phase-2 domain-randomization hooks (see
-    ``mdp/domain_rand.py``). In Phase 1 both are exactly zero:
-      * ``wind_xy == 0`` -> the wind term below adds the zero vector (a
-        genuine no-op, not merely a multiply-by-zero).
-      * the drag-affected branch is skipped entirely when ``drag_coef == 0``
-        (guarded, not computed-then-discarded), so Phase 1 reduces
-        ALGEBRAICALLY EXACTLY to the drag-free closed form used by the
-        Gazebo referee.
+    HISTORY (2026-08-23): this used to drop the ``vz`` term and evaluate
+    ``t = sqrt(2H/g)`` — the release-from-rest-vertically specialisation, valid
+    only while the referee fired at/near hover. Once v16/v19 handed the payload
+    to PhysX it inherited the drone's REAL ``vz`` (drone_bombard_env
+    ``_step_payload_physics``), while this predictor still assumed zero, so the
+    nominal CCIP carried a systematic error that had nothing to do with
+    drag/wind. It is the dominant error term in the release envelope
+    (``release_max_vz = 3`` m/s): descending at 3 m/s from 8 m at 6 m/s
+    horizontal shortens the fall by 0.27 s, i.e. the old formula OVERSHOT the
+    impact point by 1.62 m — against ~0.20 m for wind and ~0.12 m for drag.
+    Flagged as follow-up #3 in the exp_019 note and in
+    ``research/ccip_release_decoupling`` §4; closed here.
+
+    ``drag_coef`` / ``wind_xy`` are the domain-randomization hooks (see
+    ``mdp/domain_rand.py``). With both exactly zero this reduces algebraically
+    to the drag-free closed form.
+
+    KNOWN REMAINING APPROXIMATION: ``release_delay`` adds horizontal carry
+    ``(vel_xy + wind_xy) * release_delay`` but no altitude change, and the sim
+    has no actual release latency (the drop is instantaneous — see
+    ``v11_env`` ``_get_dones``). So a nonzero ``release_delay`` is a pure
+    predictor-side constant with no counterpart in the plant; at the default
+    0.1 s it injects ~0.5 m of phantom carry at 5 m/s. Fix that by either
+    implementing a real latency buffer or setting the delay to 0 — deliberately
+    NOT bundled into this change.
     """
-    t_fall = torch.sqrt(torch.clamp(2.0 * altitude / gravity, min=0.0))
+    # Full quadratic root. vel_z is ENU UP-positive: descending (vel_z < 0)
+    # shortens the fall, ascending lengthens it. Reduces to sqrt(2H/g) at
+    # vel_z == 0. The discriminant is >= 0 for any clamped altitude, so no NaN.
+    t_fall = _time_to_fall(altitude, vel_z, gravity)
     # t_fall is [N]; unsqueeze to [N,1] so it broadcasts against the [N,2]
     # horizontal vectors (a bare [N] would try to broadcast N against the
     # size-2 last dim and fail for any N != 2 — only N==1 slips through).
@@ -153,19 +173,35 @@ def ccip_residual(obs: torch.Tensor) -> torch.Tensor:
     return torch.zeros((obs.shape[0], 2), dtype=obs.dtype, device=obs.device)
 
 
-def time_to_fall(altitude: torch.Tensor, gravity: float) -> torch.Tensor:
-    """Free-fall time from ``altitude`` to the ground: ``sqrt(2H/g)``.
+def _time_to_fall(altitude: torch.Tensor, vel_z: torch.Tensor, gravity: float) -> torch.Tensor:
+    """Free-fall time from ``altitude`` with ENU (UP-positive) vertical
+    velocity ``vel_z``: ``t = (vz + sqrt(vz^2 + 2*g*H)) / g``.
 
-    Specialised to release-from-rest-vertically (vz~=0 at release), matching
-    the Gazebo ``drop_calculator_node`` referee. Clamped at 0 so a
-    below-ground altitude never yields a NaN.
+    Solves ``H + vz*t - g*t^2/2 = 0`` for the positive root. Altitude is
+    clamped at 0 so a below-ground altitude never yields a NaN; the
+    discriminant ``vz^2 + 2gH`` is then >= vz^2 >= 0, so the sqrt is always
+    real and the root is always >= 0.
     """
-    return torch.sqrt(torch.clamp(2.0 * altitude / gravity, min=0.0))
+    h = torch.clamp(altitude, min=0.0)
+    disc = torch.sqrt(vel_z * vel_z + 2.0 * gravity * h)
+    return torch.clamp((vel_z + disc) / gravity, min=0.0)
+
+
+def time_to_fall(altitude: torch.Tensor, vel_z: torch.Tensor, gravity: float) -> torch.Tensor:
+    """Public alias of :func:`_time_to_fall` — see it for the closed form.
+
+    ``vel_z`` became a required argument on 2026-08-23 (it used to be assumed
+    zero); passing it positionally is deliberate so every call site had to be
+    revisited rather than silently keeping the vz~=0 specialisation. See the
+    HISTORY block in :func:`ballistic_impact`.
+    """
+    return _time_to_fall(altitude, vel_z, gravity)
 
 
 def predict_impact_nominal(
     pos_xy: torch.Tensor,
     vel_xy: torch.Tensor,
+    vel_z: torch.Tensor,
     altitude: torch.Tensor,
     release_delay: float,
     gravity: float,
@@ -178,10 +214,17 @@ def predict_impact_nominal(
     between this nominal prediction and the real impact is exactly the
     model-mismatch the learned residual must close. Reduces algebraically to
     ``ballistic_impact`` with zero drag/wind.
+
+    NOTE: "nominal" means no drag and no wind — it does NOT mean no vertical
+    velocity. ``vel_z`` is a kinematic state the on-board predictor genuinely
+    knows, so omitting it was a formula error, not a modelling choice (see the
+    HISTORY block in :func:`ballistic_impact`).
     """
     zero_drag = torch.zeros(pos_xy.shape[0], device=pos_xy.device, dtype=pos_xy.dtype)
     zero_wind = torch.zeros(pos_xy.shape[0], 2, device=pos_xy.device, dtype=pos_xy.dtype)
-    return ballistic_impact(pos_xy, vel_xy, altitude, release_delay, gravity, zero_drag, zero_wind)
+    return ballistic_impact(
+        pos_xy, vel_xy, vel_z, altitude, release_delay, gravity, zero_drag, zero_wind
+    )
 
 
 def apply_ccip_residual(pred_impact: torch.Tensor, residual_action: torch.Tensor, scale: float) -> torch.Tensor:

@@ -12,6 +12,27 @@ type: index
 
 ---
 
+## 현재 상태 (2026-08-23)
+
+- **⛔🔧 CCIP가 수직속도를 누락하고 있었다 — 수정 완료: [[research/ccip_vz_omission]] / [[errors/err_20260823_ccip_vz_omission]]**
+  `ballistic_impact`가 $t=\sqrt{2H/g}$(정지 투하 특수화)를 쓰는 동안 **v16의 물리 페이로드는 드론의 실제 $v_z$를 상속**받아 낙하했고,
+  v19가 `release_max_vz=3.0`을 허용하며 전제가 깨졌다. **릴리즈 엔벨로프에서 모델 오차의 ~70%가 이 누락**
+  ($v_z$ 0.547 m vs 바람 0.197 m vs 항력 0.120 m, p50; $v_z{=}-3$ m/s·$H{=}8$ m·수평 6 m/s에서 **1.62 m overshoot**).
+  → 논문 주 주장 *"CCIP는 정확한데 항력·바람이 틀리게 만든다"*가 **거짓이었음**. `vel_z`를 필수 인자로 승격해 호출부 11곳 갱신,
+  테스트 69 passed + smoke 3종(v19/phase1/phase2) 완주. **exp_019 후속 #3에 이미 기록돼 있었으나 미이행이었다** → Rule 30.
+- **📐 아키텍처 문서 v2 → v3 전면 개정: [[research/research_architecture]]**
+  선행연구 독해만으로 쓰인 v2를 코드와 1:1 대조 → **전제 1개 거짓 + 코드 버그 4개 + 성립 불가 DR 축 3개 + 측정 결과와 충돌 4건** 발견.
+  미수정 잔여: **T3 "wind-oracle"이 오라클이 아님**(해석식 바람항 3~7배 과보정 → T3 47.5% < T0 91.5%의 원인, B4·Oracle gap·Abstract가 의존),
+  페이로드 항력 프레임(`is_global`), `_drag_coef` 팬텀 채널, `release_delay` 실체 없음.
+  성립 불가 DR: 질량과 $C_d$는 **같은 축**($k/m$), CoM 오프셋은 kinematic weld라 **효과 0**(Rule 24b).
+- **🗑️ 기존 학습 산출물 전량 폐기 결정.** v11~v20 체크포인트·exp_014~024 수치를 논문 근거로 쓰지 않음
+  (v11~v19 DR 부재 → 일반화 검증 불가 / 가설 없는 warm-start 누적 → 귀속 불가).
+  **유지**: Rule 16~30, `eval_harness.py`, `baseline_drop.py` T0~T3, kinematic weld 페이로드, 등가변환 DR 패턴, `math_utils.py` + 테스트.
+  ⚠️ **정정**: "DR을 안 해서 robustness가 없다"는 절반만 맞다 — **v20은 DR을 켰고 실패했다**(exp_024).
+  원인은 DR 부족이 아니라 **world-frame 관측**(Rule 27) + 틀린 prior warm-start(Rule 29). **fresh start만으로 안 풀린다.**
+
+---
+
 ## 현재 상태 (2026-08-03)
 
 - **❌ (a)안 실패 — v20 warm-start 학습은 페널티 회피로 수렴: [[experiments/exp_024_v20_warmstart_failure]]**
@@ -146,6 +167,7 @@ type: index
 
 | 파일 | 상태 | 요약 |
 |------|------|------|
+| [[errors/err_20260823_ccip_vz_omission]] | ✅ 해결 | CCIP `ballistic_impact`가 $v_z$ 누락($t=\sqrt{2H/g}$ 특수화) → 릴리즈 엔벨로프 모델오차의 ~70%. 에러 없이 조용히 틀림, 잔차가 흡수해 은폐. `vel_z` 필수 인자 승격 (Rule 30) |
 | [[errors/err_20260723_wandb_key_empty]] | ✅ 해결 | 컨테이너 baked-in `WANDB_API_KEY` 빈 값 → wandb 학습 silent 실패(isaaclab.sh exit 0 삼킴). `--env-file /opt/drone-bombard/.wandb.env` 필수 |
 | [[errors/err_20260703_vision_env_origin_frame]] | ✅ 해결 | Isaac `_update_vision` env-origin 프레임 혼용 → 벡터화 학습에서 비전 채널 완전 사멸(conf≡0). num_envs=1 검증으론 구조적으로 못 잡음 |
 | [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] | ✅ 해결 | armdiag dry-run이 YAML 중복 키로 v13 30K 체크포인트 파괴. 재발방지: startup `Checkpoints:` 로그로 격리 검증 |
@@ -186,6 +208,8 @@ type: index
 ## 노트 인덱스
 
 ### 연구 (research/)
+- [[research/research_architecture]] — **(08-23) 최종 아키텍처 v3 — 코드 실측 대조 개정판. 착수 전 필수 수정 B1~B5, DR 축 정정, 관측 프레임 결정**
+- [[research/ccip_vz_omission]] — **(08-23) CCIP 수직속도 누락 — 잔차가 배우던 것은 바람이 아니라 공식 결손이었다 (Rule 30)**
 - [[research/handoff_generalization_p0]] — **(08-03) 고정 초기조건은 표현을 암기시킨다 — 랜덤화 축 분류(표현 vs 강건성), Rule 27**
 - [[research/paper_research_plan]] — **(08-02) 논문 연구 계획 — 문헌 지도·차별점 3종·표 7종(베이스라인/잔차 위치/구조 vs 보상/충실도/인지/리드)·실행 순서 P0~P4**
 - [[research/research_overview_for_paper]] — **(08-02) 전 연구 통합 개요 — 계보·warm-start 체인·발견 F1~F12·ablation 설계(논문용)**
@@ -252,6 +276,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-08-23]] — **CCIP $v_z$ 누락 발견·수정**(모델오차의 ~70%) · 아키텍처 문서 v3 전면 개정(전제 1개 거짓 + 버그 4개 + 성립불가 DR 3개) · 기존 학습 산출물 폐기 결정 · Rule 30 신설
 - [[daily/daily_2026-08-03]] — **P0 전 항목 완료**(v20 랜덤화 env + 공유 평가 하네스 + 무학습 베이스라인 T0~T3) · Table 1 1차 실측 · 착지 래치 버그 수정(v19 기준선 91→100% 정정) · **(a)안 학습 음성 결과**(페널티 회피 수렴). Rule 27/28/29 신설
 - [[daily/daily_2026-08-01]] — 브랜치 정리: 10개 브랜치 계보 조사, push 용량초과 원인 규명(실수로 커밋된 SAC/영상 바이너리), `Isaac-JS` 고유 노트 `isaac_jk`로 포팅 후 삭제, `main`을 `isaac_jk`로 승격(구 main은 태그로 보존)
 - [[daily/daily_2026-07-30]] — exp_021: 이동 타겟(CV/CT/CA) v19 포팅 + 준상 v19 warm-start(사본) 학습 3종 완주, wandb 3 runs

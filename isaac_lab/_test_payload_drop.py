@@ -59,7 +59,8 @@ def main():
     pos = env._robot.data.root_pos_w - env.scene.env_origins
     vel = env._robot.data.root_lin_vel_w
     pred = predict_impact_nominal(
-        pos[:, :2], vel[:, :2], pos[:, 2], env.cfg.drop.release_delay, env.cfg.drop.gravity
+        pos[:, :2], vel[:, :2], vel[:, 2], pos[:, 2],
+        env.cfg.drop.release_delay, env.cfg.drop.gravity
     )
     analytic_err = torch.linalg.norm(pred - env._target_xy, dim=-1)
 

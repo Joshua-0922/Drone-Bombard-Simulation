@@ -226,8 +226,9 @@ def test_ballistic_impact_matches_drop_free_closed_form():
     release_delay, gravity = 0.1, 9.81
     zero_drag = torch.zeros(1)
     zero_wind = torch.zeros(1, 2)
+    zero_vz = torch.zeros(1)  # hover release -> reduces to sqrt(2H/g)
 
-    impact = mu.ballistic_impact(pos_xy, vel_xy, altitude, release_delay, gravity, zero_drag, zero_wind)
+    impact = mu.ballistic_impact(pos_xy, vel_xy, zero_vz, altitude, release_delay, gravity, zero_drag, zero_wind)
 
     t_fall_ref = math.sqrt(2.0 * 10.0 / 9.81)
     impact_ref = pos_xy + vel_xy * (t_fall_ref + release_delay)
@@ -244,10 +245,11 @@ def test_ballistic_impact_responds_to_release_delay_and_gravity_params():
     altitude = torch.tensor([10.0])
     zero_drag = torch.zeros(1)
     zero_wind = torch.zeros(1, 2)
+    zero_vz = torch.zeros(1)  # hover release -> reduces to sqrt(2H/g)
 
-    impact_a = mu.ballistic_impact(pos_xy, vel_xy, altitude, 0.1, 9.81, zero_drag, zero_wind)
-    impact_b = mu.ballistic_impact(pos_xy, vel_xy, altitude, 0.9, 9.81, zero_drag, zero_wind)
-    impact_c = mu.ballistic_impact(pos_xy, vel_xy, altitude, 0.1, 3.0, zero_drag, zero_wind)
+    impact_a = mu.ballistic_impact(pos_xy, vel_xy, zero_vz, altitude, 0.1, 9.81, zero_drag, zero_wind)
+    impact_b = mu.ballistic_impact(pos_xy, vel_xy, zero_vz, altitude, 0.9, 9.81, zero_drag, zero_wind)
+    impact_c = mu.ballistic_impact(pos_xy, vel_xy, zero_vz, altitude, 0.1, 3.0, zero_drag, zero_wind)
 
     assert not torch.allclose(impact_a, impact_b)
     assert not torch.allclose(impact_a, impact_c)
@@ -259,10 +261,11 @@ def test_ballistic_impact_wind_is_true_zero_noop_in_phase1():
     altitude = torch.tensor([10.0])
     zero_drag = torch.zeros(1)
     zero_wind = torch.zeros(1, 2)
+    zero_vz = torch.zeros(1)  # hover release -> reduces to sqrt(2H/g)
     nonzero_wind = torch.tensor([[3.0, 0.0]])
 
-    impact_no_wind = mu.ballistic_impact(pos_xy, vel_xy, altitude, 0.1, 9.81, zero_drag, zero_wind)
-    impact_with_wind = mu.ballistic_impact(pos_xy, vel_xy, altitude, 0.1, 9.81, zero_drag, nonzero_wind)
+    impact_no_wind = mu.ballistic_impact(pos_xy, vel_xy, zero_vz, altitude, 0.1, 9.81, zero_drag, zero_wind)
+    impact_with_wind = mu.ballistic_impact(pos_xy, vel_xy, zero_vz, altitude, 0.1, 9.81, zero_drag, nonzero_wind)
     assert not torch.allclose(impact_no_wind, impact_with_wind), "nonzero wind must change the result"
 
     t_fall_ref = math.sqrt(2.0 * 10.0 / 9.81)
@@ -280,7 +283,8 @@ def test_ballistic_impact_batched_no_broadcast_bug():
         altitude = torch.rand(n) * 10 + 1
         zero_drag = torch.zeros(n)
         zero_wind = torch.zeros(n, 2)
-        impact = mu.ballistic_impact(pos_xy, vel_xy, altitude, 0.1, 9.81, zero_drag, zero_wind)
+        zero_vz = torch.zeros(n)
+        impact = mu.ballistic_impact(pos_xy, vel_xy, zero_vz, altitude, 0.1, 9.81, zero_drag, zero_wind)
         assert impact.shape == (n, 2)
         # per-row equals the scalar closed form
         for i in range(min(n, 4)):
@@ -303,18 +307,68 @@ def test_ccip_residual_is_zero_stub_no_params():
 
 def test_time_to_fall_closed_form_and_clamp():
     alt = torch.tensor([10.0, 0.0, -3.0])
-    t = mu.time_to_fall(alt, 9.81)
+    t = mu.time_to_fall(alt, torch.zeros_like(alt), 9.81)
     assert t[0].item() == pytest.approx(math.sqrt(2.0 * 10.0 / 9.81), abs=1e-6)
     assert t[1].item() == pytest.approx(0.0, abs=1e-9)
     assert t[2].item() == pytest.approx(0.0, abs=1e-9), "below-ground altitude clamps, no NaN"
+
+
+def test_time_to_fall_uses_vertical_velocity():
+    """REGRESSION (2026-08-23): the CCIP used t = sqrt(2H/g), i.e. it assumed
+    the payload was released from vertical rest. Once the physical payload
+    inherited the drone's real vz, that dropped term became the dominant
+    nominal-CCIP error in the release envelope — bigger than wind and drag
+    combined. See math_utils.ballistic_impact HISTORY."""
+    alt = torch.tensor([8.0, 8.0, 8.0])
+    vz = torch.tensor([0.0, -3.0, +2.0])  # ENU: negative = descending
+    t = mu.time_to_fall(alt, vz, 9.81)
+
+    def closed_form(h, v, g=9.81):
+        return (v + math.sqrt(v * v + 2.0 * g * h)) / g
+
+    for i, v in enumerate([0.0, -3.0, 2.0]):
+        assert t[i].item() == pytest.approx(closed_form(8.0, v), abs=1e-6)
+
+    assert t[0].item() == pytest.approx(math.sqrt(2.0 * 8.0 / 9.81), abs=1e-6), \
+        "vz == 0 must reduce exactly to the old sqrt(2H/g) form"
+    assert t[1].item() < t[0].item(), "descending shortens the fall"
+    assert t[2].item() > t[0].item(), "ascending lengthens it"
+
+
+def test_ballistic_impact_vz_shifts_impact_by_expected_metres():
+    """The bug's magnitude, pinned: descending at 3 m/s from 8 m while moving
+    6 m/s horizontally, the vz-blind formula OVERSHOT by ~1.62 m."""
+    pos_xy = torch.zeros(1, 2)
+    vel_xy = torch.tensor([[6.0, 0.0]])
+    altitude = torch.tensor([8.0])
+    zero_drag, zero_wind = torch.zeros(1), torch.zeros(1, 2)
+
+    hover = mu.ballistic_impact(pos_xy, vel_xy, torch.zeros(1), altitude,
+                                0.0, 9.81, zero_drag, zero_wind)
+    diving = mu.ballistic_impact(pos_xy, vel_xy, torch.tensor([-3.0]), altitude,
+                                 0.0, 9.81, zero_drag, zero_wind)
+    overshoot = (hover[0, 0] - diving[0, 0]).item()
+    assert overshoot == pytest.approx(1.62, abs=0.02)
+    assert overshoot > 0.0, "the vz-blind prediction lands FARTHER than reality"
+
+
+def test_predict_impact_nominal_still_ignores_drag_and_wind_but_not_vz():
+    """'Nominal' means no drag and no wind. It does NOT mean no vertical
+    velocity — vz is a state the on-board predictor genuinely measures, so it
+    must flow through."""
+    pos_xy, vel_xy = torch.zeros(1, 2), torch.tensor([[4.0, 0.0]])
+    altitude = torch.tensor([6.0])
+    a = mu.predict_impact_nominal(pos_xy, vel_xy, torch.zeros(1), altitude, 0.1, 9.81)
+    b = mu.predict_impact_nominal(pos_xy, vel_xy, torch.tensor([-2.5]), altitude, 0.1, 9.81)
+    assert not torch.allclose(a, b), "vz must change the nominal prediction"
 
 
 def test_predict_impact_nominal_matches_drag_free_ballistic():
     pos_xy = torch.tensor([[5.0, -2.0], [0.0, 0.0]])
     vel_xy = torch.tensor([[2.0, 1.0], [-1.0, 3.0]])
     altitude = torch.tensor([10.0, 6.0])
-    pred = mu.predict_impact_nominal(pos_xy, vel_xy, altitude, 0.1, 9.81)
-    ref = mu.ballistic_impact(pos_xy, vel_xy, altitude, 0.1, 9.81, torch.zeros(2), torch.zeros(2, 2))
+    pred = mu.predict_impact_nominal(pos_xy, vel_xy, torch.zeros(altitude.shape[0]), altitude, 0.1, 9.81)
+    ref = mu.ballistic_impact(pos_xy, vel_xy, torch.zeros(2), altitude, 0.1, 9.81, torch.zeros(2), torch.zeros(2, 2))
     torch.testing.assert_close(pred, ref, atol=1e-6, rtol=1e-6)
 
 
@@ -369,8 +423,8 @@ def test_ballistic_impact_drag_branch_changes_result_when_nonzero():
     pos_xy = torch.tensor([[0.0, 0.0]])
     vel_xy = torch.tensor([[3.0, 0.0]])
     altitude = torch.tensor([10.0])
-    nominal = mu.predict_impact_nominal(pos_xy, vel_xy, altitude, 0.1, 9.81)
-    with_drag = mu.ballistic_impact(pos_xy, vel_xy, altitude, 0.1, 9.81, torch.tensor([0.2]), torch.zeros(1, 2))
+    nominal = mu.predict_impact_nominal(pos_xy, vel_xy, torch.zeros(altitude.shape[0]), altitude, 0.1, 9.81)
+    with_drag = mu.ballistic_impact(pos_xy, vel_xy, torch.zeros(1), altitude, 0.1, 9.81, torch.tensor([0.2]), torch.zeros(1, 2))
     assert not torch.allclose(nominal, with_drag), "nonzero drag must change the impact point"
 
 

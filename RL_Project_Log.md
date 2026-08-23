@@ -6,6 +6,61 @@
 
 # 1. Current State
 
+**업데이트:** 2026-08-23
+
+> **⛔🔧 (2026-08-23) CCIP 공식이 수직속도를 누락하고 있었음 — 수정 완료.**
+> `math_utils.ballistic_impact`가 낙하시간을 `t = sqrt(2H/g)`로 계산했다. 정식은
+> `t = (vz + sqrt(vz^2 + 2gH))/g` (vz = ENU UP-positive). 이 특수화는 **Gazebo 시절
+> 릴리즈가 호버 근방에서만 일어났을 때 참**이었고 docstring에 전제가 명시돼 있었으나,
+> **v16(exp_019)이 물리 페이로드를 도입**하면서 페이로드가 드론의 실제 선속도를
+> 상속받기 시작했고 **v19가 `release_max_vz=3.0`을 허용**하며 전제가 깨졌다.
+> **크기: 릴리즈 엔벨로프에서 모델 오차의 약 70%** (vz 0.547 m vs 바람 0.197 m vs
+> 항력 0.120 m, p50). vz=-3 m/s·H=8 m·수평 6 m/s에서 **1.62 m overshoot**
+> (하강 중이면 낙하가 짧아지므로 구 공식은 착탄점을 멀리 예측).
+> **논문 영향**: 주 주장 "CCIP는 정확한 닫힌 형태 해인데 항력·바람이 모델 오차를
+> 만든다"가 거짓이었다 — 잔차가 배우던 것의 70%가 외란이 아니라 공식 결손.
+> **수정**: `vel_z`를 `ballistic_impact`/`predict_impact_nominal`/`time_to_fall`의
+> **필수 인자로 승격**(기본값 미제공 → 조용한 레거시 경로 차단), 호출부 11곳 갱신
+> (base env 4 + v-track 5 + `baseline_drop.py` 3 + 진단 1, 스냅샷에 `final_vel_z` 추가).
+> **검증**: `tests/` **69 passed**(회귀 3종 신설: 폐쇄형 일치 / vz=0 환원 / 1.62 m 크기 고정),
+> smoke 3종 완주(`--v19` 물리 페이로드+잔차+DR, `--phase 1` 스크립트 referee,
+> `--phase 2` release+residual+lead). **exp_019 후속 #3과 `ccip_release_decoupling` §4에
+> 이미 해야 할 일로 기록돼 있었으나 이행되지 않았다** → **Rule 30** 신설.
+> → `notes/research/ccip_vz_omission.md` / `notes/errors/err_20260823_ccip_vz_omission.md`
+>
+> **📐 (2026-08-23) 아키텍처 문서 v2 → v3 전면 개정** (`notes/research/research_architecture.md`).
+> 선행연구 독해만으로 작성된 v2를 코드와 1:1 대조 → **전제 1개 거짓 + 코드 버그 4개 +
+> 물리적으로 성립 불가한 DR 축 3개 + 이미 측정된 결과와 충돌 4건**.
+> **미수정 잔여 (우선순위 순)**:
+> ① **T3 "wind-oracle"이 오라클이 아님** — 해석식 바람항이 "즉시 완전 실림" 가정이라
+>    보정량 p50 2.00 m vs 실제 드리프트 0.29~0.76 m, **3~7배 과보정**, 잔여오차 1.88 m로
+>    무보정보다 나쁨. T3 47.5% < T0 hover 91.5%의 원인. **B4(Oracle 상한)·Oracle gap·
+>    Abstract 문장이 전부 이 위에 서 있음.**
+> ② 페이로드 항력이 월드 프레임 계산인데 `is_global=False`로 전달 (기체는 변환하는데
+>    페이로드만 누락) → `is_global=True` 한 단어
+> ③ `_drag_coef`가 관측에 들어가지만 v19/v20 물리에 영향 0 (팬텀 채널)
+> ④ `release_delay`가 예측 상수일 뿐 실제 지연 아님 → 5 m/s에서 0.5 m 유령 캐리
+> **성립 불가 DR**: 페이로드 질량과 Cd는 **같은 축**(자유낙하는 k/m 비율로만 결정),
+> CoM 오프셋은 kinematic weld라 **효과 0**(Rule 24b — 부착 중 하중 전달 없고 드론 질량은
+> `loaded_mass`로 authored되어 릴리즈해도 안 줄어듦).
+> **좋은 소식**: 비대칭 actor-critic은 `rsl-rl-lib 3.1.2`가 이미 지원 → **두 줄**.
+> 단 무증상 실패 함정 3종(특히 `_get_states()`는 Isaac Lab 2.3.2에서 **호출되지 않는 죽은 훅**).
+>
+> **🗑️ (2026-08-23) 기존 학습 산출물 전량 폐기 결정 (사용자 판단).**
+> v11~v20 체크포인트와 exp_014~024 성능 수치를 논문 근거로 쓰지 않음 —
+> v11~v19 DR 부재로 일반화 주장 검증 불가 + 가설 없는 warm-start 누적으로 귀속 불가.
+> **유지**: `rl_rules.md` Rule 16~30 · `eval_harness.py` · `baseline_drop.py` T0~T3(무학습) ·
+> kinematic weld 페이로드 · spawn-time 질량 authoring · 등가변환 DR 패턴 ·
+> `math_utils.py` 순수 함수 + 테스트.
+> ⚠️ **원인 정정**: "DR을 안 해서 robustness가 없다"는 절반만 맞다. **v20은 DR을 켰고
+> 실패했다**(exp_024). 원인은 DR 부족이 아니라 ① world-frame 관측이라 방위각이
+> 강건성이 아니라 **새 과제**였던 것(Rule 27) ② 틀린 prior warm-start(Rule 29).
+> **①은 fresh start만으로 풀리지 않는다** — 관측 프레임 변경이 필수.
+
+---
+
+## 이전 상태
+
 **업데이트:** 2026-07-30
 
 > **🔀 병행 트랙 (2026-07-30): Isaac Lab exp_021 — 이동 타겟(CV/CT/CA) v19 포팅 + 준상 v19 warm-start 학습 3종 완주** —
@@ -293,6 +348,23 @@
 ---
 
 # 3. Remaining Tasks (Next Steps)
+
+## 2026-08-23 이후 착수 순서 (research_architecture v3 §11)
+
+| 순위 | 작업 | 상태 |
+|---|---|---|
+| 0 | CCIP `vz` 수정 | ✅ 완료 2026-08-23 |
+| 0 | **T3 오라클 재정의** (실 PhysX 드리프트 기준) — B4·Oracle gap·Abstract 의존 | ❌ |
+| 1 | 페이로드 항력 `is_global=True` | ❌ |
+| 1 | `_drag_coef` 팬텀 채널 정리 | ❌ |
+| 1 | **T0~T3 Table 1 재측정** (vz 수정이 T2 horizon·T3 오라클에 영향) | ❌ |
+| 2 | DR 축 정리(질량/Cd 병합, CoM 삭제) + **DR_SCALE 노브 분리** | ❌ |
+| 2.5 | **actor 관측에서 wind/drag 제거 단독 실험** — 주 주장 #3의 전제 | ❌ |
+| 3 | 관측 재설계: heading-invariant 프레임 + 비대칭 critic (함정 3종 주의) | ❌ |
+| 4 | 주파수 변경 시 **per-second 보상 재스케일 표** (10→50 Hz면 per-step 5배, loiter는 ~25배) | ❌ |
+| 4 | 고도 범위 vs 종료 조건 정합 (`min_altitude=3.0` / `release_alt_min=3.0` → 4 m 시작이면 창 1 m) | ❌ |
+| 5 | `release_delay` 결정 (실 latency 구현 vs 0으로 정합) | ❌ |
+
 
 - [ ] **(repo housekeeping)** `Issac_JS`의 신규 커밋(v20 task/flag 등록, junsang이 세션 중 push)을 `main`/`isaac_jk`에 merge — 아직 미반영.
 - [ ] **(repo housekeeping, 선택)** git 히스토리 다이어트 — SAC replay buffer·YOLO epoch 체크포인트·mp4가 여러 브랜치 히스토리에 누적(pack 320MB). `git filter-repo` 필요, 파괴적 작업이라 사용자 확인 후 진행.
