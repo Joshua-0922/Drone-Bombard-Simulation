@@ -133,14 +133,17 @@ def ballistic_impact(
     ``mdp/domain_rand.py``). With both exactly zero this reduces algebraically
     to the drag-free closed form.
 
-    KNOWN REMAINING APPROXIMATION: ``release_delay`` adds horizontal carry
-    ``(vel_xy + wind_xy) * release_delay`` but no altitude change, and the sim
-    has no actual release latency (the drop is instantaneous — see
-    ``v11_env`` ``_get_dones``). So a nonzero ``release_delay`` is a pure
-    predictor-side constant with no counterpart in the plant; at the default
-    0.1 s it injects ~0.5 m of phantom carry at 5 m/s. Fix that by either
-    implementing a real latency buffer or setting the delay to 0 — deliberately
-    NOT bundled into this change.
+    ``release_delay`` RESOLVED (2026-08-27): pass 0.0 here. This parameter used
+    to be a predictor-only constant -- it added horizontal carry
+    ``(vel_xy + wind_xy) * release_delay`` but no altitude change, while the
+    simulator released instantly, so at its 0.1 s default it injected ~0.5 m of
+    phantom carry with no counterpart in the physics. The plant now implements a
+    real latency (``DroneBombardEnv.request_release`` /
+    ``_step_release_latency``), and the predictor models it by PROPAGATING the
+    state -- advancing position and altitude together over the nominal delay --
+    in ``DroneBombardEnv._nominal_impact``, which is exact for constant velocity
+    where the horizontal-carry term was not. The argument is kept so this stays
+    a pure function of its inputs, but every live call site passes 0.0.
     """
     # Full quadratic root. vel_z is ENU UP-positive: descending (vel_z < 0)
     # shortens the fall, ascending lengthens it. Reduces to sqrt(2H/g) at

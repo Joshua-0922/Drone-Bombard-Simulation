@@ -19,7 +19,7 @@ import argparse
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="Play / sanity-check Isaac-DroneBombard-Direct-v0.")
-parser.add_argument("--task", type=str, default="Isaac-DroneBombard-Direct-v0")
+parser.add_argument("--task", type=str, default="Isaac-DroneBombard-Task-v0")
 parser.add_argument("--num_envs", type=int, default=4)
 parser.add_argument("--seed", type=int, default=42,
                     help="Env seed (same default as train.py) — without it eval resets are random "
@@ -41,8 +41,19 @@ parser.add_argument("--drop-test", action="store_true",
                          "physically falls along the drag-free ballistic curve (mid-air, before landing).")
 parser.add_argument("--episodes", type=int, default=10)
 parser.add_argument("--no_handoff_dr", action="store_true",
-                    help="Evaluate with the FIXED v19 handoff (heading/speed/altitude/attitude) even if the "
-                         "task randomizes it — the train/test-mismatch protocol needs both directions.")
+                    help="Evaluate with the handoff pinned to its nominal (fixed heading/speed/altitude/"
+                         "attitude) even if the task randomizes it — the train/test-mismatch protocol "
+                         "needs both directions.")
+parser.add_argument("--dr_scale", type=float, default=None,
+                    help="A-GROUP domain-randomization strength at EVALUATION time (wind, payload ballistic "
+                         "coefficient, release-latency spread). Set it ABOVE the training value for the "
+                         "unseen-robustness arm, or to 0 for the deterministic-model control. Leaves the "
+                         "sensor/actuator group untouched.")
+parser.add_argument("--observe_wind", action="store_true",
+                    help="Evaluate with the true wind in the observation. Must MATCH how the policy was "
+                         "trained — the observation width differs, so a mismatch fails to load.")
+parser.add_argument("--pixel_vision", action="store_true",
+                    help="Evaluate with the pixel-quantized marker instead of the true position.")
 parser.add_argument("--no_dyn_dr", action="store_true",
                     help="Evaluate with the nominal plant: no mass-belief/gain/ballistic-coefficient "
                          "mismatch and no obs/action noise, even if the task randomizes them.")
@@ -509,12 +520,23 @@ def main():
         env_cfg.tracker.sigma_a = args_cli.kf_sigma_a
     # train/test distribution mismatch knobs (P0): turn OFF what the task turns on.
     if args_cli.no_handoff_dr and hasattr(env_cfg, "handoff"):
-        env_cfg.handoff.enabled = False
+        env_cfg.handoff.randomize = False
     if args_cli.handoff_heading_deg is not None and hasattr(env_cfg, "handoff"):
         h = abs(args_cli.handoff_heading_deg)
         env_cfg.handoff.heading_range_deg = (-h, h)
     if args_cli.no_dyn_dr:
         env_cfg.dyn_dr.enabled = False
+    if args_cli.dr_scale is not None and hasattr(env_cfg, "model_err"):
+        env_cfg.model_err.scale = args_cli.dr_scale
+    if hasattr(env_cfg, "model_err") and args_cli.observe_wind:
+        env_cfg.model_err.observe_wind = True
+    if hasattr(env_cfg, "perception") and args_cli.pixel_vision:
+        env_cfg.perception.pixel_quantize = True
+    # The observation width depends on observe_wind, and the env allocates its
+    # per-episode observation-bias buffer from cfg.observation_space -- re-derive
+    # after the edits above or a checkpoint will load against the wrong width.
+    if hasattr(env_cfg, "model_err"):
+        env_cfg.__post_init__()
     env = gym.make(args_cli.task, cfg=env_cfg)
     env = RslRlVecEnvWrapper(env)
 

@@ -46,6 +46,12 @@ import torch  # noqa: E402
 import drone_bombard  # noqa: F401,E402
 from drone_bombard.v11_env import DroneBombardV19Cfg, DroneBombardV20Cfg  # noqa: E402
 
+# These probes target the RETIRED v11..v20 lineage, whose gym registrations were
+# removed on 2026-08-27. Opt back in explicitly. Note the numbers will not match
+# the archived ones: this code predates the payload-drag-frame, CCIP self-velocity
+# drag and real-release-latency fixes.
+drone_bombard.register_retired_lineage()
+
 FAILS = []
 
 
