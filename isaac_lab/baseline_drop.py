@@ -80,6 +80,16 @@ parser.add_argument("--approach_speed", type=float, default=4.0, help="m/s cap o
 parser.add_argument("--release_alt", type=float, default=6.0,
                     help="Target altitude for the run-in (must sit inside the envelope band).")
 parser.add_argument("--kp_xy", type=float, default=0.6, help="Approach P gain (1/s).")
+parser.add_argument("--pass_speed", type=float, default=None,
+                    help="Fly a CONSTANT-SPEED delivery pass at this speed (m/s) instead of "
+                         "P-decelerating onto the target. Without this the P-controller "
+                         "(v = kp_xy * range) forces every arm to arrive overhead at walking "
+                         "pace, so the release degenerates to a PLACE and the release-timing "
+                         "rule (T1 vs T2) barely matters. Measured 2026-08-27: release-instant "
+                         "v_xy was 0.04 m/s for T0 and only 0.76 m/s for T2. Structural reason: "
+                         "the predicted impact overtakes the target at finite range only if "
+                         "kp_xy * t_fall > 1, and 0.6 * 1.1 s = 0.66 < 1, so the impact point "
+                         "converges on the target only as the range goes to zero.")
 parser.add_argument("--kp_z", type=float, default=0.8, help="Altitude P gain (1/s).")
 parser.add_argument("--horizon", type=int, default=12,
                     help="argmin/oracle: predicted-impact horizon in policy steps.")
@@ -260,7 +270,16 @@ class BaselineController:
             # than doing nothing.
             steer_xy = aim_xy - residual * self.res_scale
         to_target = steer_xy - pos_xy
-        v_des = torch.clamp(args_cli.kp_xy * to_target, -args_cli.approach_speed, args_cli.approach_speed)
+        if args_cli.pass_speed is not None:
+            # Constant-speed delivery pass: hold speed along the bearing to the
+            # aim point and let the release rule pick the instant. This is what a
+            # CARP/CCIP pass actually is -- you do not decelerate onto the target,
+            # you fly through and the computer picks the moment.
+            brg = to_target / torch.linalg.norm(to_target, dim=-1, keepdim=True).clamp(min=1e-6)
+            v_des = brg * args_cli.pass_speed
+        else:
+            v_des = torch.clamp(args_cli.kp_xy * to_target,
+                                -args_cli.approach_speed, args_cli.approach_speed)
         blind = ~detected
         if bool(blind.any()):
             v_now = vel_xy / torch.linalg.norm(vel_xy, dim=-1, keepdim=True).clamp(min=1e-6)

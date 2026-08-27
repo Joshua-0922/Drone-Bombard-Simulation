@@ -218,13 +218,48 @@ class TaskRewardCfg:
     objective (the loiter penalty is quadratic in episode length and would move
     by the square)."""
 
-    w_progress: float = 1.0        # closing distance to the marker
+    w_progress: float = 3.0
+    """Telescoping approach reward, ``w_progress * (d_prev - d)``. Totals
+    ``w_progress * d_0`` over an episode regardless of route, so it cannot be
+    farmed by oscillating.
+
+    Raised from 1.0 alongside the 100x increase in ``w_time``: the approach guide
+    has to stay visible against the per-step time cost during the bootstrap phase,
+    when the policy cannot yet hit anything and progress is the only dense signal
+    it can act on. Closing 20 m now pays 60 against ~80 of accumulated time cost."""
     w_ccip: float = 0.5            # aim quality (potential-based, see below)
     k_ccip: float = 1.0
     w_ang_vel: float = 0.05        # per step
     w_tilt: float = 0.05           # per step
     w_action_smooth: float = 0.05  # per step
-    w_time: float = 0.01           # per step
+    w_time: float = 1.0            # per step -> 10.0 per second at 10 Hz
+    """⭐ Per-step cost of still carrying the payload. THE knob that sets where on
+    the speed-accuracy tradeoff the policy is asked to operate.
+
+    Calibrated 2026-08-27 against the measured scripted arms rather than guessed.
+    Evaluating the terminal reward on their real landing distributions (n=128,
+    DR_SCALE 1.0) showed the reward PREFERRED hover-drop -- exactly the
+    degeneration the paper exists to argue against:
+
+        arm        terminal   time   loiter     NET     err    t
+        T0 hover      191.6   1.05    10.47   180.0   0.305  10.50 s
+        T2 argmin     166.8   0.88     3.59   162.3   0.353   8.84 s
+
+    T0 buys 0.048 m of accuracy (zero horizontal velocity removes the ballistic
+    dispersion entirely) for 1.66 s, and at the old 0.01 the reward valued that
+    second at 0.0002 m. Time was free, so the optimum was to stop and hover --
+    which is precisely what AeroThrow's own trajectory relaxation converges to
+    (their §V-A: "shifting from a throw toward a place").
+
+    1.0/step = 10/s makes the reward approximately INDIFFERENT between the two
+    operating points (T0 86.1 vs T2 84.8 net). That is deliberate: it neither
+    pushes the policy to hover nor forces it to rush, so the operating point is
+    LEARNED rather than imposed -- which is the honest way to then report where
+    it landed. Sweeping this weight traces our own speed-accuracy Pareto front,
+    the direct counterpart to the baseline front in the related work.
+
+    ⚠️ Per-STEP, so it scales with the control rate. Changing ``decimation``
+    without rescaling silently changes the objective."""
     gate_reward: float = 0.05      # per step while a release is admissible
     drop_signal_reward: float = 1.0
     undetected_penalty: float = -0.2   # per step while the marker is not acquired
@@ -260,8 +295,26 @@ class TaskRewardCfg:
     here for exactly that reason."""
 
     no_drop_penalty: float = -30.0
-    crash_penalty: float = -50.0
-    out_of_range_penalty: float = -30.0
+    failure_penalty: float = -200.0
+    """ONE penalty for EVERY failure termination -- crash, overspeed, bad
+    attitude, out of range, max altitude.
+
+    Deliberately a single knob instead of one per cause. The 2026-08-27 dry-run
+    found the per-cause version had a hole: ``bad_attitude``, ``overspeed`` and
+    ``max_altitude`` all TERMINATED the episode, but only ``crash``,
+    ``out_of_range`` and ``timeout`` were charged. With ``w_time`` at 1.0/step
+    that made tumbling a FREE EXIT worth 1.0 for every step avoided, and the
+    policy took it -- ``bad_attitude`` reached 100% of terminations with
+    ``rew_failure`` sitting at exactly 0.0 while the return fell monotonically.
+    A single mask over the union cannot grow that hole again.
+
+    Magnitude (-200, up from -50/-30) follows from ``w_time``, not from
+    independent tuning: **ending the episode by failing must never beat
+    completing it badly.** At 10/s a crash at t=1 s costs only 10 s of
+    accumulated time, while the worst SUCCESSFUL delivery (terminal ~0, released
+    at ~8 s) nets about -80, so the old -50 made an early crash (-60) *better*
+    than delivering badly. -200 puts the worst failure below the worst success at
+    every release time in the envelope."""
 
 
 @configclass
@@ -346,6 +399,17 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         self._detected = torch.zeros(N, dtype=torch.bool, device=device)
         self._cruise_unit = torch.zeros(N, 2, device=device)
         self._cruise_unit[:, 0] = 1.0
+
+        # Per-component reward accounting. The base env's ``_episode_sums`` keys
+        # belong to its own Phase-1 reward and stay identically zero here, which
+        # means a multi-day run would log nothing about WHY the return moved.
+        # Registering this task's terms into the same dict reuses the base env's
+        # reset and snapshot plumbing (``_reset_idx`` zeroes every key,
+        # ``_snapshot`` emits them as ``Episode_Reward/*``).
+        for k in ("rew_progress", "rew_aim_pot", "rew_gate", "rew_drop_signal",
+                  "rew_undetected", "rew_time", "rew_loiter", "rew_smooth",
+                  "rew_attitude", "rew_landing", "rew_failure"):
+            self._episode_sums[k] = torch.zeros(N, device=device)
 
     # ------------------------------------------------------------------
     # helpers
@@ -703,11 +767,17 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         # that cannot affect the outcome.
         flying = (~self._released).float()
 
-        r = -rw.w_ang_vel * (ang * ang).sum(dim=-1) * flying
-        r = r - rw.w_tilt * (roll * roll + pitch * pitch) * flying
-        r = r - rw.w_action_smooth * (self._delta_action * self._delta_action).sum(dim=-1) * flying
-        r = r - rw.w_time * flying
-        r = r + (1.0 - det) * rw.undetected_penalty * flying
+        acc = self._episode_sums
+        attitude = -(rw.w_ang_vel * (ang * ang).sum(dim=-1)
+                     + rw.w_tilt * (roll * roll + pitch * pitch)) * flying
+        smooth = -rw.w_action_smooth * (self._delta_action * self._delta_action).sum(dim=-1) * flying
+        time_cost = -rw.w_time * flying
+        undetected = (1.0 - det) * rw.undetected_penalty * flying
+        acc["rew_attitude"] += attitude
+        acc["rew_smooth"] += smooth
+        acc["rew_time"] += time_cost
+        acc["rew_undetected"] += undetected
+        r = attitude + smooth + time_cost + undetected
 
         progress = rw.w_progress * (self._d_xy_prev - d_xy)
         if rw.potential_shaping:
@@ -715,28 +785,53 @@ class DroneBombardTaskEnv(DroneBombardEnv):
                                - torch.exp(-rw.k_ccip * self._d_impact_prev))
         else:
             aim = rw.w_ccip * torch.exp(-rw.k_ccip * d_impact)
-        r = r + det * flying * (progress + aim)
-        r = r + det * flying * f["gate_open"].float() * rw.gate_reward
+        # Progress is NOT gated on detection. It was, and the dry-run showed the
+        # consequence: ``rew_progress`` sat at exactly 0.0 for the whole run,
+        # because the drone has to approach in order to detect and the approach
+        # signal only switched on after detecting. Chicken and egg, leaving the
+        # policy nothing but per-step costs to act on.
+        #
+        # Using the true range in the REWARD while the marker is still unobserved
+        # is legitimate -- shaping may use privileged quantities, only the
+        # OBSERVATION has to stay honest, and the observation keeps its detection
+        # mask. What the policy learns from this is "cruise forward", which is
+        # exactly the intended blind-cruise behaviour.
+        prog_t = flying * progress
+        aim_t = det * flying * aim
+        gate_t = det * flying * f["gate_open"].float() * rw.gate_reward
+        acc["rew_progress"] += prog_t
+        acc["rew_aim_pot"] += aim_t
+        acc["rew_gate"] += gate_t
+        r = r + prog_t + aim_t + gate_t
         # Paid on the release EVENT. Under pickle-and-hold the old
         # ``wants_drop & gate_open`` form would pay every step the button is
         # held inside the envelope -- a standing income of exactly the kind
         # ``potential_shaping`` exists to remove, and one a policy can farm by
         # holding the pickle where the crossing never comes.
-        r = r + f["just_released"].float() * rw.drop_signal_reward
+        drop_t = f["just_released"].float() * rw.drop_signal_reward
+        acc["rew_drop_signal"] += drop_t
+        r = r + drop_t
 
         in_envelope = f["gate_open"] & (~self._released)
         self._gate_steps = torch.where(in_envelope, self._gate_steps + 1.0,
                                        torch.zeros_like(self._gate_steps))
-        r = r - flying * rw.w_loiter * self._gate_steps
+        loiter_t = -flying * rw.w_loiter * self._gate_steps
+        acc["rew_loiter"] += loiter_t
+        r = r + loiter_t
 
         err = self._release_impact_err
         landing = (rw.reward_success * torch.exp(-rw.k_landing * err)
                    + (err <= rw.success_radius).float() * rw.success_bonus)
-        r = r + f["landed"].float() * landing
-
-        r = r + f["crash"].float() * rw.crash_penalty
-        r = r + f["out_of_range"].float() * rw.out_of_range_penalty
-        r = r + (f["timeout"] & ~self._released).float() * rw.no_drop_penalty
+        landing_t = f["landed"].float() * landing
+        # Union, not a per-cause sum: every way of ending an episode without
+        # delivering costs the same, so no termination path can go uncharged.
+        any_failure = (f["crash"] | f["overspeed"] | f["bad_attitude"]
+                       | f["out_of_range"] | f["max_altitude"])
+        failure_t = (any_failure.float() * rw.failure_penalty
+                     + (f["timeout"] & ~self._released).float() * rw.no_drop_penalty)
+        acc["rew_landing"] += landing_t
+        acc["rew_failure"] += failure_t
+        r = r + landing_t + failure_t
 
         self._d_xy_prev = d_xy
         self._d_impact_prev = d_impact
