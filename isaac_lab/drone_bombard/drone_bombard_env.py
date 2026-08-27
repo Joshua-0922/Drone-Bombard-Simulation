@@ -2176,3 +2176,13 @@ class DroneBombardEnv(DirectRLEnv):
         log["Episode_Metric/d_xy_min"] = d_xy_min[torch.isfinite(d_xy_min)].mean().item() if torch.isfinite(d_xy_min).any() else 0.0
         for k, v in snap["episode_sums"].items():
             log[f"Episode_Reward/{k}"] = v.mean().item()
+
+        # Per-clause release-gate occupancy (task envs only). Reports the mean
+        # number of pre-release steps each individual gate condition held, so a
+        # release rate stuck at zero names its own blocking clause.
+        clauses = getattr(self, "_gate_clause_steps", None)
+        if clauses is not None:
+            for k, v in clauses.items():
+                log[f"Episode_Gate/{k}_steps"] = v[env_ids].mean().item()
+            live = self._live_steps[env_ids].clamp(min=1.0)
+            log["Episode_Gate/mean_alt_m"] = (self._alt_sum[env_ids] / live).mean().item()

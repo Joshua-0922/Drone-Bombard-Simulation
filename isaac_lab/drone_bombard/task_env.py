@@ -232,6 +232,29 @@ class TaskRewardCfg:
     w_ang_vel: float = 0.05        # per step
     w_tilt: float = 0.05           # per step
     w_action_smooth: float = 0.05  # per step
+    w_alt_band: float = 0.5
+    """Per step, per metre of altitude OUTSIDE the release band
+    ``[release.alt_min, release.alt_max]``. Exactly zero inside it, so the policy
+    keeps full freedom to choose its release altitude within the band.
+
+    Added 2026-08-27 after the per-clause gate diagnostic named the blocking
+    condition instead of leaving it to be guessed. With every other clause
+    satisfied on 299 of 299 pre-release steps and the aim solution already at
+    0.25 m, the ALTITUDE clause held for 0.0 steps -- the policy flew a perfect
+    approach and then loitered outside the band, unable to drop. On the one
+    iteration where altitude entered the band for 0.8 steps, release rate jumped
+    from 0% to 25%.
+
+    Why it drifted out: nothing in the reward mentioned altitude, and the
+    termination bounds are ASYMMETRIC -- the 3 m crash floor is close and costs
+    -200, while the ceiling sits far away at 25 m. Climbing was simply the safe
+    direction, and the only signal pointing back down (``gate_reward``) is
+    unreachable from outside the gate it is meant to lead the policy into.
+
+    This is envelope shaping, not a new objective: speed, vertical speed, tilt
+    and body rate were all satisfied throughout, so altitude is the one envelope
+    dimension the policy can violate persistently."""
+
     w_time: float = 1.0            # per step -> 10.0 per second at 10 Hz
     """⭐ Per-step cost of still carrying the payload. THE knob that sets where on
     the speed-accuracy tradeoff the policy is asked to operate.
@@ -395,6 +418,20 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         # crossing test) and the fire mask accumulated across the window.
         self._d_impact_sub_prev = torch.full((N,), float("inf"), device=device)
         self._fired_in_window = torch.zeros(N, dtype=torch.bool, device=device)
+
+        # Per-CLAUSE gate diagnostics. ``feasible_window_s`` says the gate never
+        # opened; it does not say WHICH of the seven conditions closed it, and
+        # guessing that from a training curve is how days get burnt. Each buffer
+        # counts the steps its own clause was satisfied, so the episode log shows
+        # the blocking clause directly.
+        self._gate_clause_steps = {
+            k: torch.zeros(N, device=device)
+            for k in ("aim", "alt", "speed", "vz", "tilt", "ang", "all")
+        }
+        # Mean pre-release altitude, so "the altitude clause failed" also says
+        # WHICH SIDE of the band it failed on.
+        self._alt_sum = torch.zeros(N, device=device)
+        self._live_steps = torch.zeros(N, device=device)
         self._perceived_target_xy = torch.zeros(N, 2, device=device)
         self._detected = torch.zeros(N, dtype=torch.bool, device=device)
         self._cruise_unit = torch.zeros(N, 2, device=device)
@@ -408,7 +445,7 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         # ``_snapshot`` emits them as ``Episode_Reward/*``).
         for k in ("rew_progress", "rew_aim_pot", "rew_gate", "rew_drop_signal",
                   "rew_undetected", "rew_time", "rew_loiter", "rew_smooth",
-                  "rew_attitude", "rew_landing", "rew_failure"):
+                  "rew_attitude", "rew_landing", "rew_failure", "rew_alt_band"):
             self._episode_sums[k] = torch.zeros(N, device=device)
 
     # ------------------------------------------------------------------
@@ -657,6 +694,10 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         self._gate_steps[env_ids] = 0.0
         self._d_impact_sub_prev[env_ids] = float("inf")
         self._fired_in_window[env_ids] = False
+        for v in self._gate_clause_steps.values():
+            v[env_ids] = 0.0
+        self._alt_sum[env_ids] = 0.0
+        self._live_steps[env_ids] = 0.0
 
         # Seed the controller AT the cruise setpoint. Without this the step-1
         # command is whatever the untrained policy emits, producing a
@@ -693,6 +734,18 @@ class DroneBombardTaskEnv(DroneBombardEnv):
             rc.max_speed, rc.max_vz, rc.max_tilt, rc.max_ang_vel,
         )
         self._gate_open = gate
+
+        live = (~self._released).float()
+        cs = self._gate_clause_steps
+        cs["aim"] += (d_impact <= rc.radius).float() * live
+        cs["alt"] += ((altitude >= rc.alt_min) & (altitude <= rc.alt_max)).float() * live
+        cs["speed"] += (torch.linalg.norm(vel[:, :2], dim=-1) <= rc.max_speed).float() * live
+        cs["vz"] += (vel[:, 2].abs() <= rc.max_vz).float() * live
+        cs["tilt"] += ((roll.abs() <= rc.max_tilt) & (pitch.abs() <= rc.max_tilt)).float() * live
+        cs["ang"] += (ang_norm <= rc.max_ang_vel).float() * live
+        cs["all"] += gate.float() * live
+        self._alt_sum += altitude * live
+        self._live_steps += live
         self._window_steps += (gate & (~self._released)).float()
 
         # The payload does NOT detach at the command. The plant holds it for
@@ -757,7 +810,7 @@ class DroneBombardTaskEnv(DroneBombardEnv):
     def _get_rewards(self) -> torch.Tensor:
         cfg = self.cfg
         rw = cfg.task_reward
-        _, _, ang, roll, pitch, _ = self._kinematics()
+        pos, _, ang, roll, pitch, _ = self._kinematics()
         f = self._done_flags
         d_impact = self._d_impact
         d_xy = self._current_d_xy()
@@ -773,11 +826,16 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         smooth = -rw.w_action_smooth * (self._delta_action * self._delta_action).sum(dim=-1) * flying
         time_cost = -rw.w_time * flying
         undetected = (1.0 - det) * rw.undetected_penalty * flying
+        rc = cfg.release
+        alt_out = ((pos[:, 2] - rc.alt_max).clamp(min=0.0)
+                   + (rc.alt_min - pos[:, 2]).clamp(min=0.0))
+        alt_band = -rw.w_alt_band * alt_out * flying
         acc["rew_attitude"] += attitude
         acc["rew_smooth"] += smooth
         acc["rew_time"] += time_cost
         acc["rew_undetected"] += undetected
-        r = attitude + smooth + time_cost + undetected
+        acc["rew_alt_band"] += alt_band
+        r = attitude + smooth + time_cost + undetected + alt_band
 
         progress = rw.w_progress * (self._d_xy_prev - d_xy)
         if rw.potential_shaping:

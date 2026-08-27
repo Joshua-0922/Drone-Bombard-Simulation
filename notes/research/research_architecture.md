@@ -773,7 +773,10 @@ CTBR 채택 시 Rule 18b의 σ 분석이 달라짐(rate_limit+LPF 평활 체인�
 | 1.1 | 보상 재검토 | ✅ **`w_time` 0.01 → 1.0** (보상이 hover-drop을 17.7점 선호하고 있었음). 파생: `w_progress` 1→3, `w_ccip` 0.5→20, 실패 벌점 통합 −200 → [[research/reward_operating_point]] |
 | 1.2 | per-component 보상 로깅 | ✅ **신설.** 재구축 env가 base의 `_episode_sums`를 안 채워 `Episode_Reward/*`가 전부 0이었다. 11항목 등록 — 이게 없으면 아래 두 결함이 안 보인다 |
 | 1.3 | dry-run | ✅ **결함 2건 검출·수정**: ① `bad_attitude`/`overspeed`/`max_altitude`가 벌점 없는 **무료 탈출구** ② 접근 보상이 탐지 뒤에 갇힌 **닭-달걀** → [[errors/err_20260827_free_exit_termination]] |
-| 1.4 | 고도 엔벨로프 정합 | ✅ `release.alt_max` 8 → **12 m**. 스폰(8–12)이 릴리즈 밴드(3–8) 위라 보상 없는 하강 통로였음 — 게이트가 120 iteration 동안 한 번도 안 열림 |
+| 1.4 | 고도 엔벨로프 정합 | ✅ `release.alt_max` 8 → **12 m**. 스폰(8–12)이 릴리즈 밴드(3–8) 위라 보상 없는 하강 통로였음 |
+| 1.5 | **절별 게이트 계측 신설** | ✅ `Episode_Gate/{aim,alt,speed,vz,tilt,ang,all}_steps` + `mean_alt_m`. 논리곱 게이트가 안 열릴 때 **막는 절을 이름으로** 지목 |
+| 1.6 | 고도 밴드 셰이핑 | ✅ **`w_alt_band = 0.5`.** 계측 결과: 조준 0.25 m로 완벽·다른 네 조건 299/299 충족인데 **고도만 0.0**. 보상에 고도 항이 없었고 종료 경계가 비대칭(아래 3 m / 위 25 m)이라 위로 도망감 |
+| **1.7** | **dry-run 통과 판정** | ✅ **릴리즈율 0 → 71~100%, 성공 iteration 77부터 출현(6.7~11.1%), 평균 고도 13.97 → 6.9 m(밴드 내), 전 보상 성분 non-degenerate** |
 
 > ⚠️ **1.4는 Table 1 재측정을 요구한다.** 스크립트 팔의 게이트 개방 시점이 바뀐다
 > (하강 중 8 m 위에서도 발사 가능해짐).
