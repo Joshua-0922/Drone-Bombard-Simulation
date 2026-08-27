@@ -12,6 +12,15 @@ type: index
 
 ---
 
+## 현재 상태 (2026-08-27)
+
+- **⛔🔧 T3 "오라클"이 상한선이 아니라 하한선 아래였다 — 수정 완료: [[research/t3_oracle_entrainment]] / [[errors/err_20260827_payload_drag_body_frame]]** (Rule 31)
+  - 해석식 바람 보정이 "즉시 완전 엔트레인먼트"를 가정 → 3.7~4.7배 과보정 → T3 47.5% < T0 hover 91.5%. 플랜트 동일 적분(`integrate_payload_impact`)으로 교체 후 T3 > T2 회복
+  - **지배 오차는 바람이 아니라 페이로드 자기 속도에 대한 항력**(무풍에서도 −1.15 m). $v_z$ 누락과 같은 종류의 결손이 하나 더 있었음
+  - 페이로드 항력을 월드 프레임으로 계산해놓고 링크 프레임 기본값으로 전달하던 버그 동시 수정 (`is_global=True`)
+- **⚠️ DR_SCALE 스윕이 현 상태로는 성립하지 않음 (사전 계측으로 발견).** 랜덤화를 완전히 꺼도 오차 p50 0.44 m — 결정론적 바닥이 랜덤화 성분을 덮고 있음. 릴리즈 지연 제거 + 고도 규약 + 자기속도 항력항 보정으로 **0.44 → 0.015 m**, 그제서야 스윕이 단조·선형
+- **환경 코드 재구축 계획 승인** — `v11_env.py`의 버전 상속 사슬(설정 10개/환경 7개)을 단일 과제 환경으로 대체, 모든 DR을 `drone_bombard_env.py`로 집약, 버전 접두어 전면 제거. 아키텍처 문서 정정 5건(바람 상수 유지 / 바람 미관측 / 팬텀 항력 채널 / 릴리즈 지연 랜덤화 / 주 실험 GT) 포함
+
 ## 현재 상태 (2026-08-23)
 
 - **⛔🔧 CCIP가 수직속도를 누락하고 있었다 — 수정 완료: [[research/ccip_vz_omission]] / [[errors/err_20260823_ccip_vz_omission]]**
@@ -167,6 +176,7 @@ type: index
 
 | 파일 | 상태 | 요약 |
 |------|------|------|
+| [[errors/err_20260827_payload_drag_body_frame]] | ✅ 해결 | 페이로드 항력을 월드 프레임으로 계산해놓고 `set_external_force_and_torque`의 `is_global` 기본값(False, 링크 프레임)으로 전달 → 드론 자세만큼 회전된 힘. 에러 없이 통과. 같은 파일 기체 쪽은 올바르게 변환 중이었음 (Rule 31) |
 | [[errors/err_20260823_ccip_vz_omission]] | ✅ 해결 | CCIP `ballistic_impact`가 $v_z$ 누락($t=\sqrt{2H/g}$ 특수화) → 릴리즈 엔벨로프 모델오차의 ~70%. 에러 없이 조용히 틀림, 잔차가 흡수해 은폐. `vel_z` 필수 인자 승격 (Rule 30) |
 | [[errors/err_20260723_wandb_key_empty]] | ✅ 해결 | 컨테이너 baked-in `WANDB_API_KEY` 빈 값 → wandb 학습 silent 실패(isaaclab.sh exit 0 삼킴). `--env-file /opt/drone-bombard/.wandb.env` 필수 |
 | [[errors/err_20260703_vision_env_origin_frame]] | ✅ 해결 | Isaac `_update_vision` env-origin 프레임 혼용 → 벡터화 학습에서 비전 채널 완전 사멸(conf≡0). num_envs=1 검증으론 구조적으로 못 잡음 |
@@ -209,6 +219,7 @@ type: index
 
 ### 연구 (research/)
 - [[research/research_architecture]] — **(08-23) 최종 아키텍처 v3 — 코드 실측 대조 개정판. 착수 전 필수 수정 B1~B5, DR 축 정정, 관측 프레임 결정**
+- [[research/t3_oracle_entrainment]] — **(08-27) T3 오라클이 상한선이 아니었다 — 즉시 엔트레인먼트 가정, 그리고 지배 오차는 바람이 아니라 자기속도 항력 (Rule 31)**
 - [[research/ccip_vz_omission]] — **(08-23) CCIP 수직속도 누락 — 잔차가 배우던 것은 바람이 아니라 공식 결손이었다 (Rule 30)**
 - [[research/handoff_generalization_p0]] — **(08-03) 고정 초기조건은 표현을 암기시킨다 — 랜덤화 축 분류(표현 vs 강건성), Rule 27**
 - [[research/paper_research_plan]] — **(08-02) 논문 연구 계획 — 문헌 지도·차별점 3종·표 7종(베이스라인/잔차 위치/구조 vs 보상/충실도/인지/리드)·실행 순서 P0~P4**
@@ -276,6 +287,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-08-27]] — **T3 오라클 재정의**(즉시 엔트레인먼트 → 플랜트 동일 적분) · 페이로드 항력 프레임 버그 · **DR_SCALE 스윕 사전 검증에서 결정론적 오차 바닥 발견**(0.44 → 0.015 m) · 환경 재구축 계획 승인 · Rule 31 신설
 - [[daily/daily_2026-08-23]] — **CCIP $v_z$ 누락 발견·수정**(모델오차의 ~70%) · 아키텍처 문서 v3 전면 개정(전제 1개 거짓 + 버그 4개 + 성립불가 DR 3개) · 기존 학습 산출물 폐기 결정 · Rule 30 신설
 - [[daily/daily_2026-08-03]] — **P0 전 항목 완료**(v20 랜덤화 env + 공유 평가 하네스 + 무학습 베이스라인 T0~T3) · Table 1 1차 실측 · 착지 래치 버그 수정(v19 기준선 91→100% 정정) · **(a)안 학습 음성 결과**(페널티 회피 수렴). Rule 27/28/29 신설
 - [[daily/daily_2026-08-01]] — 브랜치 정리: 10개 브랜치 계보 조사, push 용량초과 원인 규명(실수로 커밋된 SAC/영상 바이너리), `Isaac-JS` 고유 노트 `isaac_jk`로 포팅 후 삭제, `main`을 `isaac_jk`로 승격(구 main은 태그로 보존)

@@ -155,3 +155,7 @@ wikilink는 상대경로 사용: `[[research/reward_design]]`
 2. Git push (`git add . && git commit -m "Auto-sync: [요약]" && git push origin main`)
 
 **RL_Project_Log.md 구조:** `# 1. Current State` / `# 2. Recent Progress` / `# 3. Remaining Tasks` / `# 4. Training History (추가만 가능)`
+
+## Korean Usage
+
+한국어를 사용할 때 과다한 구어체나 너무 줄여서 말하는 것은 자제하기. 
