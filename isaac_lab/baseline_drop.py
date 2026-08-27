@@ -64,6 +64,9 @@ parser.add_argument("--arm", type=str, default="argmin",
 parser.add_argument("--task", type=str, default="Isaac-DroneBombard-Task-v0")
 parser.add_argument("--dr_scale", type=float, default=None,
                     help="A-group DR strength. Must match the learned arm being compared against.")
+parser.add_argument("--release_10hz", action="store_true",
+                    help="Resolve the release on the 10 Hz policy grid instead of at "
+                         "physics rate (the ablation arm for release-timing resolution).")
 parser.add_argument("--episodes", type=int, default=200)
 parser.add_argument("--num_envs", type=int, default=200,
                     help="Paired evaluation needs num_envs >= episodes.")
@@ -293,6 +296,8 @@ def main():
         env_cfg.handoff.randomize = False
     if args_cli.no_dyn_dr:
         env_cfg.dyn_dr.enabled = False
+    if args_cli.release_10hz:
+        env_cfg.release.decide_at_physics_rate = False
     if args_cli.dr_scale is not None:
         env_cfg.model_err.scale = args_cli.dr_scale
     env_cfg.__post_init__()

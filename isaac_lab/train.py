@@ -108,6 +108,9 @@ parser.add_argument("--observe_wind", action="store_true",
                          "vehicle can estimate the wind at its own altitude but not the wind during the "
                          "payload's fall, and exposing it makes the 'residual recovers unmeasured "
                          "disturbances' claim vacuous. Adds 2 obs dims.")
+parser.add_argument("--release_10hz", action="store_true",
+                    help="Resolve the release on the 10 Hz policy grid instead of at "
+                         "physics rate (the ablation arm for release-timing resolution).")
 parser.add_argument("--pixel_vision", action="store_true",
                     help="Quantize the acquired marker position to a camera cell (vision extension). Default "
                          "OFF for the main results: quantization contributes ~0.28 m of aiming error, which "
@@ -269,6 +272,8 @@ def main():
             env_cfg.dyn_dr.enabled = False
 
         env_cfg.residual.enabled = not args_cli.no_residual
+        if args_cli.release_10hz:
+            env_cfg.release.decide_at_physics_rate = False
         env_cfg.perception.pixel_quantize = args_cli.pixel_vision
         # observation width depends on observe_wind -- re-derive after the edits.
         env_cfg.__post_init__()

@@ -52,6 +52,9 @@ parser.add_argument("--dr_scale", type=float, default=None,
 parser.add_argument("--observe_wind", action="store_true",
                     help="Evaluate with the true wind in the observation. Must MATCH how the policy was "
                          "trained — the observation width differs, so a mismatch fails to load.")
+parser.add_argument("--release_10hz", action="store_true",
+                    help="Resolve the release on the 10 Hz policy grid instead of at "
+                         "physics rate (the ablation arm for release-timing resolution).")
 parser.add_argument("--pixel_vision", action="store_true",
                     help="Evaluate with the pixel-quantized marker instead of the true position.")
 parser.add_argument("--no_dyn_dr", action="store_true",
@@ -530,6 +533,8 @@ def main():
         env_cfg.model_err.scale = args_cli.dr_scale
     if hasattr(env_cfg, "model_err") and args_cli.observe_wind:
         env_cfg.model_err.observe_wind = True
+    if hasattr(env_cfg, "release") and args_cli.release_10hz:
+        env_cfg.release.decide_at_physics_rate = False
     if hasattr(env_cfg, "perception") and args_cli.pixel_vision:
         env_cfg.perception.pixel_quantize = True
     # The observation width depends on observe_wind, and the env allocates its

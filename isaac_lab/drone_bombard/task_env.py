@@ -135,6 +135,30 @@ class ReleaseEnvelopeCfg:
     max_tilt: float = 0.35      # rad (20°) — the real constraint on the release path
     max_ang_vel: float = 4.0    # rad/s
 
+    decide_at_physics_rate: bool = True
+    """Resolve the release INSTANT at 100 Hz instead of on the 10 Hz policy grid.
+
+    The policy (or a scripted arm) still decides at its own rate whether to
+    commit -- ``action[4]`` is a pickle-and-hold, constant across the decimation
+    window. What moves to physics rate is the timing solver: on every sub-step
+    the envelope is re-tested and the drop fires when the CCIP solution stops
+    closing on the target (``d_impact`` crosses its minimum). This is what a real
+    CCIP release does -- the pilot holds the pickle, the computer picks the
+    instant.
+
+    Why it matters here: exp_025 measured a 0.57 m CEP50 at DR_SCALE 0 with a
+    true target and a 0.010 m ballistic model error, i.e. essentially all of it
+    was control and release TIMING -- at 4 m/s a 10 Hz decision grid moves 0.4 m
+    between the instants the drone is allowed to choose from. No residual can
+    recover that, because it is not a modelling error.
+
+    ⚠️ Turning this on changes what the scripted baselines mean. T1 (naive
+    threshold) inherits the fine-grained timing it did not have, so it moves
+    toward T2 (AeroThrow's horizon argmin, which is the same criterion sampled
+    at 10 Hz). That is a result, not a defect -- but Table 1 must be re-measured,
+    and False here is the ablation arm that reproduces the 10 Hz grid exactly.
+    """
+
 
 @configclass
 class ResidualCfg:
@@ -227,7 +251,14 @@ class TaskRewardCfg:
     flat-inside-the-circle: a flat reward paid a 0.1 m hit and a 0.9 m hit
     identically, so accuracy plateaued with no gradient to tighten."""
 
-    success_radius: float = 1.0
+    success_radius: float = 0.5
+    """Tightened from 1.0 m on 2026-08-27. At 1.0 m the binary success rate was
+    saturated -- T2 and T3 differed by 0.14 m of CEP50 while both scored ~80% --
+    so the headline metric could not see the effect under study. 0.5 m sits just
+    under the measured CEP50 floor, which is where the rate is most sensitive.
+    Must be identical for every arm in Table 1; ``eval_harness`` reads it from
+    here for exactly that reason."""
+
     no_drop_penalty: float = -30.0
     crash_penalty: float = -50.0
     out_of_range_penalty: float = -30.0
@@ -307,6 +338,10 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         self._d_impact_prev = torch.zeros(N, device=device)
         self._gate_open = torch.zeros(N, dtype=torch.bool, device=device)
         self._gate_steps = torch.zeros(N, device=device)
+        # Physics-rate release: the previous SUB-STEP's aim error (for the
+        # crossing test) and the fire mask accumulated across the window.
+        self._d_impact_sub_prev = torch.full((N,), float("inf"), device=device)
+        self._fired_in_window = torch.zeros(N, dtype=torch.bool, device=device)
         self._perceived_target_xy = torch.zeros(N, 2, device=device)
         self._detected = torch.zeros(N, dtype=torch.bool, device=device)
         self._cruise_unit = torch.zeros(N, 2, device=device)
@@ -372,6 +407,7 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         is trying to measure into the sensor-noise axis.
         """
         actions = self._perturb_actions(actions)
+        self._fired_in_window[:] = False
         self._action_sat_sum += (actions.abs() > 1.0).float().mean(dim=-1)
         clipped = torch.clamp(actions, -1.0, 1.0)
 
@@ -393,6 +429,52 @@ class DroneBombardTaskEnv(DroneBombardEnv):
             limited_vel[:, 2] * a.vz_scale,
             limited_vel[:, 3] * a.yaw_scale,
         ], dim=-1)
+
+    # ------------------------------------------------------------------
+    # Release timing, resolved at physics rate
+    # ------------------------------------------------------------------
+    def _apply_action(self):
+        # Before the base env's controller + payload sub-step, so a drop armed
+        # here starts its release-latency countdown on THIS sub-step rather than
+        # the next one (the countdown lives in ``_step_payload_physics``).
+        if self.cfg.release.decide_at_physics_rate:
+            self._resolve_release()
+        super()._apply_action()
+
+    def _resolve_release(self):
+        """Fire on the sub-step where the aiming solution crosses the target.
+
+        ``_wants_drop`` is held constant across the decimation window, so this is
+        pickle-and-hold: the commit is the policy's, the instant is the solver's.
+        The crossing test (``d_impact`` no longer decreasing) handles both
+        orderings without a special case -- pickled early, it waits for the
+        crossing; pickled late, the aim is already worsening and it fires at
+        once.
+
+        If the crossing falls outside the envelope (typically below
+        ``alt_min``), nothing fires and the episode takes ``no_drop_penalty``.
+        That is the intended signal: the pass was set up wrong, and repairing it
+        is the policy's job, not the release logic's.
+        """
+        rc = self.cfg.release
+        pos, vel, ang, roll, pitch, _ = self._kinematics()
+        _, d_impact, _ = self._ccip(pos, vel)
+
+        gate = release_gate(
+            d_impact, pos[:, 2], torch.linalg.norm(vel[:, :2], dim=-1), vel[:, 2],
+            roll, pitch, torch.linalg.norm(ang, dim=-1), self._payload_attached.float(),
+            rc.radius, rc.alt_min, rc.alt_max,
+            rc.max_speed, rc.max_vz, rc.max_tilt, rc.max_ang_vel,
+        )
+        # Seeded to +inf at reset, so the first sub-step of an episode can never
+        # read as a crossing.
+        crossed = d_impact >= self._d_impact_sub_prev
+        fire = self._wants_drop & gate & crossed & (~self._released)
+
+        self.request_release(fire)
+        self._fired_in_window = self._fired_in_window | fire
+        self._released = self._released | fire
+        self._d_impact_sub_prev = d_impact
 
     # ------------------------------------------------------------------
     # Observation
@@ -509,6 +591,8 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         self._wants_drop[env_ids] = False
         self._residual_action[env_ids] = 0.0
         self._gate_steps[env_ids] = 0.0
+        self._d_impact_sub_prev[env_ids] = float("inf")
+        self._fired_in_window[env_ids] = False
 
         # Seed the controller AT the cruise setpoint. Without this the step-1
         # command is whatever the untrained policy emits, producing a
@@ -547,15 +631,19 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         self._gate_open = gate
         self._window_steps += (gate & (~self._released)).float()
 
-        # Command the release. The payload does NOT detach here -- the plant
-        # holds it for this episode's release latency (base env
-        # ``request_release`` / ``_step_release_latency``). ``_released`` means
-        # "the command has been issued", which is what the gate and the reward
-        # need; ``_payload_free`` means "it is actually falling".
-        fire = self._wants_drop & gate & (~self._released)
-        self.request_release(fire)
+        # The payload does NOT detach at the command. The plant holds it for
+        # this episode's release latency (base env ``request_release`` /
+        # ``_step_release_latency``). ``_released`` means "the command has been
+        # issued"; ``_payload_free`` means "it is actually falling".
+        if rc.decide_at_physics_rate:
+            # Already armed inside the window by ``_resolve_release``; just
+            # collect what fired so the reward and the flags see it.
+            fire = self._fired_in_window
+        else:
+            fire = self._wants_drop & gate & (~self._released)
+            self.request_release(fire)
+            self._released = self._released | fire
         self._just_released = fire.clone()
-        self._released = self._released | fire
 
         d_xy = self._current_d_xy()
         self._d_xy_min = torch.minimum(self._d_xy_min, d_xy)
@@ -591,7 +679,8 @@ class DroneBombardTaskEnv(DroneBombardEnv):
             "crash": crash & alive, "overspeed": overspeed & alive,
             "bad_attitude": bad_attitude & alive, "out_of_range": out_of_range & alive,
             "max_altitude": max_alt & alive, "overshoot": z, "stagnation": z,
-            "released": self._released.clone(), "landed": landed,
+            "released": self._released.clone(), "just_released": self._just_released.clone(),
+            "landed": landed,
             "release_miss": landed & ~success,
             "timeout": time_out & ~terminated,
             "gate_open": gate, "wants_drop": self._wants_drop,
@@ -628,7 +717,12 @@ class DroneBombardTaskEnv(DroneBombardEnv):
             aim = rw.w_ccip * torch.exp(-rw.k_ccip * d_impact)
         r = r + det * flying * (progress + aim)
         r = r + det * flying * f["gate_open"].float() * rw.gate_reward
-        r = r + det * flying * (self._wants_drop & f["gate_open"]).float() * rw.drop_signal_reward
+        # Paid on the release EVENT. Under pickle-and-hold the old
+        # ``wants_drop & gate_open`` form would pay every step the button is
+        # held inside the envelope -- a standing income of exactly the kind
+        # ``potential_shaping`` exists to remove, and one a policy can farm by
+        # holding the pickle where the crossing never comes.
+        r = r + f["just_released"].float() * rw.drop_signal_reward
 
         in_envelope = f["gate_open"] & (~self._released)
         self._gate_steps = torch.where(in_envelope, self._gate_steps + 1.0,
