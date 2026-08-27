@@ -14,7 +14,7 @@ type: research
 > **사용 가능한 순항 속도를 약 5.8 m/s로 못박고 있다.** 이것은 설정값이 아니라
 > 기하학이다.
 
-관련: [[experiments/exp_026_release_rate_100hz]] · [[research/research_architecture]] §10 ·
+관련: [[research/related_work_survey]] · [[experiments/exp_026_release_rate_100hz]] · [[research/research_architecture]] §10 ·
 [[research/isaac_velocity_controller]] · [[research/control_smoothness_wobble]]
 
 ---
