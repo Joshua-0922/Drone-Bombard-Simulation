@@ -19,7 +19,12 @@ type: index
   - **지배 오차는 바람이 아니라 페이로드 자기 속도에 대한 항력**(무풍에서도 −1.15 m). $v_z$ 누락과 같은 종류의 결손이 하나 더 있었음
   - 페이로드 항력을 월드 프레임으로 계산해놓고 링크 프레임 기본값으로 전달하던 버그 동시 수정 (`is_global=True`)
 - **⚠️ DR_SCALE 스윕이 현 상태로는 성립하지 않음 (사전 계측으로 발견).** 랜덤화를 완전히 꺼도 오차 p50 0.44 m — 결정론적 바닥이 랜덤화 성분을 덮고 있음. 릴리즈 지연 제거 + 고도 규약 + 자기속도 항력항 보정으로 **0.44 → 0.015 m**, 그제서야 스윕이 단조·선형
-- **환경 코드 재구축 계획 승인** — `v11_env.py`의 버전 상속 사슬(설정 10개/환경 7개)을 단일 과제 환경으로 대체, 모든 DR을 `drone_bombard_env.py`로 집약, 버전 접두어 전면 제거. 아키텍처 문서 정정 5건(바람 상수 유지 / 바람 미관측 / 팬텀 항력 채널 / 릴리즈 지연 랜덤화 / 주 실험 GT) 포함
+- **🏗️ 환경 코드 재구축 완료** (`f0ef4b8`) — `v11_env.py`의 버전 상속 사슬(설정 10개/환경 7개)을 단일 `task_env.py`로 대체. **모든 DR을 `drone_bombard_env.py`로 집약하고 세 그룹으로 분리**: `model_err`(A: 바람·탄도계수·릴리즈 지연 — `scale`이 곱해지는 유일한 그룹) / `dyn_dr`(C: 센서·액추에이터, 스윕 내내 고정) / `handoff`(B: 시나리오). 버전 접두어 전면 제거, 해석식 채점 경로 삭제, **릴리즈 지연을 플랜트에 실제 구현**. v11~v20은 `register_retired_lineage()`로 opt-in 재현만 가능
+- **재구축 후 T0~T3 재측정** (n=128, GT, DR_SCALE 1.0): T1 28.9% / T2 65.6% / **T3 77.3%** / T0 80.5%. **오라클 갭이 실재하는 양수**(CEP50 T2 0.646 → T3 0.511 m) — "잔차가 상한의 X%를 회복" 문장이 비로소 성립
+- **⚠️ A그룹 축 무게 실측 — 계획 전제 하나 기각.** 바람 p50 0.170 m(~90%) / 릴리즈 지연 0.058 m(~31%) / **탄도계수 0.012 m(~6%)**. 탄도계수는 ±100%로 넓혀도 0.044 m — **논문에서 "관측 불가 외란"을 탄도계수로 지목하면 안 된다.** 그 역할은 릴리즈 지연(원리상 관측 불가 + 속도 비례)
+- **✅ DR_SCALE 스윕 유효성 게이트 통과** ([[experiments/exp_025_dr_scale_sweep_gate]]) — 무학습 T2/T3만으로 논문 핵심 그림의 전제 확인. T2 CEP50 단조↑(0.570→0.815) · T3 평탄(0.573→0.491) · **오라클 갭 단조↑(−0.003→0.325 m)**. scale 0에서 갭 ≈ 0이라 통제군도 깨끗. **학습 착수 조건 충족**
+- ⚠️ **scale 0에서도 CEP50 0.57 m** — 표적 참값 + 탄도 오차 0.010 m이므로 **전부 제어·릴리즈 판정 타이밍**(10 Hz × 4 m/s = 스텝당 0.4 m). 릴리즈 판정만 100 Hz로 올리는 값싼 개선의 우선순위를 올릴 것
+- 아키텍처 문서 정정 5건 반영 완료 (바람 상수 유지 / 바람 미관측 / 팬텀 항력 채널 / 릴리즈 지연 랜덤화 / 주 실험 GT)
 
 ## 현재 상태 (2026-08-23)
 
@@ -171,6 +176,8 @@ type: index
 | 018 | exp018 Stage B (xt0hrr1c/0ns10yso/4vaodj0o/kk06wsbx, Isaac PPO) | 4 runs × 400 iters (v1 warm-start) | ✅ 완료 | **릴리스-종단 구조 → det release_rate 100.00%, drop err 0.125 m.** 종단 교체 단독으로 5.5%→100%(학습 내 23→99.6% 단조 상승 — Rule 22a 인과 확정). aim 보상 노브 불감(w 0/1.0/1.5 전부 100%; knee 0.75만 98.5%) — 자동 발화 referee가 노이즈를 +100 샘플러로 전환. done-flag alias 버그 사전 수정(Rule 23d). 호버-드롭 수렴. Stage C warm-start=B0. → [[experiments/exp_018_release_terminal]] / [[research/release_terminal_stageB]] / Rule 23 |
 | 020 | exp020 물리 페이로드 부착 학습 (o5jn9xzk/vryuc6mu, Isaac PPO) | 400 iters (B0 warm-start, 보상 bit-match) | ✅ 완료 | **물리 페이로드의 학습 비용 = 0 — det success/release 100.00%, drop err 0.169 m.** release_rate 첫 롤아웃부터 100%(재학습 과도기 없음), exp_019 parity의 학습-스케일 확증. σ 드리프트 1.41→1.71 모니터 대상. **wandb eval-figure 파이프라인 신설**(`play.py --wandb`). 컨테이너 빈 WANDB_API_KEY 함정 → `--env-file` 필수. → [[experiments/exp_020_o5jn9xzk_payload_training]] / [[errors/err_20260723_wandb_key_empty]] |
 | 021 | exp021 v19 + 이동 타겟 CV/CT/CA (a6saa42b/29jqq1lu/ntumqwoz, Isaac PPO) | 3 runs × 1000 iters (준상 v19 precise 사본 warm-start) | ✅ 완료 (det eval 포함) | **이동 타겟 모션을 v19에 obs-보존 포팅 → warm-start 학습 3종.** `V11Env._step_moving_target()` + V11/V16/V19 wire, obs 28-D 불변(lossless 로드 실증). det 200-ep: cv success 44.5%/drop med 0.775 m · ct 33.8%/0.783 · ca 16.5%/1.063 — 리드 부재가 1차 병목(개선안 §3c). `--target_kf`+v-track은 명시적 에러(KF는 base env 전용). → [[experiments/exp_021_v19_moving_target]] / [[research/moving_target_models]] §5 |
+| 022~024 | (exp_022 / exp_023 / exp_024) | — | ✅ 완료 | P0 랜덤화 env · Table 1 1차 · v20 warm-start 음성 결과 → 각 노트 참조 |
+| 025 | — (무학습 스크립트 베이스라인) | 128 ep × 8 run | ✅ **게이트 통과** | **DR_SCALE 스윕 유효성 검증** — T2 CEP50 단조↑(0.570→0.815) · T3 평탄(0.573→0.491) · **오라클 갭 −0.003→0.325 m 단조↑**. scale 0에서 갭 ≈ 0(깨끗한 통제군). 학습 착수 조건 충족. 부수: scale 0에서도 CEP50 0.57 m = 전부 제어·릴리즈 타이밍 → [[experiments/exp_025_dr_scale_sweep_gate]] |
 
 ## 에러 현황
 
@@ -276,6 +283,7 @@ type: index
 - [[experiments/exp_019_physical_payload]] — **(07-21) 물리 페이로드 attach/detach — kinematic weld 구현·검증 4/4 PASS.** 결함 6종 발견·3종 수정, 측정 착탄 vs 해석적 CCIP |Δ| ≤ 0.021 m, 보상/종단 bit-identical. Rule 24.
 - [[experiments/exp_020_o5jn9xzk_payload_training]] — **(07-23) 물리 페이로드 부착 첫 학습 — 학습 비용 0 확증.** B0 warm-start + 보상 bit-match, det 200-ep 100.00%/drop 0.169 m. σ 드리프트 1.41→1.71 관찰. `play.py --wandb` eval-figure 파이프라인 신설.
 - [[experiments/exp_022_p0_handoff_dyn_dr]] — **(08-03) P0: 핸드오프 랜덤화 + 동역학/센싱 DR, v20 env 신설.** 유닛 66/66 · 프로브 v19 12/12 + v20 15/15 · v19 warm-start 무손실. 분포전이 4조건 91.0/91.5/77.1/**7.5%** → Rule 27.
+- [[experiments/exp_025_dr_scale_sweep_gate]] — **(08-27) DR_SCALE 스윕 유효성 게이트 — 무학습 T2/T3만으로 논문 §7.4 핵심 그림의 전제를 확인.** 오라클 갭 −0.003 → 0.325 m 단조 증가, scale 0에서 ≈ 0. **학습 착수 조건 충족.** 부수 실측: 잔여 오차 0.57 m는 전부 제어·릴리즈 판정 타이밍
 - [[experiments/exp_021_v19_moving_target]] — **(07-30) 이동 타겟(CV/CT/CA) v19 obs-보존 포팅 + 준상 v19 warm-start 학습 3종 완주.** obs 28-D 불변 lossless 로드 실증, 난이도 cv<ct<ca(ca reward 음수 잔존), det eval 후속. wandb a6saa42b/29jqq1lu/ntumqwoz.
 
 ### 에러 (errors/)
