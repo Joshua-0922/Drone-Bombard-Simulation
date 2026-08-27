@@ -161,6 +161,102 @@ def ballistic_impact(
     return impact
 
 
+def integrate_payload_impact(
+    pos_xy: torch.Tensor,
+    vel_xy: torch.Tensor,
+    vel_z: torch.Tensor,
+    altitude: torch.Tensor,
+    wind_xy: torch.Tensor,
+    bc_over_m: torch.Tensor,
+    gravity: float,
+    ground_z: float = 0.0,
+    dt: float = 0.01,
+    max_steps: int = 1000,
+) -> torch.Tensor:
+    """Numerically integrate the released payload's ACTUAL trajectory and return
+    where it lands. This is the ground-truth impact point, not a prediction.
+
+    WHY THIS EXISTS (2026-08-26). ``ballistic_impact``'s wind term is
+    ``(vel_xy + wind_xy) * t_fall``: it asserts the payload adopts the full wind
+    velocity the instant it is released and holds it for the whole fall, i.e.
+    INSTANT COMPLETE ENTRAINMENT. The plant
+    (``drone_bombard_env._step_payload_physics``) does no such thing — the
+    payload leaves with the drone's velocity and drag drags it toward the wind
+    on a time constant ``tau = m / (k * |v_air|)``. With the shipped numbers
+    (m = 0.1 kg, k = 0.005, |v_air| ~ 8 m/s during the fall) that is
+    ``tau ~ 2.5 s`` against a ``~1.0 s`` fall, so the payload entrains barely a
+    fifth of the wind and the closed form overstates the drift by ~5x. The T3
+    "wind oracle" baseline was steering and gating on that overstated number,
+    which is why it scored BELOW the do-nothing hover arm.
+
+    So: same ODE as the plant, same parameters, integrated the same way
+    (semi-implicit Euler at the physics ``dt``, which is also what PhysX runs),
+    therefore correct BY CONSTRUCTION rather than by a second approximation
+    that would need its own validation. Deliberately NOT a closed form: any
+    closed form here re-opens the exact failure mode it is fixing.
+
+    ``bc_over_m`` is the ballistic coefficient ``k/m`` in 1/m — read it from
+    ``DroneBombardEnv.payload_bc_over_m``, never reassemble it from cfg fields,
+    or predictor and plant drift apart again (Rule 30).
+
+    ``altitude`` is the payload's height above the local ground, and
+    ``ground_z`` the height at which the plant latches the impact — pass the
+    plant's own conventions (``alt + payload_mount_z`` and
+    ``payload_ground_z + payload_land_eps``), not the drone's.
+
+    Note the semi-implicit integrator carries a systematic ``-0.5*g*dt*T``
+    altitude lag (~0.06 m over a 1.3 s fall at dt=0.01). That is not an error
+    to remove: PhysX carries the same one, and matching the plant is the whole
+    point. Landed rows freeze; the ground crossing is interpolated linearly so
+    the answer is not quantized to ``dt``.
+    """
+    p = pos_xy.clone()
+    v = vel_xy.clone()
+    z = altitude.clone()
+    vz = vel_z.clone()
+    k = bc_over_m.unsqueeze(-1)  # [N,1]
+
+    landed = z <= ground_z
+    impact = p.clone()
+
+    for step in range(max_steps):
+        # Relative airflow, exactly as _step_payload_physics builds it: the wind
+        # is horizontal-only, so the vertical component is pure -v_z.
+        v_air = torch.cat([wind_xy - v, -vz.unsqueeze(-1)], dim=-1)  # [N,3]
+        speed = torch.linalg.norm(v_air, dim=-1, keepdim=True)
+        acc = k * speed * v_air  # drag acceleration = (k/m)*|v_air|*v_air
+
+        v_new = v + acc[:, :2] * dt
+        vz_new = vz + (acc[:, 2] - gravity) * dt
+        p_new = p + v_new * dt
+        z_new = z + vz_new * dt
+
+        crossing = (~landed) & (z_new <= ground_z)
+        if bool(crossing.any()):
+            # Linear interpolation onto the latch plane: without it the impact
+            # is quantized to one step of fall, ~0.12 m at 12 m/s.
+            alpha = ((z - ground_z) / (z - z_new).clamp(min=1e-9)).clamp(0.0, 1.0)
+            hit = p + alpha.unsqueeze(-1) * (p_new - p)
+            impact = torch.where(crossing.unsqueeze(-1), hit, impact)
+            landed = landed | crossing
+
+        live = ~landed
+        p = torch.where(live.unsqueeze(-1), p_new, p)
+        v = torch.where(live.unsqueeze(-1), v_new, v)
+        z = torch.where(live, z_new, z)
+        vz = torch.where(live, vz_new, vz)
+
+        # Early exit, but only every 32 steps: the .all() is a device sync and
+        # this runs per policy step during evaluation.
+        if step % 32 == 31 and bool(landed.all()):
+            break
+
+    # Rows that never reached the plane (ascending forever is impossible with
+    # gravity, so this only happens if max_steps is set too low) report their
+    # last horizontal position rather than a stale initial one.
+    return torch.where(landed.unsqueeze(-1), impact, p)
+
+
 def ccip_residual(obs: torch.Tensor) -> torch.Tensor:
     """Legacy Phase-2 zero-stub for the CCIP impact prediction residual.
 

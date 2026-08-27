@@ -20,13 +20,22 @@ the release rule:
                   propagate the vehicle state over a short horizon, evaluate
                   the predicted impact error at every step of it, and fire when
                   the argmin collapses to NOW. Strongest non-privileged rule.
-  T3 ``oracle`` — T2 plus a PRIVILEGED analytic residual: the exact wind/drag
-                  drift is computed from the env's true per-episode wind and
-                  drag and emitted on the residual action channel, i.e. the
-                  correction the learned residual is trying to discover. This
-                  is the classical upper bound for the residual mechanism, and
-                  it saturates exactly like the learned one when the drift
-                  exceeds +-residual_scale.
+  T3 ``oracle`` — T2 plus a PRIVILEGED residual: the payload's true fall is
+                  integrated forward under the env's own drag ODE with the
+                  env's own per-episode wind and ballistic coefficient, and the
+                  offset from the nominal CCIP is emitted on the residual
+                  action channel — i.e. the correction the learned residual is
+                  trying to discover. This is the classical upper bound for the
+                  residual mechanism, and it saturates exactly like the learned
+                  one when the drift exceeds +-residual_scale.
+
+                  Until 2026-08-26 this drift came from ``ballistic_impact``'s
+                  analytic wind term, which assumes the payload adopts the full
+                  wind speed instantly. It does not (tau ~ 2.5 s vs a ~1 s
+                  fall), so the "oracle" over-corrected ~5x, flew that far
+                  upwind of the marker, and scored BELOW the do-nothing hover
+                  arm — an upper bound underneath its own baseline. Any Table 1
+                  T3 number printed before that date is void.
 
 Fairness notes (state them in the paper):
   * T0-T2 use only quantities the policy also observes: the PERCEIVED
@@ -92,7 +101,11 @@ from isaaclab_tasks.utils import parse_env_cfg  # noqa: E402
 
 import drone_bombard  # noqa: F401,E402
 import eval_harness  # noqa: E402
-from drone_bombard.math_utils import ballistic_impact, predict_impact_nominal  # noqa: E402
+from drone_bombard.math_utils import (  # noqa: E402
+    ballistic_impact,
+    integrate_payload_impact,
+    predict_impact_nominal,
+)
 
 
 def _perceived(u: torch.nn.Module, pos_xy: torch.Tensor) -> torch.Tensor:
@@ -136,16 +149,39 @@ class BaselineController:
 
     # -------- privileged residual (T3 only) --------
     def _oracle_residual(self, pos_xy, vel_xy, alt, vz):
-        """Analytic wind/drag correction on the impact-point PREDICTION — the
-        exact quantity the learned residual approximates. Emitted on the same
-        action channel and therefore subject to the same +-residual_scale
-        authority (it saturates when the drift exceeds it, reproducing the
-        v15 saturation regime)."""
+        """True wind/drag correction on the impact-point PREDICTION — the exact
+        quantity the learned residual approximates. Emitted on the same action
+        channel and therefore subject to the same +-residual_scale authority
+        (it saturates when the drift exceeds it, reproducing the v15 saturation
+        regime).
+
+        ``real`` is INTEGRATED, not predicted: same ODE, same k/m, same wind,
+        same dt as ``_step_payload_physics``, started at the payload's carry
+        height and stopped at the plant's own latch plane. That makes the
+        oracle exact by construction, so the T2->T3 gap it defines is a real
+        ceiling. See ``math_utils.integrate_payload_impact``.
+
+        Note ``u._drag_coef`` is deliberately NOT read here: it drives a term in
+        ``ballistic_impact`` that has no counterpart in the payload plant (the
+        fall uses ``payload_phys_drag_k * _payload_bc_scale``), so an oracle
+        reading it would be claiming knowledge of a parameter that does not act
+        on the outcome."""
         u, dc = self.u, self.u.cfg.drop
         nominal = predict_impact_nominal(pos_xy, vel_xy, vz, alt, dc.release_delay, dc.gravity)
-        real = ballistic_impact(pos_xy, vel_xy, vz, alt, dc.release_delay, dc.gravity,
-                                u._drag_coef, u._wind_xy)
-        drift = real - nominal                       # where the wind will take it
+        if bool(getattr(u.cfg, "payload_physics_enabled", False)):
+            real = integrate_payload_impact(
+                pos_xy, vel_xy, vz, alt + u.cfg.payload_mount_z, u._wind_xy,
+                u.payload_bc_over_m, dc.gravity,
+                ground_z=u.cfg.payload_ground_z + u.cfg.payload_land_eps,
+                dt=u.cfg.sim.dt,
+            )
+        else:
+            # No payload body: the env's own referee scores the drop with
+            # ballistic_impact, so the analytic form IS the plant here and
+            # reading it is exact rather than a fallback approximation.
+            real = ballistic_impact(pos_xy, vel_xy, vz, alt, dc.release_delay, dc.gravity,
+                                    u._drag_coef, u._wind_xy)
+        drift = real - nominal                       # where the payload really goes
         if self.res_scale <= 0.0:
             return torch.zeros_like(drift)
         # SIGN: the residual must make the PREDICTION track the REAL impact
@@ -233,7 +269,7 @@ class BaselineController:
 
 
 ARM_NAMES = {"hover": "T0_hover_drop", "ccip": "T1_ccip_threshold",
-             "argmin": "T2_predictive_argmin", "oracle": "T3_wind_oracle_residual"}
+             "argmin": "T2_predictive_argmin", "oracle": "T3_model_oracle_residual"}  # not "wind": drag on the payload's OWN velocity dominates
 
 
 def main():

@@ -942,6 +942,23 @@ class DroneBombardEnv(DirectRLEnv):
         if self.cfg.payload_physics_enabled:
             self._step_payload_physics()
 
+    @property
+    def payload_bc_over_m(self) -> torch.Tensor:
+        """Per-env ballistic coefficient k/m of the released payload, in 1/m.
+
+        Free flight depends on the drag constant and the mass ONLY through this
+        ratio, so this is the single physical parameter of the payload's fall
+        and the single number a predictor needs. ``_payload_bc_scale`` (1.0
+        unless dyn_dr) randomizes it, which is equivalent to randomizing the
+        payload mass without writing to PhysX (Rule 19).
+
+        Read this from any impact predictor (see
+        ``math_utils.integrate_payload_impact``); do not rebuild it from
+        ``cfg.payload_phys_drag_k / cfg.payload_phys_mass``, or the predictor
+        and the plant can drift apart the way the CCIP vz term did.
+        """
+        return (self.cfg.payload_phys_drag_k * self._payload_bc_scale) / self.cfg.payload_phys_mass
+
     def _step_payload_physics(self):
         """v16: carry the payload under the drone until release, then let it fall
         under gravity + wind drag and record where it lands. Runs at physics rate
@@ -976,9 +993,18 @@ class DroneBombardEnv(DirectRLEnv):
             # coefficient k/m — equivalent to randomizing the payload MASS, since
             # free flight depends on the pair only through this ratio. No PhysX
             # mass write, so the authored plant stays exactly as spawned.
-            f = (self.cfg.payload_phys_drag_k * self._payload_bc_scale.unsqueeze(-1)) * speed * v_air
+            # k/m is the ONLY free-flight parameter, so it is defined once in
+            # payload_bc_over_m and multiplied back up to a force here. Any
+            # predictor that wants the real trajectory must read that property
+            # rather than re-deriving it from cfg (Rule 30).
+            f = (self.payload_bc_over_m.unsqueeze(-1) * self.cfg.payload_phys_mass) * speed * v_air
             forces[:, 0, :] = torch.where(active.unsqueeze(-1), f, torch.zeros_like(f))
-        self._payload.set_external_force_and_torque(forces, torch.zeros_like(forces))
+        # is_global=True: `f` above is assembled from world-frame wind and
+        # world-frame payload velocity, so it is a world-frame vector. The API
+        # defaults to is_global=False, i.e. "interpret this in the body's link
+        # frame" — which silently rotated the drag by the payload's attitude
+        # (inherited from a drone tilting up to 35 deg). Fixed 2026-08-26.
+        self._payload.set_external_force_and_torque(forces, torch.zeros_like(forces), is_global=True)
         self._payload.write_data_to_sim()
 
         # landing: local-frame z at/below the ground plane.

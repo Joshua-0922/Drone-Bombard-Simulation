@@ -429,6 +429,90 @@ def test_ballistic_impact_drag_branch_changes_result_when_nonzero():
 
 
 # =====================================================================
+# Payload trajectory integration (T3 oracle ground truth)
+# =====================================================================
+
+# Shipped plant constants, mirrored as raw floats so this file stays
+# isaaclab-free (drone_bombard_env DroneBombardEnvCfg).
+_PAYLOAD_K = 0.005      # payload_phys_drag_k, N per (m/s)^2
+_PAYLOAD_M = 0.1        # payload_phys_mass, kg
+_BC_OVER_M = _PAYLOAD_K / _PAYLOAD_M   # 0.05 1/m
+
+
+def _integrate(alt, vz, vx, wind, bc=_BC_OVER_M, ground=0.0):
+    return mu.integrate_payload_impact(
+        torch.zeros(1, 2), torch.tensor([[vx, 0.0]]), torch.tensor([vz]),
+        torch.tensor([alt]), torch.tensor([[wind, 0.0]]), torch.tensor([bc]),
+        9.81, ground_z=ground, dt=0.01,
+    )[0, 0].item()
+
+
+def test_integrate_payload_impact_reduces_to_closed_form_without_drag():
+    """Zero ballistic coefficient and zero wind must reproduce the drag-free
+    closed form. The residual gap is the semi-implicit integrator's known
+    -0.5*g*dt*T altitude lag (~0.03 m of range here), which PhysX shares."""
+    alt, vx = 8.0, 6.0
+    got = _integrate(alt, 0.0, vx, 0.0, bc=0.0)
+    want = vx * mu.time_to_fall(torch.tensor([alt]), torch.zeros(1), 9.81)[0].item()
+    assert got == pytest.approx(want, abs=0.05), f"{got} vs closed form {want}"
+    assert got < want, "semi-implicit Euler lands marginally short, never long"
+
+
+def test_integrate_payload_impact_wind_entrainment_is_far_below_instant():
+    """THE T3 regression (2026-08-26). ballistic_impact's wind term assumes the
+    payload adopts the full wind instantly: drift = wind * t_fall. The plant
+    entrains it on tau = m/(k|v_air|) ~ 2.5 s against a ~1 s fall, so the true
+    drift is roughly a quarter of that. The old 'wind oracle' steered on the
+    analytic number and therefore over-corrected ~4x."""
+    alt, vz, vx, wind = 8.0, -3.0, 6.0, 1.5
+    drift = _integrate(alt, vz, vx, wind) - _integrate(alt, vz, vx, 0.0)
+    t = mu.time_to_fall(torch.tensor([alt]), torch.tensor([vz]), 9.81)[0].item()
+    instant = wind * t
+
+    assert drift > 0.0, "wind must still push the payload downwind"
+    assert drift == pytest.approx(0.35, abs=0.10), f"true entrained drift {drift}"
+    assert instant / drift > 3.0, (
+        f"instant-entrainment overstates the drift {instant / drift:.1f}x; if this "
+        "ratio collapses toward 1 the plant's drag changed and the T3 oracle "
+        "premise must be re-derived")
+
+
+def test_integrate_payload_impact_own_velocity_drag_lands_short_of_nominal():
+    """The dominant model error is NOT the wind: drag acts on the payload's own
+    forward airspeed too, braking a 6 m/s release by about a metre over the
+    fall. That term is deterministic and larger than the wind drift, so the T3
+    oracle's residual is net NEGATIVE (short) even in dead-still air."""
+    alt, vz, vx = 8.0, 0.0, 6.0
+    real = _integrate(alt, vz, vx, 0.0)
+    nominal = vx * mu.time_to_fall(torch.tensor([alt]), torch.tensor([vz]), 9.81)[0].item()
+    assert real < nominal - 0.5, f"real {real} should fall well short of nominal {nominal}"
+
+
+def test_integrate_payload_impact_freezes_landed_rows_independently():
+    """Batched rows land at different times; an already-landed row must not keep
+    integrating (that would drag its impact point past the ground plane)."""
+    impact = mu.integrate_payload_impact(
+        torch.zeros(2, 2), torch.tensor([[6.0, 0.0], [6.0, 0.0]]),
+        torch.zeros(2), torch.tensor([2.0, 12.0]),          # very different heights
+        torch.zeros(2, 2), torch.full((2,), _BC_OVER_M), 9.81, dt=0.01,
+    )
+    lo, hi = impact[0, 0].item(), impact[1, 0].item()
+    assert 0.0 < lo < hi, f"low release must land shorter: {lo} vs {hi}"
+    single = _integrate(2.0, 0.0, 6.0, 0.0)
+    assert lo == pytest.approx(single, abs=1e-4), "batched row must match the solo run"
+
+
+def test_integrate_payload_impact_honours_the_latch_plane():
+    """The plant latches the impact when the payload CENTRE reaches
+    payload_ground_z + payload_land_eps (0.10 m), not z=0. Passing the wrong
+    plane silently biases the oracle long."""
+    at_zero = _integrate(8.0, 0.0, 6.0, 0.0, ground=0.0)
+    at_latch = _integrate(8.0, 0.0, 6.0, 0.0, ground=0.10)
+    assert at_latch < at_zero, "stopping higher must shorten the range"
+    assert (at_zero - at_latch) == pytest.approx(0.05, abs=0.04)
+
+
+# =====================================================================
 # Guards: overshoot dormancy/reachability, stagnation
 # =====================================================================
 
