@@ -81,15 +81,12 @@ parser.add_argument("--release_alt", type=float, default=6.0,
                     help="Target altitude for the run-in (must sit inside the envelope band).")
 parser.add_argument("--kp_xy", type=float, default=0.6, help="Approach P gain (1/s).")
 parser.add_argument("--pass_speed", type=float, default=None,
-                    help="Fly a CONSTANT-SPEED delivery pass at this speed (m/s) instead of "
-                         "P-decelerating onto the target. Without this the P-controller "
-                         "(v = kp_xy * range) forces every arm to arrive overhead at walking "
-                         "pace, so the release degenerates to a PLACE and the release-timing "
-                         "rule (T1 vs T2) barely matters. Measured 2026-08-27: release-instant "
-                         "v_xy was 0.04 m/s for T0 and only 0.76 m/s for T2. Structural reason: "
-                         "the predicted impact overtakes the target at finite range only if "
-                         "kp_xy * t_fall > 1, and 0.6 * 1.1 s = 0.66 < 1, so the impact point "
-                         "converges on the target only as the range goes to zero.")
+                    help="Override the flight profile: fly a CONSTANT-SPEED delivery pass at "
+                         "this speed instead of whatever the arm defaults to. Defaults are set "
+                         "per arm (see FLIGHT PROFILE below); pass 0 to force P-control.")
+parser.add_argument("--p_control", action="store_true",
+                    help="Force the legacy P-control (decelerate-onto-target) profile on every "
+                         "arm, reproducing the pre-2026-08-27 baselines.")
 parser.add_argument("--kp_z", type=float, default=0.8, help="Altitude P gain (1/s).")
 parser.add_argument("--horizon", type=int, default=12,
                     help="argmin/oracle: predicted-impact horizon in policy steps.")
@@ -161,6 +158,35 @@ class BaselineController:
         self.res_scale = float(u.cfg.residual.scale)
         self.has_residual = self.act_dim >= 7 and bool(u.cfg.residual.enabled)
         self.gate_radius = float(u.cfg.release.radius)
+
+        # FLIGHT PROFILE -- part of what each arm IS, not a tuning knob.
+        #
+        #   T0 hover  -> P-control. Decelerating onto the target and stopping is
+        #                the whole point of this arm: it is the degenerate
+        #                "place" strategy the delivery-time axis exists to expose.
+        #   T1/T2/T3  -> constant-speed pass. These are RELEASE-TIMING rules, and
+        #                a timing rule is only meaningful on a trajectory that
+        #                actually flies through; the computer picks the instant.
+        #
+        # Why this is not optional (measured 2026-08-27): under P-control the
+        # commanded speed is proportional to the remaining range, so speed and
+        # range go to zero TOGETHER and the predicted impact meets the target
+        # only overhead at a standstill. Every arm therefore released at walking
+        # pace -- T2 at 0.76 m/s against a 4 m/s cruise -- which is a PLACE, not
+        # a throw. That matters because every error the learned residual exists
+        # to remove (release-delay drift, self-velocity drag, wind carry) scales
+        # with release speed and is identically zero at a standstill. Comparing
+        # a learned throw against scripted places would beat our own approach
+        # controller rather than the published release rule.
+        #
+        # Note this is NOT a gain-tuning problem: v = kp * range makes both
+        # vanish together for ANY kp, so no P gain produces a throw.
+        if args_cli.p_control:
+            self.pass_speed = 0.0
+        elif args_cli.pass_speed is not None:
+            self.pass_speed = float(args_cli.pass_speed)
+        else:
+            self.pass_speed = 0.0 if self.arm == "hover" else float(args_cli.approach_speed)
 
     # -------- privileged residual (T3 only) --------
     def _oracle_residual(self, pos_xy, vel_xy, alt, vz):
@@ -270,13 +296,13 @@ class BaselineController:
             # than doing nothing.
             steer_xy = aim_xy - residual * self.res_scale
         to_target = steer_xy - pos_xy
-        if args_cli.pass_speed is not None:
+        if self.pass_speed > 0.0:
             # Constant-speed delivery pass: hold speed along the bearing to the
             # aim point and let the release rule pick the instant. This is what a
             # CARP/CCIP pass actually is -- you do not decelerate onto the target,
             # you fly through and the computer picks the moment.
             brg = to_target / torch.linalg.norm(to_target, dim=-1, keepdim=True).clamp(min=1e-6)
-            v_des = brg * args_cli.pass_speed
+            v_des = brg * self.pass_speed
         else:
             v_des = torch.clamp(args_cli.kp_xy * to_target,
                                 -args_cli.approach_speed, args_cli.approach_speed)
@@ -325,6 +351,7 @@ def main():
     u = env.unwrapped
     ctrl = BaselineController(u, args_cli.arm)
     print(f"[baseline] arm={ARM_NAMES[args_cli.arm]} task={args_cli.task} seed={args_cli.seed} "
+          f"profile={'p_control' if ctrl.pass_speed <= 0.0 else f'pass@{ctrl.pass_speed:.1f}m/s'} "
           f"gate_radius={ctrl.gate_radius:.2f} residual_scale={ctrl.res_scale:.2f} "
           f"{'(PRIVILEGED wind/drag)' if args_cli.arm == 'oracle' else ''}", flush=True)
 
@@ -337,6 +364,8 @@ def main():
               "privileged": args_cli.arm == "oracle",
               "approach_speed": args_cli.approach_speed,
               "release_alt": args_cli.release_alt, "horizon": args_cli.horizon,
+              "pass_speed": ctrl.pass_speed,
+              "flight_profile": "p_control" if ctrl.pass_speed <= 0.0 else "constant_speed_pass",
               "hover_radius": args_cli.hover_radius, "hover_speed": args_cli.hover_speed},
         out_json=args_cli.out_json,
     )

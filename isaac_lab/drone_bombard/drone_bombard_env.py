@@ -156,7 +156,21 @@ class DroneBombardRewardCfg:
 @configclass
 class DroneBombardTerminationCfg:
     ground_contact_altitude: float = 0.5
-    min_altitude: float = 3.0
+    min_altitude: float = 1.5
+    """Lowered from 3.0 on 2026-08-27 so the crash floor sits BELOW the release
+    floor instead of exactly on it.
+
+    ``release.alt_min`` is also 3.0, so the lowest admissible release altitude
+    was the death boundary itself -- zero margin. Flying lower is genuinely
+    better (a shorter fall disperses less), so the policy correctly learned to
+    descend, and then had nowhere to overshoot to: the 2026-08-27 dry-run showed
+    ``crash`` climbing to 42% of terminations and still rising while
+    ``bad_attitude`` stayed near zero, i.e. the drone was not tumbling, it was
+    descending into a wall.
+
+    1.5 m leaves 1.5 m of recovery room under the release band while still
+    terminating episodes that are actually going into the ground (the
+    ``ground_contact_altitude`` check at 0.5 m is unchanged)."""
     min_altitude_start_step: int = 1
     v_max_safety: float = 20.0
     limit_ang_vel: float = 2.0

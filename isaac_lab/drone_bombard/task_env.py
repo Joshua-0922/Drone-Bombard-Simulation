@@ -255,34 +255,34 @@ class TaskRewardCfg:
     and body rate were all satisfied throughout, so altitude is the one envelope
     dimension the policy can violate persistently."""
 
-    w_time: float = 1.0            # per step -> 10.0 per second at 10 Hz
+    w_time: float = 2.3            # per step -> 23.0 per second at 10 Hz
     """⭐ Per-step cost of still carrying the payload. THE knob that sets where on
     the speed-accuracy tradeoff the policy is asked to operate.
 
-    Calibrated 2026-08-27 against the measured scripted arms rather than guessed.
-    Evaluating the terminal reward on their real landing distributions (n=128,
-    DR_SCALE 1.0) showed the reward PREFERRED hover-drop -- exactly the
-    degeneration the paper exists to argue against:
+    Calibrated against the measured scripted arms rather than guessed: the
+    terminal reward is evaluated on their real landing distributions and the
+    weight is solved for INDIFFERENCE between the place arm and the throw arms.
+    Re-solved 2026-08-27 after the baselines were given a constant-speed pass
+    (n=200, DR_SCALE 1.5):
 
-        arm        terminal   time   loiter     NET     err    t
-        T0 hover      191.6   1.05    10.47   180.0   0.305  10.50 s
-        T2 argmin     166.8   0.88     3.59   162.3   0.353   8.84 s
+        arm                profile   succ%   CEP50   t_del   v_release
+        T0 hover         p_control    35.0   0.511   9.00 s   0.05 m/s
+        T2 argmin   const.-sp. pass    10.5   0.840   6.70 s   3.07 m/s
 
-    T0 buys 0.048 m of accuracy (zero horizontal velocity removes the ballistic
-    dispersion entirely) for 1.66 s, and at the old 0.01 the reward valued that
-    second at 0.0002 m. Time was free, so the optimum was to stop and hover --
-    which is precisely what AeroThrow's own trajectory relaxation converges to
-    (their §V-A: "shifting from a throw toward a place").
+    Throwing at 3 m/s costs 24.5 pp of success and saves 2.3 s, so a second is
+    worth about 10 pp -- an exchange rate two orders of magnitude steeper than
+    the first calibration saw, because back then both arms were placing and
+    there was barely a tradeoff to price. Solving T0_net == T2_net gives 2.29.
 
-    1.0/step = 10/s makes the reward approximately INDIFFERENT between the two
-    operating points (T0 86.1 vs T2 84.8 net). That is deliberate: it neither
-    pushes the policy to hover nor forces it to rush, so the operating point is
-    LEARNED rather than imposed -- which is the honest way to then report where
-    it landed. Sweeping this weight traces our own speed-accuracy Pareto front,
-    the direct counterpart to the baseline front in the related work.
+    Setting it AT indifference is deliberate. It neither pushes the policy to
+    hover nor forces it to rush, so the operating point is LEARNED rather than
+    imposed, and whichever way it goes is a reportable result. Sweeping this
+    weight traces our own speed-accuracy Pareto front -- the direct counterpart
+    to the baseline front in the related work (ablation A10).
 
     ⚠️ Per-STEP, so it scales with the control rate. Changing ``decimation``
     without rescaling silently changes the objective."""
+
     gate_reward: float = 0.05      # per step while a release is admissible
     drop_signal_reward: float = 1.0
     undetected_penalty: float = -0.2   # per step while the marker is not acquired
@@ -383,7 +383,19 @@ class DroneBombardTaskCfg(DroneBombardEnvCfg):
     meaningless."""
 
     action_space: int = 7   # [0:4] velocity + yaw rate, [4] drop signal, [5:7] impact residual
-    episode_length_s: float = 30.0
+
+    episode_length_s: float = 20.0
+    """Cut from 30.0 s as a direct consequence of the ``w_time`` recalibration,
+    not as independent tuning.
+
+    Per-step costs make ending an episode early attractive whenever the policy
+    cannot yet succeed, and at 23/s a full 30 s timeout accumulates ~690 of cost
+    against a ~220 crash -- a 470-point bounty on self-destruction during the
+    bootstrap, before any shaping has taught the policy that delivering pays
+    more. The scenario never needs 30 s: the slowest arm (T0, which decelerates
+    to a hover) delivers in 9.0 s, so 20 s still leaves better than 2x margin
+    while removing a third of the dead time cost. It also makes every training
+    iteration cheaper."""
 
     def __post_init__(self):
         super().__post_init__()
