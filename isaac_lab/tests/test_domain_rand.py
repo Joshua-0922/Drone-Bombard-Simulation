@@ -137,3 +137,87 @@ def test_ballistic_coefficient_scaling_equals_mass_scaling():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# =====================================================================
+# DR_SCALE: the A group scales, the C group does not
+# =====================================================================
+
+
+def test_wind_capped_scales_and_respects_the_magnitude_cap():
+    """A-group wind. std and cap both carry DR_SCALE, applied by the caller, so
+    the sampler itself has one meaning."""
+    torch.manual_seed(0)
+    w = dr.sample_wind_capped(4096, torch.device("cpu"), std=1.5, cap=5.0, enabled=True)
+    mag = torch.linalg.norm(w, dim=-1)
+    assert mag.max().item() <= 5.0 + 1e-5, "magnitude cap must bound the vector, not the axes"
+    assert 1.3 < w.std().item() < 1.7, f"per-axis std drifted: {w.std().item()}"
+
+    wide = dr.sample_wind_capped(4096, torch.device("cpu"), std=3.0, cap=10.0, enabled=True)
+    assert wide.std().item() > w.std().item() * 1.5, "doubling std must widen the draw"
+
+
+def test_wind_capped_zero_scale_is_exactly_zero_and_draws_no_rng():
+    """DR_SCALE = 0 has to be a CLEAN control point: identical to no wind, and
+    consuming no random numbers, so the sweep's zero arm does not shift any
+    other sampler's stream relative to the other arms."""
+    torch.manual_seed(7)
+    before = torch.rand(1).item()
+    torch.manual_seed(7)
+    _ = torch.rand(1)
+    w = dr.sample_wind_capped(64, torch.device("cpu"), std=0.0, cap=0.0, enabled=True)
+    after = torch.rand(1).item()
+
+    torch.manual_seed(7)
+    _ = torch.rand(1)
+    expected = torch.rand(1).item()
+
+    assert torch.equal(w, torch.zeros(64, 2))
+    assert after == expected, "a disabled sampler must not consume RNG"
+    assert before is not None
+
+
+def test_dr_scale_multiplies_the_a_group_band_but_not_the_c_group():
+    """The orthogonality the paper's sweep depends on.
+
+    Before 2026-08-27 the payload ballistic coefficient lived in the same config
+    (and behind the same boolean) as the controller-gain and sensor-noise knobs,
+    so 'reduce the model error' and 'reduce the sensor noise' were the same
+    action and the sweep could not attribute its result to either.
+    """
+    dev = torch.device("cpu")
+    bc_rel, gain_rel = 0.20, 0.10
+
+    def spread(rel, scale):
+        torch.manual_seed(3)
+        v = dr.sample_scale(20000, dev, rel * scale, enabled=scale > 0.0)
+        return (v.max() - v.min()).item()
+
+    # A group follows the knob...
+    assert spread(bc_rel, 0.0) == pytest.approx(0.0, abs=1e-6)
+    half, full = spread(bc_rel, 0.5), spread(bc_rel, 1.0)
+    assert full == pytest.approx(2 * half, rel=0.05), f"{full} vs 2*{half}"
+
+    # ...the C group is sampled without it and is therefore untouched.
+    torch.manual_seed(3)
+    gains_a = dr.sample_scale(20000, dev, gain_rel, enabled=True)
+    torch.manual_seed(3)
+    gains_b = dr.sample_scale(20000, dev, gain_rel, enabled=True)
+    assert torch.equal(gains_a, gains_b)
+    assert (gains_a.max() - gains_a.min()).item() == pytest.approx(2 * gain_rel, rel=0.05)
+
+
+def test_release_delay_is_a_positive_spread_around_the_nominal():
+    """Release latency as an A-group axis: mean is MODELLED by the predictor (so
+    it is not an error), the deviation is not (so it is). Must never go
+    negative -- a negative latency would release before the command."""
+    mean, std = 0.22, 0.05
+    torch.manual_seed(11)
+    tau = torch.clamp(mean + dr.sample_bias(20000, 1, torch.device("cpu"), std, True).squeeze(-1), min=0.0)
+    assert tau.min().item() >= 0.0
+    assert tau.mean().item() == pytest.approx(mean, abs=0.005)
+    assert tau.std().item() == pytest.approx(std, rel=0.1)
+
+    # At 5 m/s this sigma is the same order as the wind drift -- that is the
+    # point: it is unobservable AND it grows with release speed.
+    assert 5.0 * tau.std().item() == pytest.approx(0.25, abs=0.05)

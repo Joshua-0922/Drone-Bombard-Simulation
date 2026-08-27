@@ -513,6 +513,126 @@ def test_integrate_payload_impact_honours_the_latch_plane():
 
 
 # =====================================================================
+# Nominal CCIP accuracy — the deterministic error floor
+# =====================================================================
+
+# Plant + predictor constants mirrored as raw floats (this file stays
+# isaaclab-free). See DroneBombardDropCfg.payload_drag_coef_nominal.
+_MOUNT_Z = -0.14      # payload hangs this far below the drone body
+_LATCH_Z = 0.10       # impact is latched when the payload centre reaches this
+_CD_NOMINAL = 0.07    # calibrated first-order drag coefficient of the predictor
+
+
+def _nominal(pos_xy, vel_xy, vel_z, alt, cd=_CD_NOMINAL, fall_offset=_MOUNT_Z - _LATCH_Z):
+    """Mirror of DroneBombardEnv._nominal_impact, minus the release-latency
+    propagation (tested separately) -- the predictor under test."""
+    drag = torch.full_like(alt, cd)
+    return mu.ballistic_impact(
+        pos_xy, vel_xy, vel_z, alt + fall_offset, 0.0, 9.81, drag, torch.zeros_like(pos_xy))
+
+
+def _envelope(n=400, seed=5):
+    """States sampled from the release envelope: altitude 3-8 m, horizontal
+    speed <= 5 m/s, descent 0-3 m/s."""
+    g = torch.Generator().manual_seed(seed)
+    alt = 3.0 + torch.rand(n, generator=g) * 5.0
+    sp = torch.rand(n, generator=g) * 5.0
+    hd = torch.rand(n, generator=g) * 2 * math.pi
+    vel = torch.stack([sp * torch.cos(hd), sp * torch.sin(hd)], dim=-1)
+    vz = -torch.rand(n, generator=g) * 3.0
+    return torch.zeros(n, 2), vel, vz, alt
+
+
+def _truth(pos_xy, vel_xy, vz, alt, bc=0.05, wind=None):
+    return mu.integrate_payload_impact(
+        pos_xy, vel_xy, vz, alt + _MOUNT_Z,
+        torch.zeros_like(pos_xy) if wind is None else wind,
+        torch.full_like(alt, bc), 9.81, ground_z=_LATCH_Z, dt=0.01)
+
+
+def test_nominal_ccip_error_floor_is_near_zero_with_no_randomization():
+    """THE gate on the paper's DR_SCALE sweep (measured 2026-08-27).
+
+    With randomization off, the residual has nothing to learn, so the nominal
+    prediction should already be right. It was not: the predictor omitted drag
+    on the payload's own inherited velocity, ignored that the payload starts
+    0.14 m low and latches 0.10 m high, and added horizontal carry for a release
+    latency the simulator did not implement. Together those were p50 0.44 m --
+    an error floor LARGER than what the randomization creates at scale 1.0
+    (0.17 m), which would have made the sweep read as flat.
+
+    If this regresses, the sweep is measuring the predictor's bugs, not the
+    randomization."""
+    pos, vel, vz, alt = _envelope()
+    err = torch.linalg.norm(_truth(pos, vel, vz, alt) - _nominal(pos, vel, vz, alt), dim=-1)
+    p50 = err.median().item()
+    p90 = err.sort().values[int(0.9 * len(err))].item()
+    assert p50 < 0.05, f"nominal p50 error {p50:.3f} m — deterministic floor is back"
+    assert p90 < 0.10, f"nominal p90 error {p90:.3f} m"
+
+
+def test_dropping_the_drag_term_restores_the_old_error_floor():
+    """Guards the calibration itself: the drag term must be doing real work, and
+    0.08 must be near the optimum rather than an arbitrary small number."""
+    pos, vel, vz, alt = _envelope()
+    truth = _truth(pos, vel, vz, alt)
+    no_drag = torch.linalg.norm(truth - _nominal(pos, vel, vz, alt, cd=0.0), dim=-1).median().item()
+    tuned = torch.linalg.norm(truth - _nominal(pos, vel, vz, alt), dim=-1).median().item()
+    assert no_drag > 0.10, f"without the drag term the floor should be large, got {no_drag:.3f}"
+    assert tuned < no_drag / 3.0, "the calibrated drag term must remove most of the floor"
+
+
+def test_ignoring_the_payload_fall_geometry_biases_the_prediction_long():
+    """The payload starts below the drone and its impact is latched above the
+    ground, so a predictor that falls from drone altitude to z=0 always
+    over-predicts the range."""
+    pos, vel, vz, alt = _envelope()
+    truth = _truth(pos, vel, vz, alt)
+    right = _nominal(pos, vel, vz, alt)
+    wrong = _nominal(pos, vel, vz, alt, fall_offset=0.0)
+    along = torch.nn.functional.normalize(vel, dim=-1)
+    bias = ((wrong - truth) * along).sum(-1).median().item()
+    assert bias > 0.01, f"wrong geometry should over-shoot along track, got {bias:.3f} m"
+    assert torch.linalg.norm(right - truth, dim=-1).median() < torch.linalg.norm(wrong - truth, dim=-1).median()
+
+
+def test_drag_calibration_is_not_biased_toward_the_wrong_ballistic_coefficient():
+    """A first-order ``-Cd*v*t^2`` term cannot match a quadratic-drag ODE exactly,
+    so Cd has to be fitted -- and fitted to the PLANT's coefficient.
+
+    The first committed value (0.08) failed this: the prediction it produced was
+    closer to the truth for a payload 20% draggier than the real one, i.e. the
+    calibration had absorbed a bias instead of removing one. The optimum is
+    0.065-0.070."""
+    pos, vel, vz, alt = _envelope()
+    nominal = _nominal(pos, vel, vz, alt)
+    err = lambda bc: torch.linalg.norm(_truth(pos, vel, vz, alt, bc=bc) - nominal, dim=-1).median().item()  # noqa: E731
+    at_plant, lighter, draggier = err(0.05), err(0.04), err(0.06)
+    assert at_plant < lighter and at_plant < draggier, (
+        f"Cd={_CD_NOMINAL} is fitted to the wrong coefficient: "
+        f"0.04 -> {lighter:.4f}, 0.05 -> {at_plant:.4f}, 0.06 -> {draggier:.4f}")
+
+
+def test_ballistic_coefficient_is_a_minor_axis_and_cannot_be_widened_into_a_major_one():
+    """Records a measured fact the paper must not misstate.
+
+    The plan originally leaned on the payload ballistic coefficient as the
+    source of the "unobservable" disturbance the residual recovers. Measurement
+    says it contributes ~6% of the model error at DR_SCALE 1.0, and it cannot be
+    scaled up into a major axis: the entire effect it modulates (drag on the
+    payload's own velocity) is at most 0.33 m inside the release envelope, so
+    even +-100% stays around p50 0.044 m. The unobservable disturbance is the
+    wind and the release latency."""
+    pos, vel, vz, alt = _envelope()
+    nominal = _nominal(pos, vel, vz, alt)
+    spread = lambda rel: torch.linalg.norm(  # noqa: E731
+        _truth(pos, vel, vz, alt, bc=0.05 * (1.0 + rel)) - nominal, dim=-1).median().item()
+    assert spread(0.20) < 0.05, "a +-20% ballistic coefficient is a small axis, by measurement"
+    assert spread(1.00) < 0.15, "widening it does not turn it into a major axis"
+    assert spread(1.00) > spread(0.20), "it must still be monotone — it is a real axis, just a small one"
+
+
+# =====================================================================
 # Guards: overshoot dormancy/reachability, stagnation
 # =====================================================================
 

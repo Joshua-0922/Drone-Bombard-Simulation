@@ -52,6 +52,7 @@ from isaaclab_assets import CRAZYFLIE_CFG
 from .mdp.domain_rand import (
     sample_drag_coefficient,
     sample_wind,
+    sample_wind_capped,
     sample_target_velocity,
     sample_target_accel,
     sample_target_turn_rate,
@@ -97,6 +98,9 @@ class DroneBombardObsCfg:
     pos_scale: float = 50.0
     vel_scale: float = 15.0
     ang_vel_scale: float = math.pi
+    wind_scale: float = 6.0
+    """Normalizer for the wind observation channels, used only when
+    ``model_err.observe_wind`` is on (the ablation arm)."""
 
 
 @configclass
@@ -251,12 +255,133 @@ class DroneBombardAssetCfg:
 
 
 @configclass
+class DroneBombardModelErrorCfg:
+    """A-GROUP domain randomization — the axes that make the CCIP prediction WRONG
+    and therefore create what the learned residual has to discover.
+
+    This is the ONLY group ``scale`` multiplies. Keeping it separate from the
+    sensor/actuator group (``DroneBombardDynDRCfg``, the C group) is what makes
+    the paper's headline sweep interpretable: turning the model error up or down
+    must not also change how noisy the drone's sensors are.
+
+    Every axis here must satisfy two properties, or it does not belong:
+      1. it is NOT measurable by the vehicle at release time, and
+      2. it moves the payload's true impact point away from the nominal CCIP.
+
+    ``wind`` is the weakest member on (1) — the wind pushes the airframe
+    (``wind_force_enabled``), so a policy can partially infer it from its own
+    tracking error during the approach. That is deliberate and is the subject of
+    the ``observe_wind`` ablation. ``payload_bc_rel`` and ``release_delay_std``
+    are strictly unobservable, and the delay additionally scales its error with
+    release speed, which is what creates the speed/accuracy trade-off the paper
+    measures against delivery time.
+
+    Deliberately NOT here:
+      * payload MASS — free flight depends on drag and mass only through the
+        ratio k/m, so mass and drag coefficient are ONE axis, already covered by
+        ``payload_bc_rel``. Listing both would double-count the same physics and
+        break the meaning of ``scale``.
+      * payload CoM offset — the payload rides on a kinematic weld and the drone
+        body mass is authored once at spawn, so a payload-side CoM offset never
+        reaches the drone's solver (Rule 24b). No mechanism, no axis.
+      * the NOMINAL drag coefficient — that is a fixed, calibrated property of
+        the predictor (``payload_drag_coef_nominal``), not an uncertainty.
+
+    ``scale = 0`` makes every axis exactly identity WITHOUT drawing random
+    numbers, so the zero point of the sweep is a clean deterministic control.
+    """
+
+    scale: float = 1.0
+    """The sweep knob. Paper sweeps {0, 0.5, 1.0, 1.5}. Multiplies every
+    magnitude below. Sized 2026-08-27 against the measured drift: at 1.5 the
+    per-axis p90 drift is 0.72 m and the +-2 m residual authority saturates on
+    0.1% of releases; at 2.0 saturation reaches 1.4%."""
+
+    wind_std: float = 1.5
+    """m/s per horizontal axis. Sampled once per episode as N(0, wind_std*scale)
+    and held constant for the whole episode -- see the note on OU below."""
+
+    wind_max: float = 5.0
+    """Magnitude cap on the sampled wind vector, also scaled. Prevents the
+    Gaussian tail from producing drifts the residual cannot physically cover."""
+
+    payload_bc_rel: float = 0.20
+    """Payload ballistic coefficient k/m, U[1 - rel*scale, 1 + rel*scale].
+    Equivalent to randomizing the payload mass, with no PhysX write (Rule 19).
+
+    ⚠️ MEASURED 2026-08-27: this is a MINOR axis, contributing p50 0.012 m of the
+    0.188 m total model error at scale 1.0 -- about 6%. It cannot be made major
+    by widening it either: the whole effect it modulates (drag on the payload's
+    own velocity) is at most 0.33 m inside the release envelope, so even +-100%
+    only reaches p50 0.044 m. Do not describe it in the paper as the source of
+    the unobservable disturbance; that role belongs to the wind (p50 0.170 m,
+    90%) and the release latency (p50 0.058 m, 31%). It is kept because it is
+    free, genuinely unobservable, and constant within an episode."""
+
+    release_delay_mean: float = 0.22
+    """Seconds. Nominal hardware release latency -- the servo/solenoid does not
+    let go the instant the command is issued. This is MODELLED by the predictor,
+    so it is not itself an error source; ``release_delay_std`` is."""
+
+    release_delay_std: float = 0.05
+    """Seconds. N(mean, std*scale), clamped to >= 0. The unobservable part of the
+    latency.
+
+    Measured contribution at scale 1.0: p50 0.058 m, p90 0.222 m -- about 31% of
+    the total model error, second only to the wind. It is the STRONGEST axis that
+    is unobservable in principle (the wind, by contrast, pushes the airframe and
+    can be partially inferred from tracking error), and its error grows linearly
+    with release speed, which is what turns the paper's accuracy claim into a
+    speed/accuracy trade-off. Do not raise it past what release hardware
+    actually does -- an invented spread would buy a bigger effect at the cost of
+    the claim being about real hardware."""
+
+    observe_wind: bool = False
+    """Whether the true wind vector is handed to the policy as an observation.
+
+    Default False. Real vehicles estimate the wind at their OWN altitude from
+    attitude/thrust bias, but cannot know the wind below them, the gust during
+    the payload's fall, or the payload's actual ballistic coefficient. Handing
+    the policy the exact wind makes the paper's third claim (the residual
+    recovers disturbances that are not measured) vacuously false. The switch is
+    kept so the ablation can report both arms."""
+
+
+@configclass
 class DroneBombardDropCfg:
     gravity: float = 9.81
     release_tolerance: float = 0.2  # metres — was drop_calculator_node `drop_tolerance`
-    release_delay: float = 0.1  # seconds — was drop_calculator_node `mechanism_delay`
+    release_delay: float = 0.0
+    """DEPRECATED legacy predictor constant, kept at 0 so the retired v11-v20
+    lineage still runs for reproduction. The live latency is
+    ``model_err.release_delay_mean`` (modelled) plus ``release_delay_std``
+    (unobservable), and it is implemented in the PLANT -- see
+    ``DroneBombardEnv.request_release``. This used to default to 0.1 s while the
+    simulator released instantly, which injected ~0.5 m of phantom horizontal
+    carry into every prediction with no counterpart in the physics."""
+
     residual_enabled: bool = False  # Phase-2 hook; MUST stay False for Phase-1 bit-parity
     payload_mount_offset_z: float = -0.14  # bookkeeping/visual only (analytic payload)
+
+    payload_drag_coef_nominal: float = 0.07
+    """First-order drag coefficient the NOMINAL CCIP uses, in 1/m. NOT randomized.
+
+    The payload inherits the drone's horizontal velocity at release and is then
+    decelerated by drag acting on THAT velocity. Inside the release envelope
+    (speed <= 5 m/s, altitude 3-8 m) that costs 0.04 m of range at 1 m/s rising
+    to 0.33 m at 5 m/s. Small in absolute terms, but it is a SYSTEMATIC term the
+    drone could always have computed -- it measures its own velocity -- so
+    leaving it out is a model deficiency, not an uncertainty, and it was the
+    largest remaining piece of the deterministic error floor once the phantom
+    release-delay carry and the fall geometry were fixed.
+
+    Calibrated 2026-08-27 by fitting ``ballistic_impact``'s
+    ``-drag_coef * vel_xy * t^2`` term against the integrated truth over the
+    envelope. The optimum is 0.065-0.070 (p50 0.010 m); 0.08, the value first
+    committed, was the edge of too coarse a search grid and left p50 at 0.014 m
+    with a bias that made the prediction track a HIGHER ballistic coefficient
+    than the plant's. Recalibrate if ``payload_phys_drag_k`` or
+    ``payload_phys_mass`` change -- ``tests/test_math.py`` pins the fit."""
 
 
 @configclass
@@ -308,7 +433,12 @@ class DroneBombardDynDRCfg:
     ctrl_mass_rel: float = 0.05        # controller mass belief vs the authored mass
     kp_vel_rel: float = 0.10           # outer loop: velocity P gains
     k_att_rate_rel: float = 0.10       # inner loop: attitude P + rate P gains
-    payload_bc_rel: float = 0.20       # payload ballistic coefficient (== payload mass)
+    # NOTE: payload_bc_rel used to live here. It moved to
+    # DroneBombardModelErrorCfg (the A group) on 2026-08-27, because it is a
+    # MODEL-ERROR axis, not a sensor/actuator one: leaving it here meant the
+    # paper's DR_SCALE sweep could not change the model error without also
+    # changing the sensor noise. Everything remaining in this class is held
+    # FIXED across that sweep.
 
     # --- two-timescale observation noise (on the NORMALIZED obs vector) ---
     obs_noise_std: float = 0.01        # per policy step
@@ -513,7 +643,8 @@ class DroneBombardEnvCfg(DirectRLEnvCfg):
     drop: DroneBombardDropCfg = DroneBombardDropCfg()
     controller: DroneBombardControllerCfg = DroneBombardControllerCfg()
     phase_cfg: DroneBombardPhaseCfg = DroneBombardPhaseCfg()
-    dyn_dr: DroneBombardDynDRCfg = DroneBombardDynDRCfg()
+    dyn_dr: DroneBombardDynDRCfg = DroneBombardDynDRCfg()       # C group (sensor/actuator) — fixed across the sweep
+    model_err: DroneBombardModelErrorCfg = DroneBombardModelErrorCfg()  # A group — the only group DR_SCALE scales
 
     # Visualization markers (payload cylinder under the drone + target X on the
     # ground). Off by default so training pays no marker cost; turn on for
@@ -705,6 +836,13 @@ class DroneBombardEnv(DirectRLEnv):
         self._kp_vel_scale = torch.ones(N, device=device)
         self._k_att_rate_scale = torch.ones(N, device=device)
         self._payload_bc_scale = torch.ones(N, device=device)
+        # Per-episode release latency in seconds (A group). The plant holds the
+        # drop command for this long before actually detaching; the predictor
+        # models only the NOMINAL mean, so the deviation is real model error.
+        self._release_delay = torch.full((N,), self.cfg.model_err.release_delay_mean, device=device)
+        # Countdown for a drop command that has been issued but not yet acted on.
+        # NaN-free sentinel: negative means "no pending release".
+        self._release_pending = torch.full((N,), -1.0, device=device)
         self._obs_bias = torch.zeros(N, int(self.cfg.observation_space), device=device)
         self._act_bias = torch.zeros(N, 4, device=device)
         print(f"[DroneBombardEnv] control mass={self._ctrl_mass_nominal:.3f}kg max_thrust={self._max_thrust:.2f}N "
@@ -942,6 +1080,61 @@ class DroneBombardEnv(DirectRLEnv):
         if self.cfg.payload_physics_enabled:
             self._step_payload_physics()
 
+    def _nominal_impact(
+        self,
+        pos_xy: torch.Tensor,
+        vel_xy: torch.Tensor,
+        vel_z: torch.Tensor,
+        altitude: torch.Tensor,
+    ) -> torch.Tensor:
+        """THE nominal CCIP prediction. Every predictor call site must go through
+        here -- the policy's observation, the release gate, the scripted
+        baselines, the metrics. One entry point is the only thing that stops the
+        predictor and the plant from drifting apart again (Rule 30/31).
+
+        Three things this does that a bare ``ballistic_impact`` call does not:
+
+        1. **Models the release latency by propagating the state**, not by adding
+           horizontal carry. The plant now really holds the drop for
+           ``release_delay`` seconds (see ``_step_release_latency``), during
+           which the drone keeps moving AND keeps descending. Advancing position
+           and altitude together is exact for constant velocity, where the old
+           ``(v + w) * (t_fall + tau)`` term silently assumed the altitude did
+           not change. Only the NOMINAL mean is modelled: the per-episode
+           deviation is unobservable and is exactly what the residual must learn.
+
+        2. **Uses the payload's fall geometry, not the drone's.** The payload
+           hangs ``payload_mount_z`` below the body and the plant latches its
+           impact at ``payload_ground_z + payload_land_eps``, so the real fall is
+           0.24 m shorter than "drone altitude to zero".
+
+        3. **Includes drag on the payload's own inherited velocity.** Worth about
+           1 m of range at 6 m/s. This is not wind and not an unknown -- the
+           drone measures its own velocity -- so a model that omits it is simply
+           deficient. See ``DroneBombardDropCfg.payload_drag_coef_nominal``.
+
+        With all three, the nominal error at ``model_err.scale == 0`` is p50
+        0.015 m (was 0.439 m), so the zero point of the DR_SCALE sweep is a real
+        zero and everything above it is the randomization talking.
+
+        Deliberately does NOT know the wind or the true ballistic coefficient --
+        those are the residual's job. For the ground truth (T3 oracle), use
+        ``math_utils.integrate_payload_impact`` instead.
+        """
+        dc = self.cfg.drop
+        tau = self.cfg.model_err.release_delay_mean
+        if tau > 0.0:
+            pos_xy = pos_xy + vel_xy * tau
+            altitude = altitude + vel_z * tau
+        fall_alt = altitude + self.cfg.payload_mount_z - (
+            self.cfg.payload_ground_z + self.cfg.payload_land_eps)
+        drag = torch.full_like(altitude, dc.payload_drag_coef_nominal)
+        return ballistic_impact(
+            pos_xy, vel_xy, vel_z, fall_alt,
+            0.0,  # latency already applied by propagating the state above
+            dc.gravity, drag, torch.zeros_like(pos_xy),
+        )
+
     @property
     def payload_bc_over_m(self) -> torch.Tensor:
         """Per-env ballistic coefficient k/m of the released payload, in 1/m.
@@ -959,6 +1152,49 @@ class DroneBombardEnv(DirectRLEnv):
         """
         return (self.cfg.payload_phys_drag_k * self._payload_bc_scale) / self.cfg.payload_phys_mass
 
+    def request_release(self, fire: torch.Tensor) -> None:
+        """Command a payload release. The payload does NOT detach on this call.
+
+        Real release mechanisms (servo, solenoid, electromagnet) take time to let
+        go, and that latency is both non-zero and not perfectly repeatable. So a
+        drop command arms a countdown of ``_release_delay`` seconds
+        (``N(release_delay_mean, release_delay_std * DR_SCALE)``, sampled per
+        episode) and ``_step_release_latency`` detaches when it expires.
+
+        Before 2026-08-27 ``release_delay`` was a constant inside the prediction
+        formula with no counterpart in the plant -- the payload detached the same
+        step the command was issued -- which injected ~0.5 m of phantom carry
+        into every prediction and made the "delay" untestable. Now the plant owns
+        the latency and the predictor models only its mean, so the deviation is a
+        genuine, unobservable model error that grows with release speed.
+
+        Idempotent: rows that already have a pending release, or whose payload is
+        already free or gone, are ignored.
+        """
+        armable = fire & (self._release_pending < 0.0) & self._payload_attached & (~self._payload_free)
+        if bool(armable.any()):
+            self._release_pending = torch.where(armable, self._release_delay, self._release_pending)
+
+    def _step_release_latency(self, dt: float) -> torch.Tensor:
+        """Tick the pending-release countdowns by one physics step and detach the
+        payloads whose latency has expired. Returns the boolean mask of rows that
+        detached on THIS tick (empty mask if none).
+
+        The countdown is stored in seconds rather than steps so the behaviour is
+        invariant to the physics rate.
+        """
+        pending = self._release_pending >= 0.0
+        if not bool(pending.any()):
+            return torch.zeros_like(pending)
+        self._release_pending = torch.where(pending, self._release_pending - dt, self._release_pending)
+        fired = pending & (self._release_pending <= 0.0)
+        if bool(fired.any()):
+            self._payload_attached = self._payload_attached & (~fired)
+            self._payload_free = self._payload_free | fired
+            self._release_pending = torch.where(fired, torch.full_like(self._release_pending, -1.0),
+                                                self._release_pending)
+        return fired
+
     def _step_payload_physics(self):
         """v16: carry the payload under the drone until release, then let it fall
         under gravity + wind drag and record where it lands. Runs at physics rate
@@ -967,6 +1203,11 @@ class DroneBombardEnv(DirectRLEnv):
         _payload_free is flipped True by the env's release logic on the drop step.
         """
         origins = self.scene.env_origins
+
+        # Tick pending release latencies FIRST, so a payload whose latency
+        # expires this tick stops being re-seated under the drone below and
+        # starts falling from exactly where it was let go.
+        self._step_release_latency(self.cfg.sim.dt)
 
         # carried (attached, not yet released): kinematically ride the drone.
         carried = self._payload_attached & ~self._payload_free
@@ -1356,7 +1597,7 @@ class DroneBombardEnv(DirectRLEnv):
         vel_xy = vel[:, :2]
         altitude = pos[:, 2]
 
-        pred_impact = predict_impact_nominal(pos_xy, vel_xy, vel[:, 2], altitude, dc.release_delay, dc.gravity)
+        pred_impact = self._nominal_impact(pos_xy, vel_xy, vel[:, 2], altitude)
         aim_err = torch.linalg.norm(pred_impact - self._target_xy, dim=-1)
         self._aim_err_min = torch.minimum(self._aim_err_min, aim_err)
         self._aim_err_last = aim_err
@@ -1415,11 +1656,11 @@ class DroneBombardEnv(DirectRLEnv):
         altitude = pos[:, 2]
 
         # On-board prediction: nominal CCIP + learned residual (metres).
-        pred_nominal = predict_impact_nominal(pos_xy, vel_xy, vel[:, 2], altitude, dc.release_delay, dc.gravity)
+        pred_nominal = self._nominal_impact(pos_xy, vel_xy, vel[:, 2], altitude)
         pred_impact = apply_ccip_residual(pred_nominal, self._residual_action, pc.residual_scale)
 
         # Aim point = target position at the predicted impact time (lead).
-        t_impact = time_to_fall(altitude, vel[:, 2], dc.gravity) + dc.release_delay
+        t_impact = time_to_fall(altitude, vel[:, 2], dc.gravity) + self.cfg.model_err.release_delay_mean
         target_at_impact = self._target_xy + self._target_vel_xy * t_impact.unsqueeze(-1)
 
         aim_err = torch.linalg.norm(pred_impact - target_at_impact, dim=-1)
@@ -1702,6 +1943,7 @@ class DroneBombardEnv(DirectRLEnv):
         # re-seats a carried payload under the drone on the next physics tick.
         self._payload_free[env_ids] = False
         self._payload_landed[env_ids] = False
+        self._release_pending[env_ids] = -1.0
         self._payload_impact_xy[env_ids] = 0.0
         self._release_target_xy[env_ids] = 0.0
         self._aim_err_min[env_ids] = float("inf")
@@ -1710,12 +1952,29 @@ class DroneBombardEnv(DirectRLEnv):
 
         self._action_sat_sum[env_ids] = 0.0
 
-        # Domain randomization (model mismatch) is active only in Phase 2+;
-        # the moving-target velocity only in Phase 3. Off -> identity (zero),
-        # so Phase 1 reduces to the drag-free/wind-free stationary-target task.
+        # ---- A GROUP: the model-error axes, and the ONLY ones DR_SCALE scales.
+        # Sampled here for every lineage (there is no second wind sampler
+        # anywhere; the old per-version v14_dr block was removed 2026-08-27).
+        # scale == 0 gives exact identity without drawing RNG, so the zero point
+        # of the sweep is a clean deterministic control.
+        me = self.cfg.model_err
+        me_on = me.scale > 0.0
+        self._wind_xy[env_ids] = sample_wind_capped(
+            n, device, me.wind_std * me.scale, me.wind_max * me.scale, me_on)
+        self._payload_bc_scale[env_ids] = sample_scale(n, device, me.payload_bc_rel * me.scale, me_on)
+        # Release latency: the MEAN is modelled by the predictor (so it is not
+        # itself an error), the deviation is not. Clamped at 0 -- a negative
+        # latency would release before the command.
+        self._release_delay[env_ids] = torch.clamp(
+            me.release_delay_mean
+            + sample_bias(n, 1, device, me.release_delay_std * me.scale, me_on).squeeze(-1),
+            min=0.0)
+        # _drag_coef is NOT randomized any more. It is the predictor's calibrated
+        # first-order drag constant (cfg.drop.payload_drag_coef_nominal), applied
+        # in _nominal_impact; the plant's drag comes from payload_bc_over_m.
+        self._drag_coef[env_ids] = 0.0
+
         pc = self.cfg.phase_cfg
-        self._drag_coef[env_ids] = sample_drag_coefficient(pc, n, device, self.cfg.dr_enabled)
-        self._wind_xy[env_ids] = sample_wind(pc, n, device, self.cfg.dr_enabled)
         moving = self.cfg.moving_target_enabled
         self._target_vel_xy[env_ids] = sample_target_velocity(pc, n, device, moving)
         # Per-episode motion-model parameters. Sampled only for the model
@@ -1734,7 +1993,6 @@ class DroneBombardEnv(DirectRLEnv):
         self._ctrl_mass[env_ids] = self._ctrl_mass_nominal * sample_scale(n, device, dd.ctrl_mass_rel, on)
         self._kp_vel_scale[env_ids] = sample_scale(n, device, dd.kp_vel_rel, on)
         self._k_att_rate_scale[env_ids] = sample_scale(n, device, dd.k_att_rate_rel, on)
-        self._payload_bc_scale[env_ids] = sample_scale(n, device, dd.payload_bc_rel, on)
         self._obs_bias[env_ids] = sample_bias(n, self._obs_bias.shape[-1], device, dd.obs_bias_std, on)
         self._act_bias[env_ids] = sample_bias(n, 4, device, dd.act_bias_std, on)
 
@@ -1784,6 +2042,11 @@ class DroneBombardEnv(DirectRLEnv):
             "target_xy": self._target_xy[env_ids].clone(),
             "drag_coef": self._drag_coef[env_ids].clone(),
             "wind_xy": self._wind_xy[env_ids].clone(),
+            # The two A-group parameters that actually decide where the payload
+            # lands and that the policy cannot observe. Recorded per episode so a
+            # DR_SCALE sweep can be analysed against what was really sampled.
+            "payload_bc_scale": self._payload_bc_scale[env_ids].clone(),
+            "release_delay": self._release_delay[env_ids].clone(),
             "released": self._released[env_ids].clone(),
             "release_impact_err": self._release_impact_err[env_ids].clone(),
             "release_aim_xy": self._release_aim_xy[env_ids].clone(),
@@ -1823,7 +2086,7 @@ class DroneBombardEnv(DirectRLEnv):
         dc = self.cfg.drop
         impact = ballistic_impact(
             snap["final_pos_xy"], snap["final_vel_xy"], snap["final_vel_z"], snap["final_alt"],
-            dc.release_delay, dc.gravity, snap["drag_coef"], snap["wind_xy"],
+            0.0, dc.gravity, snap["drag_coef"], snap["wind_xy"],
         )
         if dc.residual_enabled:
             # Phase-2 only: the residual conditions on the terminal

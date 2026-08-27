@@ -4,6 +4,7 @@ from .domain_rand import (
     sample_scale,
     sample_uniform,
     sample_wind,
+    sample_wind_capped,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "sample_scale",
     "sample_uniform",
     "sample_wind",
+    "sample_wind_capped",
 ]

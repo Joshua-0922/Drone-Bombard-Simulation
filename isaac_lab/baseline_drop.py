@@ -61,7 +61,9 @@ parser = argparse.ArgumentParser(description="Rule-based release baselines (T0-T
 parser.add_argument("--arm", type=str, default="argmin",
                     choices=["hover", "ccip", "argmin", "oracle"],
                     help="Release rule: T0 hover / T1 ccip / T2 argmin / T3 oracle.")
-parser.add_argument("--task", type=str, default="Isaac-DroneBombard-V20-Direct-v0")
+parser.add_argument("--task", type=str, default="Isaac-DroneBombard-Task-v0")
+parser.add_argument("--dr_scale", type=float, default=None,
+                    help="A-group DR strength. Must match the learned arm being compared against.")
 parser.add_argument("--episodes", type=int, default=200)
 parser.add_argument("--num_envs", type=int, default=200,
                     help="Paired evaluation needs num_envs >= episodes.")
@@ -112,12 +114,12 @@ def _perceived(u: torch.nn.Module, pos_xy: torch.Tensor) -> torch.Tensor:
     """The target the POLICY would see: the pixel-quantized / reveal-gated
     estimate when the env models perception, the true marker otherwise."""
     p = getattr(u, "_perceived_target_xy", None)
-    if p is None or not bool(getattr(u.cfg, "pixel_vision_enabled", False)):
+    if p is None or not bool(u.cfg.perception.pixel_quantize):
         return u._target_xy
     return p
 
 
-def _predict_series(pos_xy, vel_xy, alt, vz, dc, steps, dt):
+def _predict_series(u, pos_xy, vel_xy, alt, vz, steps, dt):
     """Constant-velocity roll-out of the CCIP prediction over a short horizon.
 
     The honest analogue of AeroThrow's NMPC-horizon propagation: we have no
@@ -132,7 +134,7 @@ def _predict_series(pos_xy, vel_xy, alt, vz, dc, steps, dt):
         # vz is carried through the roll-out (constant-velocity extrapolation),
         # so the CCIP at each horizon step uses the descent rate the vehicle
         # would actually have there — see math_utils.ballistic_impact HISTORY.
-        out.append(predict_impact_nominal(p_k, vel_xy, vz, a_k, dc.release_delay, dc.gravity))
+        out.append(u._nominal_impact(p_k, vel_xy, vz, a_k))
     return torch.stack(out, dim=1)  # [N, steps+1, 2]
 
 
@@ -143,9 +145,9 @@ class BaselineController:
         self.u, self.arm = u, arm
         self.dt = u.cfg.sim.dt * u.cfg.decimation
         self.act_dim = int(u.cfg.action_space)
-        self.res_scale = float(getattr(u.cfg, "v14_residual_scale", 0.0))
-        self.has_residual = self.act_dim >= 7 and bool(getattr(u.cfg, "v14_residual", False))
-        self.gate_radius = float(getattr(u.cfg, "release_radius", 1.0))
+        self.res_scale = float(u.cfg.residual.scale)
+        self.has_residual = self.act_dim >= 7 and bool(u.cfg.residual.enabled)
+        self.gate_radius = float(u.cfg.release.radius)
 
     # -------- privileged residual (T3 only) --------
     def _oracle_residual(self, pos_xy, vel_xy, alt, vz):
@@ -167,11 +169,19 @@ class BaselineController:
         reading it would be claiming knowledge of a parameter that does not act
         on the outcome."""
         u, dc = self.u, self.u.cfg.drop
-        nominal = predict_impact_nominal(pos_xy, vel_xy, vz, alt, dc.release_delay, dc.gravity)
+        nominal = u._nominal_impact(pos_xy, vel_xy, vz, alt)
         if bool(getattr(u.cfg, "payload_physics_enabled", False)):
+            # Privileged: the oracle knows this episode's ACTUAL release latency,
+            # not just its nominal mean, so it propagates the state by the true
+            # tau before integrating the fall. That difference -- true tau vs
+            # modelled mean -- is one of the things the learned residual has to
+            # discover without being told.
+            tau = u._release_delay.unsqueeze(-1)
+            pos_rel = pos_xy + vel_xy * tau
+            alt_rel = alt + vz * u._release_delay
             real = integrate_payload_impact(
-                pos_xy, vel_xy, vz, alt + u.cfg.payload_mount_z, u._wind_xy,
-                u.payload_bc_over_m, dc.gravity,
+                pos_rel, vel_xy, vz, alt_rel + u.cfg.payload_mount_z, u._wind_xy,
+                u.payload_bc_over_m, u.cfg.drop.gravity,
                 ground_z=u.cfg.payload_ground_z + u.cfg.payload_land_eps,
                 dt=u.cfg.sim.dt,
             )
@@ -179,7 +189,7 @@ class BaselineController:
             # No payload body: the env's own referee scores the drop with
             # ballistic_impact, so the analytic form IS the plant here and
             # reading it is exact rather than a fallback approximation.
-            real = ballistic_impact(pos_xy, vel_xy, vz, alt, dc.release_delay, dc.gravity,
+            real = ballistic_impact(pos_xy, vel_xy, vz, alt, 0.0, dc.gravity,
                                     u._drag_coef, u._wind_xy)
         drift = real - nominal                       # where the payload really goes
         if self.res_scale <= 0.0:
@@ -206,14 +216,14 @@ class BaselineController:
             return ((d_xy <= args_cli.hover_radius) & (speed_xy <= args_cli.hover_speed)
                     & (vz.abs() <= 1.0))
 
-        nominal = predict_impact_nominal(pos_xy, vel_xy, vz, alt, dc.release_delay, dc.gravity)
+        nominal = u._nominal_impact(pos_xy, vel_xy, vz, alt)
         if self.arm == "ccip":
             # T1: first admissible instant.
             return err_of(nominal) <= self.gate_radius
 
         # T2/T3: fire when the predicted-impact error is at its horizon minimum
         # NOW (AeroThrow Alg. 1) and that minimum is admissible.
-        series = _predict_series(pos_xy, vel_xy, alt, vz, dc, args_cli.horizon, self.dt)
+        series = _predict_series(u, pos_xy, vel_xy, alt, vz, args_cli.horizon, self.dt)
         errs = torch.linalg.norm(
             series + (residual * self.res_scale).unsqueeze(1) - aim_xy.unsqueeze(1), dim=-1)
         return (errs.argmin(dim=1) == 0) & (errs[:, 0] <= self.gate_radius)
@@ -279,10 +289,13 @@ def main():
         env_cfg.moving_target_force = True
     if args_cli.target_motion is not None:
         env_cfg.phase_cfg.target_motion_model = args_cli.target_motion
-    if args_cli.no_handoff_dr and hasattr(env_cfg, "handoff"):
-        env_cfg.handoff.enabled = False
+    if args_cli.no_handoff_dr:
+        env_cfg.handoff.randomize = False
     if args_cli.no_dyn_dr:
         env_cfg.dyn_dr.enabled = False
+    if args_cli.dr_scale is not None:
+        env_cfg.model_err.scale = args_cli.dr_scale
+    env_cfg.__post_init__()
 
     env = gym.make(args_cli.task, cfg=env_cfg)
     u = env.unwrapped

@@ -4,16 +4,7 @@ import gymnasium as gym
 
 from . import agents
 from .drone_bombard_env import DroneBombardEnv, DroneBombardEnvCfg
-from .v11_env import (
-    DroneBombardV11Env, DroneBombardV11Cfg, DroneBombardV12Cfg,
-    DroneBombardV13Env, DroneBombardV13Cfg,
-    DroneBombardV14Env, DroneBombardV14Cfg, DroneBombardV15Cfg,
-    DroneBombardV16Env, DroneBombardV16Cfg,
-    DroneBombardV17Env, DroneBombardV17Cfg,
-    DroneBombardV18Env, DroneBombardV18Cfg,
-    DroneBombardV19Env, DroneBombardV19Cfg,
-    DroneBombardV20Cfg,
-)
+from .task_env import DroneBombardTaskEnv, DroneBombardTaskCfg
 
 gym.register(
     id="Isaac-DroneBombard-Direct-v0",
@@ -30,134 +21,32 @@ gym.register(
 )
 
 gym.register(
-    # Isaac-v11 relaxed test: single integrated phase, fixed marker ahead in the
-    # cruise direction, policy drop_signal + release envelope, nominal physics.
-    # See drone_bombard/v11_env.py and final_integrated_document_set/53.
-    id="Isaac-DroneBombard-V11-Direct-v0",
-    entry_point="drone_bombard.v11_env:DroneBombardV11Env",
+    # THE task. Cruise handoff -> acquire the marker -> aim with CCIP + learned
+    # impact residual -> release inside the envelope -> scored on the payload's
+    # REAL landing point. Replaces the retired Isaac-DroneBombard-V11..V20 chain
+    # (see task_env.py's module docstring for why that chain was retired).
+    #
+    # Domain randomization is configured on the BASE cfg, in two groups that are
+    # deliberately independent: `model_err` (A group -- wind, payload ballistic
+    # coefficient, release latency; the ONLY group `model_err.scale` scales) and
+    # `dyn_dr` (C group -- controller mass belief, gains, sensor/actuator noise;
+    # held FIXED across the sweep). Scenario spread is `handoff` (B group).
+    id="Isaac-DroneBombard-Task-v0",
+    entry_point="drone_bombard.task_env:DroneBombardTaskEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": DroneBombardV11Cfg,
+        "env_cfg_entry_point": DroneBombardTaskCfg,
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
     },
 )
 
-gym.register(
-    # v12: v11 + random marker inside a 5 m disk around the 20 m point.
-    # Same env class (DroneBombardV11Env); only the cfg toggles marker_random.
-    id="Isaac-DroneBombard-V12-Direct-v0",
-    entry_point="drone_bombard.v11_env:DroneBombardV11Env",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": DroneBombardV12Cfg,
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
-    },
-)
-
-gym.register(
-    # v13: v12 + partial observability. Blind +X cruise until within reveal_radius
-    # (horizontal) of the random marker; marker obs masked + penalized until then.
-    # Uses DroneBombardV13Env (25-D obs, reward gated on detection).
-    id="Isaac-DroneBombard-V13-Direct-v0",
-    entry_point="drone_bombard.v11_env:DroneBombardV13Env",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": DroneBombardV13Cfg,
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
-    },
-)
-
-gym.register(
-    # v14: v12 + domain randomization (wind/drag) + learned CCIP residual
-    # (action[5:7]). obs 27-D (wind/drag observable — Stage A of the wind trap).
-    id="Isaac-DroneBombard-V14-Direct-v0",
-    entry_point="drone_bombard.v11_env:DroneBombardV14Env",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": DroneBombardV14Cfg,
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
-    },
-)
-
-gym.register(
-    # v15: v14 + the wind physically pushes the drone (airframe drag from the
-    # relative airflow), not just the payload's ballistic impact.
-    id="Isaac-DroneBombard-V15-Direct-v0",
-    entry_point="drone_bombard.v11_env:DroneBombardV14Env",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": DroneBombardV15Cfg,
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
-    },
-)
-
-gym.register(
-    # v16: v12 + a real physics payload that is dropped and lands (land-terminal).
-    id="Isaac-DroneBombard-V16-Direct-v0",
-    entry_point="drone_bombard.v11_env:DroneBombardV16Env",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": DroneBombardV16Cfg,
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
-    },
-)
-
-gym.register(
-    # v17: v13 + pixel-quantized vision (position snapped to a distance-scaled cell).
-    id="Isaac-DroneBombard-V17-Direct-v0",
-    entry_point="drone_bombard.v11_env:DroneBombardV17Env",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": DroneBombardV17Cfg,
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
-    },
-)
-
-gym.register(
-    # v18: staged integration #1 — perception (v17) + physics (v14/v15).
-    id="Isaac-DroneBombard-V18-Direct-v0",
-    entry_point="drone_bombard.v11_env:DroneBombardV18Env",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": DroneBombardV18Cfg,
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
-    },
-)
-
-gym.register(
-    # v19: staged integration #3 — v18 (perception+physics) + real physical drop (v16).
-    id="Isaac-DroneBombard-V19-Direct-v0",
-    entry_point="drone_bombard.v11_env:DroneBombardV19Env",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": DroneBombardV19Cfg,
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
-    },
-)
-
-gym.register(
-    # v20: v19 + P0 generalization pass — randomized handoff (heading/speed/
-    # altitude/offset/attitude/rates) + dynamics & sensing DR (mass belief,
-    # controller gains, payload ballistic coefficient, obs/action noise+bias).
-    # Same env class and same 28-D obs / 7-D action as v19, so v19 checkpoints
-    # warm-start losslessly.
-    id="Isaac-DroneBombard-V20-Direct-v0",
-    entry_point="drone_bombard.v11_env:DroneBombardV19Env",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": DroneBombardV20Cfg,
-        "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:DroneBombardPPORunnerCfg",
-    },
-)
+# The v11-v20 task registrations were removed on 2026-08-27. `v11_env.py` itself
+# is KEPT and still imports: exp_022 and exp_024 are cited in the paper as
+# negative results (fixed initial conditions teach a representation, not a
+# skill), so the code that produced them has to stay readable. It is simply no
+# longer reachable through gym.make, and no new code imports it.
 
 __all__ = [
     "DroneBombardEnv", "DroneBombardEnvCfg",
-    "DroneBombardV11Env", "DroneBombardV11Cfg", "DroneBombardV12Cfg",
-    "DroneBombardV13Env", "DroneBombardV13Cfg",
-    "DroneBombardV14Env", "DroneBombardV14Cfg", "DroneBombardV15Cfg",
-    "DroneBombardV16Env", "DroneBombardV16Cfg",
-    "DroneBombardV17Env", "DroneBombardV17Cfg",
-    "DroneBombardV18Env", "DroneBombardV18Cfg",
-    "DroneBombardV19Env", "DroneBombardV19Cfg",
-    "DroneBombardV20Cfg",
+    "DroneBombardTaskEnv", "DroneBombardTaskCfg",
 ]

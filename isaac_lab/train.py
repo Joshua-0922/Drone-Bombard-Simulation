@@ -93,61 +93,40 @@ parser.add_argument("--kf_tau", type=float, default=None,
                     help="Tracker: Gauss-Markov acceleration correlation time (s). Default 1.0.")
 parser.add_argument("--kf_sigma_a", type=float, default=None,
                     help="Tracker: steady-state maneuver-acceleration std (m/s^2). Default 1.0.")
-parser.add_argument("--v11_test", action="store_true",
-                    help="Isaac-v11 relaxed test env: single integrated phase, fixed marker ahead in "
-                         "the cruise direction, policy drop_signal + release envelope, nominal physics. "
-                         "Uses DroneBombardV11Cfg + Isaac-DroneBombard-V11-Direct-v0 (ignores --phase).")
-parser.add_argument("--v12", action="store_true",
-                    help="v11 first expansion: random marker inside a 5 m disk around the 20 m point "
-                         "(drone still cruises +X, steers to it). DroneBombardV12Cfg + "
-                         "Isaac-DroneBombard-V12-Direct-v0 (ignores --phase).")
-parser.add_argument("--v13", action="store_true",
-                    help="v12 + partial observability: blind +X cruise until within reveal_radius (7 m "
-                         "horizontal) of the random marker; marker obs masked + per-step penalty until "
-                         "detected. DroneBombardV13Cfg + Isaac-DroneBombard-V13-Direct-v0 (ignores --phase).")
-parser.add_argument("--v14", action="store_true",
-                    help="v12 + domain randomization (wind/drag) + learned CCIP residual on action[5:7]. "
-                         "obs 27-D (wind/drag observable = Stage A). DroneBombardV14Cfg + "
-                         "Isaac-DroneBombard-V14-Direct-v0 (ignores --phase).")
-parser.add_argument("--v15", action="store_true",
-                    help="v14 + the wind physically pushes the DRONE (airframe drag from the relative "
-                         "airflow), not just the payload ballistics. DroneBombardV15Cfg + "
-                         "Isaac-DroneBombard-V15-Direct-v0 (ignores --phase).")
-parser.add_argument("--v16", action="store_true",
-                    help="v12 + a REAL physics payload that is carried, dropped, and LANDS; the episode "
-                         "ends on the payload's actual landing and the reward is scored from it (not the "
-                         "analytic formula). DroneBombardV16Cfg + Isaac-DroneBombard-V16-Direct-v0.")
-parser.add_argument("--v17", action="store_true",
-                    help="v13 + pixel-quantized vision: within the reveal radius the marker is snapped to "
-                         "the centre of a pixel cell whose size grows with slant range (coarse far, fine "
-                         "near). DroneBombardV17Cfg + Isaac-DroneBombard-V17-Direct-v0.")
-parser.add_argument("--v18", action="store_true",
-                    help="Staged integration #1: perception (v17: random+reveal+pixel) + physics (v14/v15: "
-                         "DR+residual+airframe wind). obs 28-D, action 7-D, analytic drop. "
-                         "DroneBombardV18Cfg + Isaac-DroneBombard-V18-Direct-v0.")
-parser.add_argument("--v19", action="store_true",
-                    help="Staged integration #3: v18 (perception+physics) + REAL physical payload drop "
-                         "(v16). Land-terminal, reward from real landing. Warm-start from a v18 ckpt with "
-                         "--resume. DroneBombardV19Cfg + Isaac-DroneBombard-V19-Direct-v0.")
-parser.add_argument("--v20", action="store_true",
-                    help="P0 generalization pass: v19 + randomized handoff (heading/speed/altitude/entry "
-                         "offset/attitude/body rates) + dynamics & sensing DR (controller mass belief, "
-                         "controller gains, payload ballistic coefficient, obs/action noise + per-episode "
-                         "bias). Same 28-D obs / 7-D action as v19 -> v19 checkpoints warm-start losslessly. "
-                         "DroneBombardV20Cfg + Isaac-DroneBombard-V20-Direct-v0.")
+parser.add_argument("--task_env", action="store_true",
+                    help="THE delivery task (Isaac-DroneBombard-Task-v0). Cruise handoff -> acquire the "
+                         "marker -> aim with CCIP + learned impact residual -> release inside the envelope "
+                         "-> scored on the payload's REAL landing point. Replaces the retired v11..v20 "
+                         "chain; ignores --phase.")
+parser.add_argument("--dr_scale", type=float, default=None,
+                    help="A-GROUP domain-randomization strength (wind, payload ballistic coefficient, "
+                         "release-latency spread). THE sweep knob: paper sweeps 0 / 0.5 / 1.0 / 1.5. "
+                         "0 makes the CCIP model exact and the residual has nothing to learn. Does NOT "
+                         "touch the sensor/actuator group (--no_dyn_dr), which stays fixed across the sweep.")
+parser.add_argument("--observe_wind", action="store_true",
+                    help="Ablation arm: hand the policy the TRUE wind vector. Default is OFF -- a real "
+                         "vehicle can estimate the wind at its own altitude but not the wind during the "
+                         "payload's fall, and exposing it makes the 'residual recovers unmeasured "
+                         "disturbances' claim vacuous. Adds 2 obs dims.")
+parser.add_argument("--pixel_vision", action="store_true",
+                    help="Quantize the acquired marker position to a camera cell (vision extension). Default "
+                         "OFF for the main results: quantization contributes ~0.28 m of aiming error, which "
+                         "is LARGER than the ballistic model error the residual removes, so it buries the "
+                         "effect under study. The blind-cruise -> acquire -> turn scenario is unaffected.")
+parser.add_argument("--no_residual", action="store_true",
+                    help="Control arm: identical env and DR, but the learned impact residual is not applied "
+                         "-- isolates how much of the impact error the residual actually removes.")
 parser.add_argument("--no_handoff_dr", action="store_true",
-                    help="Ablation arm for --v20: keep the dynamics/sensing DR but restore the FIXED v19 "
-                         "handoff (isolates how much of any performance change is the handoff distribution).")
+                    help="Ablation arm: pin the handoff to its nominal (fixed heading/speed/altitude) while "
+                         "keeping every other randomization.")
 parser.add_argument("--no_dyn_dr", action="store_true",
-                    help="Ablation arm for --v20: keep the randomized handoff but restore the v19 plant "
-                         "(no mass-belief/gain/ballistic-coefficient mismatch, no obs/action noise).")
-parser.add_argument("--v18_hard", action="store_true",
-                    help="Phase 2 for --v18: tighten the eased Phase-1 params back to the full target "
-                         "(gate 1.0, residual_scale 3.0, wind_std 2.0, pixel_cell_k 0.15). Warm-start from "
-                         "a Phase-1 checkpoint with --resume.")
-parser.add_argument("--v14_no_residual", action="store_true",
-                    help="Control group for --v14: identical env/DR/obs/action, but the policy residual is "
-                         "NOT applied — isolates how much of the impact error the residual actually removes.")
+                    help="Ablation arm: restore an exact plant -- no mass-belief/gain mismatch, no "
+                         "obs/action noise. Independent of --dr_scale by construction.")
+parser.add_argument("--handoff_heading_deg", type=float, default=None,
+                    help="Half-width of the cruise-heading spread in degrees (default 30). WARNING: the "
+                         "observation is world-frame, so widening this is not a robustness knob -- it makes "
+                         "the task different in every rotation. exp_024 measured 100%% -> 8.5%% at 180. Only "
+                         "safe together with a heading-invariant observation frame.")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -256,11 +235,7 @@ from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper  # noqa: E402
 
 import drone_bombard  # noqa: F401,E402 - registers the task
 from drone_bombard.drone_bombard_env import DroneBombardEnvCfg  # noqa: E402
-from drone_bombard.v11_env import (  # noqa: E402
-    DroneBombardV11Cfg, DroneBombardV12Cfg, DroneBombardV13Cfg, DroneBombardV14Cfg,
-    DroneBombardV15Cfg, DroneBombardV16Cfg, DroneBombardV17Cfg, DroneBombardV18Cfg,
-    DroneBombardV19Cfg, DroneBombardV20Cfg,
-)
+from drone_bombard.task_env import DroneBombardTaskCfg  # noqa: E402
 from drone_bombard.agents.rsl_rl_ppo_cfg import DroneBombardPPORunnerCfg  # noqa: E402
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -272,62 +247,31 @@ def main():
 
     # --- env cfg (built directly — the path proven by verify_one_episode.py) ---
     task = args_cli.task
-    if args_cli.v20:
-        # P0: v19 + randomized handoff + dynamics/sensing DR.
-        task = "Isaac-DroneBombard-V20-Direct-v0"
-        env_cfg = DroneBombardV20Cfg()
+    if args_cli.task_env:
+        task = "Isaac-DroneBombard-Task-v0"
+        env_cfg = DroneBombardTaskCfg()
+
+        # A group -- the model error the residual exists to remove. This is the
+        # ONLY group --dr_scale touches, which is what makes the sweep readable.
+        if args_cli.dr_scale is not None:
+            env_cfg.model_err.scale = args_cli.dr_scale
+        env_cfg.model_err.observe_wind = args_cli.observe_wind
+
+        # B group -- scenario spread. Held fixed across the sweep.
         if args_cli.no_handoff_dr:
-            env_cfg.handoff.enabled = False
+            env_cfg.handoff.randomize = False
+        if args_cli.handoff_heading_deg is not None:
+            h = abs(args_cli.handoff_heading_deg)
+            env_cfg.handoff.heading_range_deg = (-h, h)
+
+        # C group -- sensor/actuator. Also held fixed across the sweep.
         if args_cli.no_dyn_dr:
             env_cfg.dyn_dr.enabled = False
-    elif args_cli.v19:
-        # staged integration #3: perception + physics + physical drop.
-        task = "Isaac-DroneBombard-V19-Direct-v0"
-        env_cfg = DroneBombardV19Cfg()
-    elif args_cli.v18:
-        # staged integration #1: perception + physics.
-        task = "Isaac-DroneBombard-V18-Direct-v0"
-        env_cfg = DroneBombardV18Cfg()
-        if args_cli.v18_hard:
-            # Phase 2: restore the full-difficulty target (warm-start via --resume).
-            env_cfg.release_radius = 1.0
-            env_cfg.v14_residual_scale = 3.0
-            env_cfg.v14_wind_std = 2.0
-            env_cfg.pixel_cell_k = 0.15
-    elif args_cli.v17:
-        # v13 + pixel-quantized vision.
-        task = "Isaac-DroneBombard-V17-Direct-v0"
-        env_cfg = DroneBombardV17Cfg()
-    elif args_cli.v16:
-        # v12 + physical payload drop (land-terminal).
-        task = "Isaac-DroneBombard-V16-Direct-v0"
-        env_cfg = DroneBombardV16Cfg()
-    elif args_cli.v15:
-        # v14 + wind physically acting on the airframe.
-        task = "Isaac-DroneBombard-V15-Direct-v0"
-        env_cfg = DroneBombardV15Cfg()
-        if args_cli.v14_no_residual:
-            env_cfg.v14_residual = False
-    elif args_cli.v14:
-        # v12 + DR (wind/drag) + learned CCIP residual (action[5:7]).
-        task = "Isaac-DroneBombard-V14-Direct-v0"
-        env_cfg = DroneBombardV14Cfg()
-        if args_cli.v14_no_residual:
-            # control group: same DR/obs/action, residual not applied
-            env_cfg.v14_residual = False
-    elif args_cli.v13:
-        # v12 + partial observability (blind cruise, reveal within 7 m).
-        task = "Isaac-DroneBombard-V13-Direct-v0"
-        env_cfg = DroneBombardV13Cfg()
-    elif args_cli.v12:
-        # v11 first expansion: random marker inside a disk (marker_random=True).
-        task = "Isaac-DroneBombard-V12-Direct-v0"
-        env_cfg = DroneBombardV12Cfg()
-    elif args_cli.v11_test:
-        # Isaac-v11 relaxed test: separate env class + cfg, single integrated
-        # phase (no --phase, no residual/DR/moving/vision — all kept inert).
-        task = "Isaac-DroneBombard-V11-Direct-v0"
-        env_cfg = DroneBombardV11Cfg()
+
+        env_cfg.residual.enabled = not args_cli.no_residual
+        env_cfg.perception.pixel_quantize = args_cli.pixel_vision
+        # observation width depends on observe_wind -- re-derive after the edits.
+        env_cfg.__post_init__()
     else:
         env_cfg = DroneBombardEnvCfg()
         env_cfg.phase = phase  # env __init__ re-derives residual/DR/moving flags from this
@@ -343,9 +287,7 @@ def main():
     # the v-track steps the target via V11Env._step_moving_target with the obs
     # layout unchanged (the marker channels just move), so stationary-target
     # checkpoints (e.g. the shared v19 ones) warm-start losslessly.
-    _vtrack = (args_cli.v11_test or args_cli.v12 or args_cli.v13 or args_cli.v14
-               or args_cli.v15 or args_cli.v16 or args_cli.v17 or args_cli.v18
-               or args_cli.v19 or args_cli.v20)
+    _vtrack = args_cli.task_env
     if args_cli.target_kf and _vtrack:
         # The KF obs extension lives only in the base env's observation builder;
         # on the v-track the flag would silently do nothing — refuse instead.
@@ -384,16 +326,12 @@ def main():
     agent_cfg.logger = args_cli.logger
     agent_cfg.wandb_project = args_cli.wandb_project
     agent_cfg.run_name = args_cli.run_name if args_cli.run_name else (
-        ("v20_nohandoff" if args_cli.no_handoff_dr else
-         "v20_nodyn" if args_cli.no_dyn_dr else "v20") if args_cli.v20 else
-        "v19" if args_cli.v19 else
-        ("v18_hard" if args_cli.v18_hard else "v18") if args_cli.v18 else
-        "v17" if args_cli.v17 else
-        "v16" if args_cli.v16 else
-        ("v15_nores" if args_cli.v14_no_residual else "v15") if args_cli.v15 else
-        ("v14_nores" if args_cli.v14_no_residual else "v14") if args_cli.v14 else
-        "v13" if args_cli.v13 else "v12" if args_cli.v12 else
-        "v11" if args_cli.v11_test else f"phase{phase}")
+        "task_dr{:g}{}{}{}".format(
+            env_cfg.model_err.scale,
+            "_nores" if args_cli.no_residual else "",
+            "_wind" if args_cli.observe_wind else "",
+            "_px" if args_cli.pixel_vision else "",
+        ) if args_cli.task_env else f"phase{phase}")
 
     log_root = os.path.abspath(os.path.join(args_cli.log_root, agent_cfg.experiment_name))
     log_dir = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")

@@ -51,7 +51,13 @@ CAUSE_LABELS = CAUSES + (OTHER,)
 
 # per-episode fields pulled from the env's terminal snapshot
 _FIELDS = ("d_xy_min", "aim_err_min", "release_impact_err", "deliver_time_s",
-           "feasible_window_s", "final_speed_xy", "drag_coef", "wind_speed")
+           "feasible_window_s", "final_speed_xy", "wind_speed",
+           # The parameters that ACTUALLY act on the payload's fall. The old
+           # "drag_coef" column recorded a channel with no physics behind it
+           # (it fed a dead analytic path) while omitting the ballistic
+           # coefficient and release latency that decide where it lands --
+           # which made a DR_SCALE sweep impossible to analyse.
+           "payload_bc_scale", "release_delay")
 _FLAGS = ("released", "landed", "success")
 
 
@@ -131,7 +137,8 @@ def collect(env, act_fn, episodes: int, paired: bool = True, max_steps: int = 20
         rec["feasible_window_s"].append(snap["feasible_window_s"].detach().cpu()[keep])
         rec["final_speed_xy"].append(
             torch.linalg.norm(snap["final_vel_xy"].detach().cpu(), dim=-1)[keep])
-        rec["drag_coef"].append(snap["drag_coef"].detach().cpu()[keep])
+        rec["payload_bc_scale"].append(snap["payload_bc_scale"].detach().cpu()[keep])
+        rec["release_delay"].append(snap["release_delay"].detach().cpu()[keep])
         rec["wind_speed"].append(
             torch.linalg.norm(snap["wind_xy"].detach().cpu(), dim=-1)[keep])
         n_done += int(keep.sum())
@@ -261,8 +268,9 @@ def run_and_report(env, act_fn, *, name: str, episodes: int, paired: bool,
     both play.py and baseline_drop.py call, so no arm can drift."""
     u = env.unwrapped
     rec = collect(env, act_fn, episodes, paired=paired)
-    radius = float(getattr(u.cfg, "v11_success_radius",
-                           getattr(u.cfg.phase_cfg, "success_impact_radius", 1.0)))
+    task_reward = getattr(u.cfg, "task_reward", None)
+    radius = float(task_reward.success_radius if task_reward is not None
+                   else getattr(u.cfg.phase_cfg, "success_impact_radius", 1.0))
     summary = summarize(rec, bool(getattr(u.cfg, "payload_physics_enabled", False)), radius)
     print_summary(name, summary)
     meta = dict(meta, arm=name, paired=paired, episodes_requested=episodes,

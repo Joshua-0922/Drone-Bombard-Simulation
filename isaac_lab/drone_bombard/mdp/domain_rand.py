@@ -46,6 +46,34 @@ def sample_wind(cfg, num_envs: int, device: torch.device, enabled: bool = False)
     return torch.randn(num_envs, 2, device=device) * cfg.wind_std
 
 
+def sample_wind_capped(num_envs: int, device: torch.device, std: float,
+                       cap: float, enabled: bool = False) -> torch.Tensor:
+    """Per-episode horizontal wind, [N, 2] in ENU, ``N(0, std)`` per axis with the
+    VECTOR MAGNITUDE clipped to ``cap`` (scaled down, never rotated).
+
+    A-group sampler (see ``DroneBombardModelErrorCfg``). Takes std/cap as plain
+    floats rather than reading a cfg, because the caller has already multiplied
+    them by ``DR_SCALE`` -- keeping the multiplication at one call site is what
+    makes the sweep knob mean exactly one thing.
+
+    The wind is CONSTANT for the whole episode. That is deliberate, not a
+    missing feature: a wind that changes during the payload's ~1 s fall would
+    make the T3 oracle unable to be exact (it would need the future wind), and
+    the oracle's exactness is what makes the paper's "residual recovers X% of
+    the oracle gap" number interpretable. Time-varying wind belongs in the
+    unseen-robustness table, not in training.
+
+    Identity (zeros, no RNG draw) when disabled or ``std <= 0``, so the zero
+    point of the DR_SCALE sweep does not perturb any other random stream."""
+    if not enabled or std <= 0.0:
+        return torch.zeros(num_envs, 2, device=device)
+    wind = torch.randn(num_envs, 2, device=device) * std
+    if cap > 0.0:
+        mag = torch.linalg.norm(wind, dim=-1, keepdim=True)
+        wind = wind * (cap / mag.clamp(min=cap))  # scale down only if |wind| > cap
+    return wind
+
+
 def sample_target_velocity(cfg, num_envs: int, device: torch.device, enabled: bool = False) -> torch.Tensor:
     """Phase 1/2: identity (stationary target). Phase 3: initial target
     velocity as an [N, 2] ENU vector with random heading and speed
