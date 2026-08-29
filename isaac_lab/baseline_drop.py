@@ -84,6 +84,11 @@ parser.add_argument("--pass_speed", type=float, default=None,
                     help="Override the flight profile: fly a CONSTANT-SPEED delivery pass at "
                          "this speed instead of whatever the arm defaults to. Defaults are set "
                          "per arm (see FLIGHT PROFILE below); pass 0 to force P-control.")
+parser.add_argument("--show", action="store_true",
+                    help="Viewing mode for the livestream/GUI: turn on the target beacon and "
+                         "payload markers and lock a chase camera on the PAYLOAD, so the "
+                         "release and the fall read clearly. Mirrors play.py --show. Costs "
+                         "render time -- never use it for measurement runs.")
 parser.add_argument("--p_control", action="store_true",
                     help="Force the legacy P-control (decelerate-onto-target) profile on every "
                          "arm, reproducing the pre-2026-08-27 baselines.")
@@ -345,6 +350,18 @@ def main():
         env_cfg.release.decide_at_physics_rate = False
     if args_cli.dr_scale is not None:
         env_cfg.model_err.scale = args_cli.dr_scale
+    if args_cli.show:
+        # Same viewing setup play.py uses. The camera tracks the PAYLOAD rather
+        # than the drone: while carried it rides underneath (so the drone is in
+        # frame anyway), and after release it follows the payload down to the
+        # ground, which is the part worth watching.
+        env_cfg.show_markers = True
+        env_cfg.viewer.origin_type = "asset_root"
+        env_cfg.viewer.asset_name = "payload"
+        env_cfg.viewer.env_index = 0
+        env_cfg.viewer.eye = (-2.5, -2.0, 1.1)
+        env_cfg.viewer.lookat = (0.0, 0.0, 0.0)
+
     env_cfg.__post_init__()
 
     env = gym.make(args_cli.task, cfg=env_cfg)
