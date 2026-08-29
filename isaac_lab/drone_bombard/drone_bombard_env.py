@@ -645,6 +645,20 @@ class DroneBombardEnvCfg(DirectRLEnvCfg):
     robot_cfg: ArticulationCfg = CRAZYFLIE_CFG.replace(
         prim_path="/World/envs/env_.*/Robot",
         init_state=CRAZYFLIE_CFG.init_state.replace(joint_vel={".*": 0.0}),
+        # VISUAL scale only. The physics has always been a Holybro X500 -- 2.07 kg
+        # with the measured x500_bombard inertia (0.0217, 0.0217, 0.040), which
+        # back-solves to a 410-530 mm diagonal -- while the mesh shipped with
+        # CRAZYFLIE_CFG is a 92 mm cf2x. Renders therefore showed a drone the
+        # same apparent size as its own 100 mm payload, when the real mass ratio
+        # is 21:1. 500/92 = 5.4.
+        #
+        # Safe because mass and inertia are AUTHORED explicitly on the body prim
+        # (`_author_body_mass_props`, UsdPhysics.MassAPI) after spawn and then
+        # hard-verified against PhysX, so a geometry scale cannot move them; and
+        # nothing in the task depends on the collision shape -- the crash
+        # termination is altitude-based, not contact-based, and the payload is a
+        # separate kinematically welded body.
+        spawn=CRAZYFLIE_CFG.spawn.replace(scale=(5.4, 5.4, 5.4)),
     )
 
     obs: DroneBombardObsCfg = DroneBombardObsCfg()

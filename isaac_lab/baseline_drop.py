@@ -84,6 +84,14 @@ parser.add_argument("--pass_speed", type=float, default=None,
                     help="Override the flight profile: fly a CONSTANT-SPEED delivery pass at "
                          "this speed instead of whatever the arm defaults to. Defaults are set "
                          "per arm (see FLIGHT PROFILE below); pass 0 to force P-control.")
+parser.add_argument("--video", type=str, default=None,
+                    help="Record the run to MP4 in this directory (offscreen -- no X display and "
+                         "no window needed). Requires --enable_cameras; implies --show. "
+                         "Isaac Sim cannot create a Vulkan surface on a TigerVNC X server, so "
+                         "offscreen rendering is the reliable way to actually SEE a drop on a "
+                         "headless VM. Never use on a measurement run: rendering costs time.")
+parser.add_argument("--video_length", type=int, default=1200,
+                    help="Frames to record (policy steps). 1200 @ 10 Hz = 120 s of sim time.")
 parser.add_argument("--show", action="store_true",
                     help="Viewing mode for the livestream/GUI: turn on the target beacon and "
                          "payload markers and lock a chase camera on the PAYLOAD, so the "
@@ -350,7 +358,7 @@ def main():
         env_cfg.release.decide_at_physics_rate = False
     if args_cli.dr_scale is not None:
         env_cfg.model_err.scale = args_cli.dr_scale
-    if args_cli.show:
+    if args_cli.show or args_cli.video:
         # Same viewing setup play.py uses. The camera tracks the PAYLOAD rather
         # than the drone: while carried it rides underneath (so the drone is in
         # frame anyway), and after release it follows the payload down to the
@@ -364,7 +372,15 @@ def main():
 
     env_cfg.__post_init__()
 
-    env = gym.make(args_cli.task, cfg=env_cfg)
+    env = gym.make(args_cli.task, cfg=env_cfg,
+                   render_mode="rgb_array" if args_cli.video else None)
+    if args_cli.video:
+        import os as _os
+        _os.makedirs(args_cli.video, exist_ok=True)
+        env = gym.wrappers.RecordVideo(
+            env, video_folder=args_cli.video, step_trigger=lambda step: step == 0,
+            video_length=args_cli.video_length, disable_logger=True)
+        print(f"[baseline] recording {args_cli.video_length} frames -> {args_cli.video}", flush=True)
     u = env.unwrapped
     ctrl = BaselineController(u, args_cli.arm)
     print(f"[baseline] arm={ARM_NAMES[args_cli.arm]} task={args_cli.task} seed={args_cli.seed} "

@@ -48,6 +48,11 @@ parser.add_argument("--log_root", type=str, default="/workspace/logs/isaac_lab/d
 parser.add_argument("--run_name", type=str, default="")
 parser.add_argument("--wandb_project", type=str, default="drone-bombard-isaac")
 parser.add_argument("--logger", type=str, default="wandb", choices=["wandb", "tensorboard"])
+parser.add_argument("--wandb_key_file", type=str, default=None,
+                    help="Path (INSIDE the container) to a file holding WANDB_API_KEY=... . Only "
+                         "consulted when --logger wandb and the key is not already in the "
+                         "environment. Default search: $WANDB_ENV_FILE, /workspace/.wandb.env, "
+                         "~/.wandb.env, /opt/drone-bombard/.wandb.env.")
 # --- phased curriculum ---
 parser.add_argument("--phase", type=int, default=None, choices=[1, 2, 3],
                     help="Single curriculum phase to train in-process (1/2/3).")
@@ -223,9 +228,49 @@ def run_orchestrator(phases: list[int]) -> int:
     return 0
 
 
+def _ensure_wandb_key(args) -> None:
+    """Fail FAST when wandb logging is requested without a key.
+
+    The 2026-08-29 pilot ran for a quarter of an hour before anyone noticed it
+    was writing tensorboard files nobody was watching: the container had been
+    started with a plain ``docker start`` so ``WANDB_API_KEY`` was absent, and
+    nothing complained. Discovering that after a multi-day Phase-2 run would be
+    considerably worse, so this refuses to start instead.
+
+    Order: existing env var -> --wandb_key_file -> a short list of usual paths.
+    The file is ``KEY=VALUE`` lines (the same format ``docker --env-file`` eats),
+    so one file serves both entry points.
+    """
+    if args.logger != "wandb" or os.environ.get("WANDB_API_KEY"):
+        return
+
+    candidates = [args.wandb_key_file, os.environ.get("WANDB_ENV_FILE"),
+                  "/workspace/.wandb.env", os.path.expanduser("~/.wandb.env"),
+                  "/opt/drone-bombard/.wandb.env"]
+    for path in candidates:
+        if not path or not os.path.isfile(path):
+            continue
+        for line in open(path, encoding="utf-8"):
+            k, _, v = line.strip().partition("=")
+            if k == "WANDB_API_KEY" and v:
+                os.environ["WANDB_API_KEY"] = v
+                print(f"[train] WANDB_API_KEY loaded from {path}", flush=True)
+                return
+
+    raise SystemExit(
+        "[train] --logger wandb requires WANDB_API_KEY, and it is neither in the environment\n"
+        "        nor in any of: " + ", ".join(p for p in candidates if p) + "\n\n"
+        "        The key file is NOT mounted into the container by default. Either:\n"
+        "          docker exec --env-file /opt/drone-bombard/.wandb.env ... train.py ...\n"
+        "        or pass --logger tensorboard deliberately and sync afterwards:\n"
+        "          wandb sync --sync-tensorboard <log_dir>\n")
+
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator mode: dispatch subprocesses and exit BEFORE launching the sim.
 # ---------------------------------------------------------------------------
+_ensure_wandb_key(args_cli)   # 서브프로세스를 띄우기 전에 먼저 막는다
 _phases = _parse_int_list(args_cli.phases)
 if _phases:
     sys.exit(run_orchestrator(_phases))
@@ -252,6 +297,7 @@ torch.backends.cudnn.allow_tf32 = True
 
 
 def main():
+    _ensure_wandb_key(args_cli)
     phase = args_cli.phase if args_cli.phase is not None else 1
 
     # --- env cfg (built directly — the path proven by verify_one_episode.py) ---
