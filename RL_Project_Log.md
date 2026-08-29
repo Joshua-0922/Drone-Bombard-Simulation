@@ -33,7 +33,9 @@
 > 표적 위 정지에서만 투하 → 정속 패스로 교체, 릴리즈 속도 0.76 → 3.07 m/s)
 >
 > **확정 조건:** DR_SCALE 1.5 · 판정 100 Hz · GT · r=0.5 · 방위각 ±30° ·
-> `w_time` 2.3/step(무차별점) · 에피소드 20 s · `release.alt_max` 12 m ·
+> `w_time` 2.3/step(무차별점) · 에피소드 20 s · `release.alt_max` **8 m**(⚠️ 12로 올렸다고
+> 보고했으나 편집이 실제로 적용되지 않았다 — 모든 측정은 8 기준, 값 자체는 유효) ·
+> `w_alt_band` 0.5(부트스트랩을 실제로 뚫은 항) ·
 > `termination.min_altitude` 1.5 m · T0=place / T1·T2·T3=throw
 >
 > **다음: Phase 2** — L1 파일럿 1개로 장기 거동 확인 후 L1/L0 × 3 seed @ DR 1.5.
