@@ -116,6 +116,12 @@ parser.add_argument("--pixel_vision", action="store_true",
                          "OFF for the main results: quantization contributes ~0.28 m of aiming error, which "
                          "is LARGER than the ballistic model error the residual removes, so it buries the "
                          "effect under study. The blind-cruise -> acquire -> turn scenario is unaffected.")
+parser.add_argument("--e2e", action="store_true",
+                    help="L2 End-to-End Aim (E2E): drop the analytic CCIP from the loop entirely "
+                         "and let the policy output the impact point directly. This is the "
+                         "architecture of the competing state of the art (Scaramuzza 2606.27603), "
+                         "evaluated here under the wind and parameter uncertainty they did not "
+                         "test. Mutually exclusive with --no_residual.")
 parser.add_argument("--no_residual", action="store_true",
                     help="Control arm: identical env and DR, but the learned impact residual is not applied "
                          "-- isolates how much of the impact error the residual actually removes.")
@@ -271,7 +277,15 @@ def main():
         if args_cli.no_dyn_dr:
             env_cfg.dyn_dr.enabled = False
 
+        # Learned-arm selection (§7.1): L0 Analytic-Aim / L1 Impact-Space
+        # Residual / L2 End-to-End Aim.
+        if args_cli.e2e and args_cli.no_residual:
+            raise SystemExit("[train] --e2e and --no_residual are mutually exclusive: "
+                             "--e2e is L2 (no analytic predictor), --no_residual is L0 "
+                             "(analytic predictor only).")
         env_cfg.residual.enabled = not args_cli.no_residual
+        if args_cli.e2e:
+            env_cfg.residual.mode = "direct"
         if args_cli.release_10hz:
             env_cfg.release.decide_at_physics_rate = False
         env_cfg.perception.pixel_quantize = args_cli.pixel_vision
@@ -333,7 +347,7 @@ def main():
     agent_cfg.run_name = args_cli.run_name if args_cli.run_name else (
         "task_dr{:g}{}{}{}".format(
             env_cfg.model_err.scale,
-            "_nores" if args_cli.no_residual else "",
+            "_e2e" if args_cli.e2e else ("_nores" if args_cli.no_residual else "_isr"),
             "_wind" if args_cli.observe_wind else "",
             "_px" if args_cli.pixel_vision else "",
         ) if args_cli.task_env else f"phase{phase}")

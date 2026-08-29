@@ -170,8 +170,42 @@ class ResidualCfg:
     the network only supplies what the model cannot know.
     """
 
+    mode: str = "residual"
+    """How the aim point is produced. Selects the LEARNED ARM.
+
+    * ``"residual"`` + ``enabled=True``  -> **L1 Impact-Space Residual (ISR)**, ours.
+      The analytic CCIP stays in the loop and the policy adds a 2-D correction.
+    * ``"residual"`` + ``enabled=False`` -> **L0 Analytic-Aim (AA)**, the control arm.
+      The analytic CCIP alone; the policy only learns to fly and when to drop.
+    * ``"direct"``                       -> **L2 End-to-End Aim (E2E)**.
+      NO analytic predictor at all -- the policy names the impact point itself.
+
+    L2 exists because the competing state of the art IS this architecture:
+    Scaramuzza (arXiv 2606.27603) outputs CTBR and the release end-to-end, with a
+    closed-form ballistic model living only in the REWARD, never in the loop --
+    and they evaluated it with no wind, no drag and no parameter uncertainty.
+    The hypothesis L1-vs-L2 tests is that keeping an analytic map that is exact
+    in the measurable state, and learning only the unmeasurable part, degrades
+    more gracefully as model error grows. The DR_SCALE sweep is the instrument.
+    """
+
     enabled: bool = True
-    """False is the control arm ("does the residual contribute at all")."""
+    """Only meaningful when ``mode == "residual"``: False gives the L0 control arm.
+    Ignored in ``"direct"`` mode, where the policy output IS the prediction."""
+
+    direct_scale: float = 10.0
+    """L2 only. Metres per axis of the DIRECT impact-point output, measured from
+    the drone's current horizontal position.
+
+    Sized to cover the reachable impact set rather than to match ``scale``: the
+    ballistic lead is ``v * t_fall``, which reaches ~7 m at the envelope corner
+    (5 m/s, 8 m altitude), so 10 m leaves margin on both axes.
+
+    ⚠️ This is 5x ``scale``, so one unit of exploration noise maps to 5x more
+    metres for L2 than for L1. That is not a handicap we imposed -- it is what
+    naming the whole impact point costs, versus correcting a prediction that is
+    already close. Report ``direct_scale`` sensitivity in ablation A6 so the
+    comparison cannot be dismissed as a badly chosen range."""
 
     scale: float = 2.0
     """Metres of authority per axis. Sized 2026-08-27 against the measured drift
@@ -495,9 +529,17 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         perceived = self._perceive(pos_xy, altitude)
         self._perceived_target_xy = perceived
 
-        impact = self._nominal_impact(pos_xy, vel_xy, vel_z, altitude)
-        if self.cfg.residual.enabled:
-            impact = apply_ccip_residual(impact, self._residual_action, self.cfg.residual.scale)
+        rescfg = self.cfg.residual
+        if rescfg.mode == "direct":
+            # L2 End-to-End Aim: no analytic predictor in the loop. The policy
+            # names the impact point relative to where the drone is now, so it
+            # has to learn the whole ballistic map -- including the parts the
+            # CCIP formula gets exactly right for free.
+            impact = pos_xy + self._residual_action * rescfg.direct_scale
+        else:
+            impact = self._nominal_impact(pos_xy, vel_xy, vel_z, altitude)
+            if rescfg.enabled:
+                impact = apply_ccip_residual(impact, self._residual_action, rescfg.scale)
 
         ccip_err = impact - perceived
         return ccip_err, torch.linalg.norm(ccip_err, dim=-1), time_to_fall(
@@ -531,7 +573,9 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         self._delta_action = limited_vel - prev_vel
 
         self._wants_drop = clipped[:, 4] > 0.5
-        self._residual_action = (clipped[:, 5:7] if self.cfg.residual.enabled
+        # Zeroed only for L0. L1 uses it as a correction, L2 as the prediction.
+        aim_active = self.cfg.residual.enabled or self.cfg.residual.mode == "direct"
+        self._residual_action = (clipped[:, 5:7] if aim_active
                                  else torch.zeros_like(clipped[:, 5:7]))
         self._prev_action = torch.cat([limited_vel, self._residual_action], dim=-1)
 

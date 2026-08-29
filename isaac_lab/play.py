@@ -55,6 +55,8 @@ parser.add_argument("--observe_wind", action="store_true",
 parser.add_argument("--release_10hz", action="store_true",
                     help="Resolve the release on the 10 Hz policy grid instead of at "
                          "physics rate (the ablation arm for release-timing resolution).")
+parser.add_argument("--e2e", action="store_true",
+                    help="L2 End-to-End Aim: policy outputs the impact point directly (no CCIP).")
 parser.add_argument("--pixel_vision", action="store_true",
                     help="Evaluate with the pixel-quantized marker instead of the true position.")
 parser.add_argument("--no_dyn_dr", action="store_true",
@@ -533,6 +535,8 @@ def main():
         env_cfg.model_err.scale = args_cli.dr_scale
     if hasattr(env_cfg, "model_err") and args_cli.observe_wind:
         env_cfg.model_err.observe_wind = True
+    if hasattr(env_cfg, "residual") and args_cli.e2e:
+        env_cfg.residual.mode = "direct"
     if hasattr(env_cfg, "release") and args_cli.release_10hz:
         env_cfg.release.decide_at_physics_rate = False
     if hasattr(env_cfg, "perception") and args_cli.pixel_vision:
