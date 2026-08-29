@@ -290,6 +290,7 @@ type: index
 - [[experiments/exp_020_o5jn9xzk_payload_training]] — **(07-23) 물리 페이로드 부착 첫 학습 — 학습 비용 0 확증.** B0 warm-start + 보상 bit-match, det 200-ep 100.00%/drop 0.169 m. σ 드리프트 1.41→1.71 관찰. `play.py --wandb` eval-figure 파이프라인 신설.
 - [[experiments/exp_022_p0_handoff_dyn_dr]] — **(08-03) P0: 핸드오프 랜덤화 + 동역학/센싱 DR, v20 env 신설.** 유닛 66/66 · 프로브 v19 12/12 + v20 15/15 · v19 warm-start 무손실. 분포전이 4조건 91.0/91.5/77.1/**7.5%** → Rule 27.
 - [[experiments/exp_026_release_rate_100hz]] — **(08-27) 릴리즈 판정을 물리 주파수로 + 성공 반경 0.5 m.** T2 CEP50 0.762 → 0.395 m. T1≡T2(타이밍이 argmin 이점의 전부였음), 오라클 갭이 중앙값에서 꼬리로 이동 → 헤드라인 지표 교체 필요
+- [[research/sim2real_gap]] — **(08-27) 실기 대비 결손 목록.** 경쟁 논문 ablation: 공력·모터지연·컨트롤러 이상화가 각각 zero-shot 오차를 **2.4~3.7배** 바꾼다. 우리에게 없는 것: 로터 유입류 · 모터 1차 지연 · 추력-전압 맵 · **게인 실측 캘리브레이션**(`tilt_clamp_deg=35`가 임의값). **지금은 구현하지 않고 Limitations에 크기와 함께 명시**
 - [[sessions/session_2026-08-27]] — **(08-27) 세션 기록**: 작업 순서, **다음 세션 재개 명령**, 판정 기준, 반복하지 말 것 5가지
 - [[research/reward_operating_point]] — **(08-27) 보상이 hover-drop을 17.7점 선호하고 있었다** — 실측 에피소드에 보상을 적용해 확인. `w_time` 0.01 → 1.0(무차별점). ⚠️ 스크립트 베이스라인도 구조적으로 place($k_p t_{fall}=0.66<1$, 릴리즈 $v_{xy}$ 0.76 m/s) — `--pass_speed` 채택 여부 대기
 - [[errors/err_20260827_free_exit_termination]] — **(08-27) dry-run이 잡은 결함 2건**: `bad_attitude`가 벌점 없는 무료 탈출구 / 접근 보상이 탐지 뒤에 갇힌 닭-달걀
