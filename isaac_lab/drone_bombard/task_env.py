@@ -337,17 +337,78 @@ class TaskRewardCfg:
 
     reward_success: float = 300.0
     success_bonus: float = 100.0
-    k_landing: float = 2.0
+    k_landing: float = 1.0
     """Terminal landing reward is ``reward_success * exp(-k_landing * err)`` plus
-    ``success_bonus`` for crossing the success radius. Continuous rather than
-    flat-inside-the-circle: a flat reward paid a 0.1 m hit and a 0.9 m hit
-    identically, so accuracy plateaued with no gradient to tighten."""
+    ``success_bonus`` for crossing the success radius.
 
-    success_radius: float = 0.5
-    """Tightened from 1.0 m on 2026-08-27. At 1.0 m the binary success rate was
-    saturated -- T2 and T3 differed by 0.14 m of CEP50 while both scored ~80% --
-    so the headline metric could not see the effect under study. 0.5 m sits just
-    under the measured CEP50 floor, which is where the rate is most sensitive.
+    ⭐ Widened from 2.0 on 2026-08-29 after mapping the reward over the
+    (landing error, release time) plane. At 2.0 the exponential collapses inside
+    the range a LEARNING policy actually occupies, and its gradient there falls
+    below the per-step time cost:
+
+        err       d(terminal)/d(err)     accuracy 1 s of flight must buy
+        0.50 m          221 pts/m                  0.10 m
+        0.84 m          112                        0.21
+        1.75 m           18                        1.27   <- impossible
+
+    The consequence was a reward that preferred a fast sloppy drop to a slower
+    accurate one, exactly where the policy lives early in training:
+
+        release at 4.0 s with 1.50 m error  ->  -77
+        release at 6.7 s with 0.84 m error  ->  -98   (WORSE)
+
+    That is backwards, and it is a second, independent explanation for the failed
+    L1 pilot alongside the un-zeroed residual head: the residual injects ~1.6 m
+    of aim noise at init, and out there nothing pulls it back.
+
+    Why widen k rather than raise ``reward_success``: both restore the accuracy
+    gradient, but scaling the terminal up also restores the hover-drop
+    preference, because T0 genuinely IS more accurate (0.511 m vs 0.840 m). At
+    R=1000/k=2.0 the place arm leads the throw arm by 121 points again. Widening
+    k alone keeps the arms indifferent (-2 points) while making accuracy pay out
+    to ~2 m -- the only setting tested that satisfies both.
+
+    ⚠️ The margin is thin: at k=1.0 the two rows above tie rather than inverting
+    comfortably. If the L0 control arm still cannot beat T2, the next lever is an
+    explicit release-speed term, decoupling "aim well" from "do not stop"
+    instead of asking one scalar to encode both."""
+
+    success_radius: float = 1.0
+    """Restored to 1.0 m on 2026-08-29, reverting the 08-27 narrowing to 0.5.
+
+    The narrowing was justified against the OLD baselines, where every arm was
+    placing (release speed 0.76 m/s) and success at 1.0 m sat saturated near 80%
+    for both T2 and T3. Once the arms were given a constant-speed pass that
+    premise expired -- recomputed on the measured landing distributions
+    (n=200, DR_SCALE 1.5):
+
+        radius   T0 place  T2 throw  T3 throw   T3-T2   release-rate ceiling
+        0.50       35.0%     10.5%     29.5%   +19.0            72.5%
+        1.00       61.0%     47.0%     55.5%    +8.5            72.5%
+        1.50       68.0%     64.5%     63.5%    -1.0            72.5%
+
+    1.0 m halves the attribution gap versus 0.5 m, which argues for keeping 0.5.
+    What decides it the other way is the LEARNING signal. ``success_bonus`` is
+    100 points -- comparable to the entire continuous term -- and at radius 0.5
+    it sits somewhere the throw arms never reach (their CEP50 is 0.840 m), so it
+    contributes nothing to the gradient. Evaluating the reward at a release time
+    of 6.7 s:
+
+        radius   accurate (0.84 m)   early+sloppy (1.50 m @ 4.0 s)   margin
+        0.50               -24.6                          -25.1       +0.5
+        1.00               +75.4                          -25.1     +100.5
+
+    At 0.5 m the reward is indifferent between aiming and dumping the payload
+    early; at 1.0 m aiming wins by a hundred points. The place-versus-throw
+    balance is untouched either way (T0 - T2 = -2.4 at both radii).
+
+    8.5 pp is still well outside the n=200 Wilson interval, and 47% / 55.5% is
+    nowhere near the 72.5% release-rate ceiling, so the measurement survives the
+    change. A policy that cannot learn does not.
+
+    CEP50 and CEP90 are radius-independent and unaffected; the attribution
+    argument can also be read off CEP50 (0.840 vs 0.581 m).
+
     Must be identical for every arm in Table 1; ``eval_harness`` reads it from
     here for exactly that reason."""
 
@@ -493,6 +554,12 @@ class DroneBombardTaskEnv(DroneBombardEnv):
                   "rew_undetected", "rew_time", "rew_loiter", "rew_smooth",
                   "rew_attitude", "rew_landing", "rew_failure", "rew_alt_band"):
             self._episode_sums[k] = torch.zeros(N, device=device)
+
+        # Residual magnitude in METRES. Without this "the residual is corrupting
+        # the aim" stays an inference -- the L1 post-mortem could only ESTIMATE
+        # the injected error from the action scale.
+        self._residual_mag_sum = torch.zeros(N, device=device)
+        self._residual_steps = torch.zeros(N, device=device)
 
     # ------------------------------------------------------------------
     # helpers
@@ -754,6 +821,8 @@ class DroneBombardTaskEnv(DroneBombardEnv):
             v[env_ids] = 0.0
         self._alt_sum[env_ids] = 0.0
         self._live_steps[env_ids] = 0.0
+        self._residual_mag_sum[env_ids] = 0.0
+        self._residual_steps[env_ids] = 0.0
 
         # Seed the controller AT the cruise setpoint. Without this the step-1
         # command is whatever the untrained policy emits, producing a
@@ -802,6 +871,11 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         cs["all"] += gate.float() * live
         self._alt_sum += altitude * live
         self._live_steps += live
+
+        _rc = cfg.residual
+        _rs = _rc.direct_scale if _rc.mode == "direct" else _rc.scale
+        self._residual_mag_sum += torch.linalg.norm(self._residual_action, dim=-1) * _rs * live
+        self._residual_steps += live
         self._window_steps += (gate & (~self._released)).float()
 
         # The payload does NOT detach at the command. The plant holds it for

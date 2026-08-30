@@ -2214,3 +2214,7 @@ class DroneBombardEnv(DirectRLEnv):
                 log[f"Episode_Gate/{k}_steps"] = v[env_ids].mean().item()
             live = self._live_steps[env_ids].clamp(min=1.0)
             log["Episode_Gate/mean_alt_m"] = (self._alt_sum[env_ids] / live).mean().item()
+        rmag = getattr(self, "_residual_mag_sum", None)
+        if rmag is not None:
+            rsteps = self._residual_steps[env_ids].clamp(min=1.0)
+            log["Episode_Metric/residual_mag_m"] = (rmag[env_ids] / rsteps).mean().item()
