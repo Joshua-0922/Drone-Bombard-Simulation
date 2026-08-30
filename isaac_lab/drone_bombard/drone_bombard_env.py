@@ -64,6 +64,7 @@ from .math_utils import (
     lpf_step,
     project_target_pinhole,
     ballistic_impact,
+    integrate_payload_impact,
     ccip_residual,
     predict_impact_nominal,
     apply_ccip_residual,
@@ -1188,6 +1189,52 @@ class DroneBombardEnv(DirectRLEnv):
         and the plant can drift apart the way the CCIP vz term did.
         """
         return (self.cfg.payload_phys_drag_k * self._payload_bc_scale) / self.cfg.payload_phys_mass
+
+    def oracle_impact_residual(self, pos_xy, vel_xy, alt, vz, res_scale: float):
+        """The PRIVILEGED impact-point residual — the exact quantity a learned
+        residual approximates, computed from this episode's true wind, true
+        ballistic coefficient and true release latency.
+
+        Emitted on the same action channel and clamped to the same +-1, so it is
+        subject to the same ``residual.scale`` authority as the learned one and
+        saturates in the same regime.
+
+        ``real`` is INTEGRATED, not predicted: same ODE, same k/m, same wind,
+        same dt as ``_step_payload_physics``, started at the payload's carry
+        height and stopped at the plant's own latch plane, so the oracle is
+        exact by construction (Rule 31).
+
+        ``_drag_coef`` is deliberately NOT read: it drives a ``ballistic_impact``
+        term with no counterpart in the payload plant, so an oracle reading it
+        would claim knowledge of a parameter that does not act on the outcome.
+
+        Lives here rather than in ``baseline_drop.py`` because BOTH the scripted
+        T3 arm and ``play.py --oracle_residual`` (learned flight + perfect aim
+        correction = the ceiling for L1) have to use one definition.
+        """
+        dc = self.cfg.drop
+        nominal = self._nominal_impact(pos_xy, vel_xy, vz, alt)
+        if bool(getattr(self.cfg, "payload_physics_enabled", False)):
+            # Privileged: knows this episode's ACTUAL latency, not just its mean.
+            tau = self._release_delay.unsqueeze(-1)
+            pos_rel = pos_xy + vel_xy * tau
+            alt_rel = alt + vz * self._release_delay
+            real = integrate_payload_impact(
+                pos_rel, vel_xy, vz, alt_rel + self.cfg.payload_mount_z, self._wind_xy,
+                self.payload_bc_over_m, dc.gravity,
+                ground_z=self.cfg.payload_ground_z + self.cfg.payload_land_eps,
+                dt=self.cfg.sim.dt,
+            )
+        else:
+            real = ballistic_impact(pos_xy, vel_xy, vz, alt, 0.0, dc.gravity,
+                                    self._drag_coef, self._wind_xy)
+        drift = real - nominal
+        if res_scale <= 0.0:
+            return torch.zeros_like(drift)
+        # SIGN: the residual makes the PREDICTION track the REAL impact
+        # (pred + residual*scale == real) -- that is the quantity the release
+        # gate tests. The other sign fires where the payload does NOT land.
+        return torch.clamp(drift / res_scale, -1.0, 1.0)
 
     def request_release(self, fire: torch.Tensor) -> None:
         """Command a payload release. The payload does NOT detach on this call.

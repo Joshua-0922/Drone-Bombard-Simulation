@@ -207,55 +207,11 @@ class BaselineController:
 
     # -------- privileged residual (T3 only) --------
     def _oracle_residual(self, pos_xy, vel_xy, alt, vz):
-        """True wind/drag correction on the impact-point PREDICTION — the exact
-        quantity the learned residual approximates. Emitted on the same action
-        channel and therefore subject to the same +-residual_scale authority
-        (it saturates when the drift exceeds it, reproducing the v15 saturation
-        regime).
-
-        ``real`` is INTEGRATED, not predicted: same ODE, same k/m, same wind,
-        same dt as ``_step_payload_physics``, started at the payload's carry
-        height and stopped at the plant's own latch plane. That makes the
-        oracle exact by construction, so the T2->T3 gap it defines is a real
-        ceiling. See ``math_utils.integrate_payload_impact``.
-
-        Note ``u._drag_coef`` is deliberately NOT read here: it drives a term in
-        ``ballistic_impact`` that has no counterpart in the payload plant (the
-        fall uses ``payload_phys_drag_k * _payload_bc_scale``), so an oracle
-        reading it would be claiming knowledge of a parameter that does not act
-        on the outcome."""
-        u, dc = self.u, self.u.cfg.drop
-        nominal = u._nominal_impact(pos_xy, vel_xy, vz, alt)
-        if bool(getattr(u.cfg, "payload_physics_enabled", False)):
-            # Privileged: the oracle knows this episode's ACTUAL release latency,
-            # not just its nominal mean, so it propagates the state by the true
-            # tau before integrating the fall. That difference -- true tau vs
-            # modelled mean -- is one of the things the learned residual has to
-            # discover without being told.
-            tau = u._release_delay.unsqueeze(-1)
-            pos_rel = pos_xy + vel_xy * tau
-            alt_rel = alt + vz * u._release_delay
-            real = integrate_payload_impact(
-                pos_rel, vel_xy, vz, alt_rel + u.cfg.payload_mount_z, u._wind_xy,
-                u.payload_bc_over_m, u.cfg.drop.gravity,
-                ground_z=u.cfg.payload_ground_z + u.cfg.payload_land_eps,
-                dt=u.cfg.sim.dt,
-            )
-        else:
-            # No payload body: the env's own referee scores the drop with
-            # ballistic_impact, so the analytic form IS the plant here and
-            # reading it is exact rather than a fallback approximation.
-            real = ballistic_impact(pos_xy, vel_xy, vz, alt, 0.0, dc.gravity,
-                                    u._drag_coef, u._wind_xy)
-        drift = real - nominal                       # where the payload really goes
-        if self.res_scale <= 0.0:
-            return torch.zeros_like(drift)
-        # SIGN: the residual must make the PREDICTION track the REAL impact
-        # (pred + residual*scale == real), because that is the quantity the
-        # release gate tests. Correcting the other way (-drift) cancels the
-        # wind in the prediction and leaves the gate testing a fiction — it
-        # then fires where the payload does NOT land.
-        return torch.clamp(drift / self.res_scale, -1.0, 1.0)
+        """Delegates to ``DroneBombardEnv.oracle_impact_residual`` — the single
+        definition, shared with ``play.py --oracle_residual``. Keeping a second
+        copy here is how the predictor and the plant drifted apart before
+        (Rule 30/31)."""
+        return self.u.oracle_impact_residual(pos_xy, vel_xy, alt, vz, self.res_scale)
 
     # -------- release rules --------
     def _want_drop(self, pos_xy, vel_xy, alt, vz, aim_xy, residual):

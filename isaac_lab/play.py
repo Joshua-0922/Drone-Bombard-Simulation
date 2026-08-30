@@ -80,6 +80,12 @@ parser.add_argument("--handoff_heading_deg", type=float, default=None,
                     help="Override the handoff heading range to +/- this many degrees (0 = the fixed +X "
                          "cruise). Isolates world-frame heading generalization from the rest of the "
                          "handoff randomization.")
+parser.add_argument("--oracle_residual", action="store_true",
+                    help="Run the LEARNED policy for flight and the drop decision, but replace "
+                         "its impact residual with the PRIVILEGED one (this episode's true wind, "
+                         "ballistic coefficient and release latency). This is the ceiling for L1: "
+                         "L0's flight with a perfect residual. If it does not beat L0, a learned "
+                         "residual has nothing to win on top of this policy.")
 parser.add_argument("--marker_dist", type=float, nargs=2, default=None,
                     metavar=("LO", "HI"),
                     help="Override handoff.marker_dist_range. Training draws [18, 22]; pass a "
@@ -340,13 +346,27 @@ def run_policy_paired(env, policy_path, episodes):
     import eval_harness
 
     policy = _load_policy(env, policy_path)
+
+    def act(obs, u):
+        a = policy(obs)
+        if args_cli.oracle_residual:
+            pos = u._robot.data.root_pos_w - u.scene.env_origins
+            vel = u._robot.data.root_lin_vel_w
+            a = a.clone()
+            a[:, 5:7] = u.oracle_impact_residual(
+                pos[:, :2], vel[:, :2], pos[:, 2], vel[:, 2],
+                float(u.cfg.residual.scale))
+        return a
+
     eval_harness.run_and_report(
-        env, lambda obs, u: policy(obs),
-        name=args_cli.arm_name or f"policy:{os.path.basename(policy_path)}",
+        env, act,
+        name=args_cli.arm_name or (
+            f"policy+oracle_residual:{os.path.basename(policy_path)}"
+            if args_cli.oracle_residual else f"policy:{os.path.basename(policy_path)}"),
         episodes=episodes,
         paired=not args_cli.unpaired,
         meta={"task": args_cli.task, "seed": args_cli.seed, "learned": True,
-              "privileged": False, "policy": policy_path},
+              "privileged": bool(args_cli.oracle_residual), "policy": policy_path},
         out_json=args_cli.out_json,
     )
 
@@ -545,6 +565,10 @@ def main():
         env_cfg.model_err.observe_wind = True
     if hasattr(env_cfg, "residual") and args_cli.no_residual:
         env_cfg.residual.enabled = False
+    if hasattr(env_cfg, "residual") and args_cli.oracle_residual:
+        # L0 was trained with the channel off; turn it on so the injected
+        # correction actually reaches _ccip. Nothing else about the arm changes.
+        env_cfg.residual.enabled = True
     if hasattr(env_cfg, "residual") and args_cli.e2e:
         env_cfg.residual.mode = "direct"
     if hasattr(env_cfg, "release") and args_cli.release_10hz:
