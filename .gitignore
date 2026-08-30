@@ -106,3 +106,6 @@ notes/.obsidian/plugins/
 # 로컬에서 재생성 가능한 산출물 (graph.json 3.4MB / graph.html 2.9MB).
 # 재생성: graphify update .
 graphify-out/
+
+# paper-search MCP PDF cache
+downloads/
