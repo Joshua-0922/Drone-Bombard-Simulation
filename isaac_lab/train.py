@@ -69,7 +69,14 @@ parser.add_argument("--freeze_nominal", action="store_true",
                          "train ONLY the impact residual (action dims 5:7) plus the critic. "
                          "Without this, 'L1 vs L0' is really 'more training vs L0' and the "
                          "residual's contribution cannot be attributed. See Ma & Hutter's "
-                         "nominal-first recipe.")
+                         "nominal-first recipe. "
+                         "WARNING: this makes the residual a LINEAR read-out of L0's last "
+                         "hidden layer, and those features were trained for flight and aiming "
+                         "-- nothing forced them to encode the wind. If the residual has no "
+                         "capacity, L1 fails for a reason that has nothing to do with residuals. "
+                         "Always run the unfrozen arm alongside: unfrozen says what is "
+                         "achievable, frozen says what the residual alone contributes, and a "
+                         "large gap between them IS the finding.")
 parser.add_argument("--zero_init_residual", action="store_true",
                     help="Zero the residual rows of the actor's output layer so training starts "
                          "at delta = 0, i.e. exactly at the nominal policy's behaviour. Without "
@@ -338,8 +345,16 @@ def _prepare_residual_head(runner, args):
     the trunk with the nominal outputs, 'freeze the nominal' means: freeze every
     actor parameter except the output layer, and mask the output layer's
     gradient to the residual rows. The trunk then stays exactly as L0 left it,
-    and the residual is a linear read-out of L0's own features — which is the
-    point of a residual, and what makes the comparison attributable.
+    and the residual is a linear read-out of L0's own features — which makes the
+    comparison attributable.
+
+    ⚠️ The same property is a risk: L0's features were trained for flight and
+    aiming, and nothing forced them to encode the wind. A linear read-out of them
+    may simply be unable to express the correction, in which case L1 fails for a
+    reason that is not about residuals at all. Run the unfrozen arm alongside;
+    if it succeeds where the frozen one does not, the answer is a residual
+    network with its OWN trunk (and, optionally, extra observation channels),
+    not a different residual formulation.
     """
     import torch
     policy = runner.alg.policy          # rsl-rl >= 2.x names the ActorCritic 'policy'
