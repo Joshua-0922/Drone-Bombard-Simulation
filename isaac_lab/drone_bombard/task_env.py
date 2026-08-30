@@ -261,11 +261,11 @@ class TaskRewardCfg:
     has to stay visible against the per-step time cost during the bootstrap phase,
     when the policy cannot yet hit anything and progress is the only dense signal
     it can act on. Closing 20 m now pays 60 against ~80 of accumulated time cost."""
-    w_ccip: float = 0.5            # aim quality (potential-based, see below)
+    w_ccip: float = 30.0           # aim quality (potential-based, see below)
     k_ccip: float = 1.0
-    w_ang_vel: float = 0.05        # per step
-    w_tilt: float = 0.05           # per step
-    w_action_smooth: float = 0.05  # per step
+    w_ang_vel: float = 1.0         # per step
+    w_tilt: float = 1.0            # per step
+    w_action_smooth: float = 1.0   # per step
     w_alt_band: float = 0.5
     """Per step, per metre of altitude OUTSIDE the release band
     ``[release.alt_min, release.alt_max]``. Exactly zero inside it, so the policy
@@ -317,9 +317,9 @@ class TaskRewardCfg:
     ⚠️ Per-STEP, so it scales with the control rate. Changing ``decimation``
     without rescaling silently changes the objective."""
 
-    gate_reward: float = 0.05      # per step while a release is admissible
-    drop_signal_reward: float = 1.0
-    undetected_penalty: float = -0.2   # per step while the marker is not acquired
+    gate_reward: float = 1.0       # per step while a release is admissible
+    drop_signal_reward: float = 20.0
+    undetected_penalty: float = -2.0   # per step while the marker is not acquired
 
     potential_shaping: bool = True
     """Reward the CHANGE in aim quality rather than its level.
@@ -329,7 +329,7 @@ class TaskRewardCfg:
     business of actually dropping -- a policy collapsed to release rate 0 with
     perfect aim. Telescoping the term removes the standing income."""
 
-    w_loiter: float = 0.02
+    w_loiter: float = 1.0
     """Escalating penalty, charged as ``w_loiter * (consecutive steps spent
     inside the release envelope without dropping)``. The companion to
     ``potential_shaping``: once the gate is open the cost of not releasing grows
@@ -372,6 +372,34 @@ class TaskRewardCfg:
     comfortably. If the L0 control arm still cannot beat T2, the next lever is an
     explicit release-speed term, decoupling "aim well" from "do not stop"
     instead of asking one scalar to encode both."""
+
+    reward_scale: float = 0.1
+    """Multiplies the FINAL reward only. The optimal policy is unchanged (a
+    positive scaling of the return), but the critic's regression targets shrink
+    from roughly [-500, +350] to [-50, +35].
+
+    ``empirical_normalization`` is False and ``value_loss_coef`` is 1.0, so the
+    value head starts near zero and has to fit targets in the hundreds -- which
+    is what the dry-run's ``value_function loss = 184.7`` at iteration 2 was
+    reporting. Observations are already hand-normalised to [-1,1] in the
+    observation builder, so the returns were the only unnormalised quantity left
+    in the loop.
+
+    ⚠️ ``Episode_Reward/*`` diagnostics accumulate BEFORE this scale, in natural
+    units, so they stay comparable to the reward-landscape analysis in the
+    docstrings here. Only the runner's ``Mean reward`` is scaled.
+
+    ⚠️ 2026-08-30 rebalance, applied together with this scale -- raising
+    ``w_time`` 0.01 -> 2.3 (230x) without rescaling the rest had left six terms
+    effectively inert. Episode-total contribution before the fix:
+
+        landing +265   time -223   failure -200   progress +60
+        attitude -1.5  drop-signal +1.0  aim +0.5  gate +0.2  loiter -0.1
+
+    ``w_ccip`` at 0.5 meant the ONLY dense signal telling the policy to improve
+    its aim was 0.2% of the time cost, and ``w_loiter`` -- the term whose whole
+    job is to stop dawdling -- was -0.1. Scaling one weight by 230x obliges a
+    rescale of the others on the same yardstick."""
 
     success_radius: float = 1.0
     """Restored to 1.0 m on 2026-08-29, reverting the 08-27 narrowing to 0.5.
@@ -498,7 +526,7 @@ class DroneBombardTaskCfg(DroneBombardEnvCfg):
         # be derived rather than declared. The base env allocates the per-episode
         # observation-bias buffer from this number and hard-raises on a mismatch,
         # which is the guardrail that catches a hand-edited width.
-        self.observation_space = 25 + (2 if self.model_err.observe_wind else 0)
+        self.observation_space = 26 + (2 if self.model_err.observe_wind else 0)
 
 
 # =====================================================================
@@ -736,6 +764,14 @@ class DroneBombardTaskEnv(DroneBombardEnv):
             torch.clamp(torch.linalg.norm(vel[:, :2], dim=-1) / 10.0, 0.0, 1.0),
             torch.clamp(altitude / 20.0, 0.0, 1.0),
             self._payload_attached.float(),
+            # Fraction of the episode still available. The reward charges a
+            # per-step time cost and the episode times out, but nothing in the
+            # observation said how urgent either was -- the policy could not tell
+            # a fresh episode from one about to expire, which makes the timing
+            # decision partially observed for no reason.
+            torch.clamp(
+                1.0 - self.episode_length_buf.float() / float(self.max_episode_length),
+                0.0, 1.0),
         ], dim=-1)
 
         parts = [marker_dep, own, self._prev_action[:, :4], det.float().unsqueeze(-1)]
@@ -1023,4 +1059,5 @@ class DroneBombardTaskEnv(DroneBombardEnv):
 
         self._d_xy_prev = d_xy
         self._d_impact_prev = d_impact
-        return torch.nan_to_num(r, nan=0.0)
+        # Components above stay in natural units on purpose (see reward_scale).
+        return torch.nan_to_num(r, nan=0.0) * rw.reward_scale
