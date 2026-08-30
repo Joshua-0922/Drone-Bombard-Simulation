@@ -80,6 +80,10 @@ parser.add_argument("--handoff_heading_deg", type=float, default=None,
                     help="Override the handoff heading range to +/- this many degrees (0 = the fixed +X "
                          "cruise). Isolates world-frame heading generalization from the rest of the "
                          "handoff randomization.")
+parser.add_argument("--marker_dist", type=float, nargs=2, default=None,
+                    metavar=("LO", "HI"),
+                    help="Override handoff.marker_dist_range. Training draws [18, 22]; pass a "
+                         "disjoint band (e.g. 26 30) for the UNSEEN-range evaluation condition.")
 parser.add_argument("--release-terminal", action="store_true",
                     help="Evaluate under the Stage-B (exp_018) release-as-terminal semantics — "
                          "must match how the policy was trained, or proximity termination "
@@ -531,6 +535,8 @@ def main():
     if args_cli.handoff_heading_deg is not None and hasattr(env_cfg, "handoff"):
         h = abs(args_cli.handoff_heading_deg)
         env_cfg.handoff.heading_range_deg = (-h, h)
+    if args_cli.marker_dist is not None and hasattr(env_cfg, "handoff"):
+        env_cfg.handoff.marker_dist_range = tuple(args_cli.marker_dist)
     if args_cli.no_dyn_dr:
         env_cfg.dyn_dr.enabled = False
     if args_cli.dr_scale is not None and hasattr(env_cfg, "model_err"):

@@ -109,6 +109,10 @@ parser.add_argument("--hover_radius", type=float, default=0.8,
                          "~0.7 m at the release altitude) or the arm never fires at all.")
 parser.add_argument("--hover_speed", type=float, default=0.6,
                     help="hover arm: fire only below this horizontal speed (the 'stopped' test).")
+parser.add_argument("--marker_dist", type=float, nargs=2, default=None,
+                    metavar=("LO", "HI"),
+                    help="Override handoff.marker_dist_range. Training draws [18, 22]; pass a "
+                         "disjoint band (e.g. 26 30) for the UNSEEN-range evaluation condition.")
 # --- moving target (must mirror training) ---
 parser.add_argument("--moving_target", action="store_true")
 parser.add_argument("--target_motion", type=str, default=None, choices=["gm", "cv", "ca", "ct"])
@@ -352,6 +356,8 @@ def main():
         env_cfg.phase_cfg.target_motion_model = args_cli.target_motion
     if args_cli.no_handoff_dr:
         env_cfg.handoff.randomize = False
+    if args_cli.marker_dist is not None:
+        env_cfg.handoff.marker_dist_range = tuple(args_cli.marker_dist)
     if args_cli.no_dyn_dr:
         env_cfg.dyn_dr.enabled = False
     if args_cli.release_10hz:

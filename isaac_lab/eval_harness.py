@@ -52,6 +52,9 @@ CAUSE_LABELS = CAUSES + (OTHER,)
 # per-episode fields pulled from the env's terminal snapshot
 _FIELDS = ("d_xy_min", "aim_err_min", "release_impact_err", "deliver_time_s",
            "feasible_window_s", "final_speed_xy", "wind_speed",
+           # State AT the release command (final_speed_xy is the state at the
+           # LANDING). These are what the throw/drop/place taxonomy is read off.
+           "release_speed_xy", "release_vz", "release_alt",
            # The parameters that ACTUALLY act on the payload's fall. The old
            # "drag_coef" column recorded a channel with no physics behind it
            # (it fed a dead analytic path) while omitting the ballistic
@@ -137,6 +140,8 @@ def collect(env, act_fn, episodes: int, paired: bool = True, max_steps: int = 20
         rec["feasible_window_s"].append(snap["feasible_window_s"].detach().cpu()[keep])
         rec["final_speed_xy"].append(
             torch.linalg.norm(snap["final_vel_xy"].detach().cpu(), dim=-1)[keep])
+        for k in ("release_speed_xy", "release_vz", "release_alt"):
+            rec[k].append(snap[k].detach().cpu()[keep])
         rec["payload_bc_scale"].append(snap["payload_bc_scale"].detach().cpu()[keep])
         rec["release_delay"].append(snap["release_delay"].detach().cpu()[keep])
         rec["wind_speed"].append(
@@ -183,6 +188,23 @@ def _dist(t: torch.Tensor) -> dict:
             "med": float(q[0]), "p90": float(q[1]), "p95": float(q[2]), "max": float(t.max())}
 
 
+def _carry(rec: dict):
+    """Downrange carry of the payload from the release point, in metres.
+
+    ``v_rel * (release_delay + t_fall)`` with the fall integrated from the
+    latched release altitude and vertical rate (drag-free, which is within a
+    few cm over a <=8 m drop and keeps this a closed form). This is the
+    taxonomy quantity: ~0 m is a *place*, ~1 m a *drop*, several metres a
+    *throw* -- and unlike the release speed it does not need a vehicle scale to
+    interpret.
+    """
+    import torch as _t
+    g = 9.81
+    vz, h = rec["release_vz"], rec["release_alt"].clamp(min=0.0)
+    t_fall = (vz + _t.sqrt((vz * vz + 2.0 * g * h).clamp(min=0.0))) / g
+    return rec["release_speed_xy"] * (rec["release_delay"] + t_fall)
+
+
 def summarize(rec: dict, physical_payload: bool, success_radius: float) -> dict:
     """Metric block for one arm. ``physical_payload`` picks which flag counts as
     'the payload actually reached the ground' (v16/v19 land-terminal) versus
@@ -191,6 +213,7 @@ def summarize(rec: dict, physical_payload: bool, success_radius: float) -> dict:
     scored = rec["landed"] if physical_payload else rec["released"]
     err = rec["release_impact_err"][scored]
 
+    rel_m = rec["released"]
     n_succ = int(rec["success"].sum())
     lo, hi = _wilson(n_succ, n)
     out = {
@@ -211,6 +234,14 @@ def summarize(rec: dict, physical_payload: bool, success_radius: float) -> dict:
         "d_xy_min_m": _dist(rec["d_xy_min"]),
         "aim_err_min_m": _dist(rec["aim_err_min"]),
         "final_speed_xy_mps": _dist(rec["final_speed_xy"]),
+        # throw/drop/place taxonomy inputs, over RELEASED episodes only.
+        # carry = how far downrange the payload flies from the release point,
+        # v_rel * (release_delay + t_fall) -- the quantity AeroThrow SV-A
+        # separates a throw from a place by, and the only scale-free way to say
+        # which of the three an arm is doing.
+        "release_speed_xy_mps": _dist(rec["release_speed_xy"][rel_m]),
+        "release_alt_m": _dist(rec["release_alt"][rel_m]),
+        "carry_m": _dist(_carry(rec)[rel_m]),
         "termination_causes": {c: int((rec["cause"] == i).sum()) for i, c in enumerate(CAUSE_LABELS)},
         # A release that never reached the ground inside the episode — a real
         # failure mode of late firing, and invisible if only release_rate is
@@ -237,6 +268,12 @@ def print_summary(name: str, s: dict) -> None:
         print("  landing error [m]   : n/a (nothing delivered)")
     if dt.get("n"):
         print(f"  delivery time [s]   : mean={dt['mean']:.2f} med={dt['med']:.2f} p90={dt['p90']:.2f}")
+    rs, cm = s.get("release_speed_xy_mps", {}), s.get("carry_m", {})
+    if rs.get("n"):
+        print(f"  release v_xy [m/s]  : med={rs['med']:.2f} p90={rs['p90']:.2f}  "
+              f"(alt med={s['release_alt_m']['med']:.2f} m)")
+        print(f"  payload carry [m]   : med={cm['med']:.2f} p90={cm['p90']:.2f}   "
+              f"-> {'place' if cm['med'] < 0.3 else 'drop' if cm['med'] < 3.0 else 'throw'}")
     if fw.get("n"):
         print(f"  release window [s]  : mean={fw['mean']:.2f} med={fw['med']:.2f} max={fw['max']:.2f}")
     causes = ", ".join(f"{c}={v}" for c, v in s["termination_causes"].items() if v)

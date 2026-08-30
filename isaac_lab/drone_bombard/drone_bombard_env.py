@@ -779,6 +779,15 @@ class DroneBombardEnv(DirectRLEnv):
         self._release_impact_err = torch.zeros(N, device=device)
         self._release_aim_xy = torch.zeros(N, 2, device=device)
         self._release_target_xy = torch.zeros(N, 2, device=device)
+        # Vehicle state latched AT the release COMMAND. The terminal snapshot's
+        # ``final_*`` fields are the state at the LANDING -- the episode ends
+        # there, ~(release_delay + t_fall) later -- so they are NOT the release
+        # speed the throw/drop/place taxonomy is defined on (AeroThrow SV-A).
+        # Latched in ``request_release``, the single funnel every arm goes
+        # through, so scripted and learned arms are measured identically.
+        self._release_speed_xy = torch.zeros(N, device=device)
+        self._release_vz = torch.zeros(N, device=device)
+        self._release_alt = torch.zeros(N, device=device)
 
         # v16 physical-payload state (buffers always exist; only used when the
         # cfg hook is on). _payload_free: released and falling (physics active);
@@ -1202,6 +1211,12 @@ class DroneBombardEnv(DirectRLEnv):
         armable = fire & (self._release_pending < 0.0) & self._payload_attached & (~self._payload_free)
         if bool(armable.any()):
             self._release_pending = torch.where(armable, self._release_delay, self._release_pending)
+            v = self._robot.data.root_lin_vel_w
+            alt = self._robot.data.root_pos_w[:, 2] - self.scene.env_origins[:, 2]
+            self._release_speed_xy = torch.where(
+                armable, torch.linalg.norm(v[:, :2], dim=-1), self._release_speed_xy)
+            self._release_vz = torch.where(armable, v[:, 2], self._release_vz)
+            self._release_alt = torch.where(armable, alt, self._release_alt)
 
     def _step_release_latency(self, dt: float) -> torch.Tensor:
         """Tick the pending-release countdowns by one physics step and detach the
@@ -1966,6 +1981,9 @@ class DroneBombardEnv(DirectRLEnv):
         self._just_released[env_ids] = False
         self._release_impact_err[env_ids] = 0.0
         self._release_aim_xy[env_ids] = 0.0
+        self._release_speed_xy[env_ids] = 0.0
+        self._release_vz[env_ids] = 0.0
+        self._release_alt[env_ids] = 0.0
 
         # v16 physical-payload flags. Position needs no reset: _step_payload_physics
         # re-seats a carried payload under the drone on the next physics tick.
@@ -2077,6 +2095,9 @@ class DroneBombardEnv(DirectRLEnv):
             "release_delay": self._release_delay[env_ids].clone(),
             "released": self._released[env_ids].clone(),
             "release_impact_err": self._release_impact_err[env_ids].clone(),
+            "release_speed_xy": self._release_speed_xy[env_ids].clone(),
+            "release_vz": self._release_vz[env_ids].clone(),
+            "release_alt": self._release_alt[env_ids].clone(),
             "release_aim_xy": self._release_aim_xy[env_ids].clone(),
             "release_target_xy": self._release_target_xy[env_ids].clone(),
             "aim_err_min": self._aim_err_min[env_ids].clone(),
