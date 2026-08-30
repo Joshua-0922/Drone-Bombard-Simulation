@@ -63,6 +63,23 @@ parser.add_argument("--phase_iterations", type=str, default="",
 parser.add_argument("--final_out", type=str, default=None,
                     help="If set (single-phase mode), also save the final model to this exact path "
                          "(used by the orchestrator to chain warm-starts).")
+parser.add_argument("--freeze_nominal", action="store_true",
+                    help="L1 recipe: after --resume, freeze everything the nominal policy owns "
+                         "(the actor trunk and the velocity/drop rows of its output layer) and "
+                         "train ONLY the impact residual (action dims 5:7) plus the critic. "
+                         "Without this, 'L1 vs L0' is really 'more training vs L0' and the "
+                         "residual's contribution cannot be attributed. See Ma & Hutter's "
+                         "nominal-first recipe.")
+parser.add_argument("--zero_init_residual", action="store_true",
+                    help="Zero the residual rows of the actor's output layer so training starts "
+                         "at delta = 0, i.e. exactly at the nominal policy's behaviour. Without "
+                         "it a randomly initialised residual moves the aim point by up to "
+                         "residual.scale metres on iteration 0 -- the suspected cause of the "
+                         "2026-08-29 L1 pilot collapsing to 0.9%.")
+parser.add_argument("--w_residual", type=float, default=None,
+                    help="Weight of the residual-magnitude penalty (metres, L1+L2 mixed). "
+                         "Off by default; turn it on for L1 so the residual cannot farm the "
+                         "release trigger without flying better.")
 parser.add_argument("--w_aim", type=float, default=None,
                     help="Dense CCIP aim-error reward weight (reward.w_aim). Default None keeps the "
                          "cfg value (0.0 = term off, exp_014 Phase-1 reward parity). exp_017 Stage A.")
@@ -296,6 +313,85 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 
+RESIDUAL_DIMS = slice(5, 7)
+"""Action rows the impact residual owns. The task action is
+[0:4] velocity, [4] drop signal, [5:7] impact residual (task_env._pre_physics_step)."""
+
+
+def _last_linear(module):
+    """The actor's output layer — the last nn.Linear in its module tree."""
+    import torch.nn as nn
+    last = None
+    for m in module.modules():
+        if isinstance(m, nn.Linear):
+            last = m
+    if last is None:
+        raise RuntimeError("no nn.Linear found in the actor; cannot locate the residual head")
+    return last
+
+
+def _prepare_residual_head(runner, args):
+    """Zero-init and/or freeze so an L1 run isolates the residual.
+
+    Freezing is done on the ACTOR only — the critic must keep training because
+    the reward changes when the residual turns on. Because the residual shares
+    the trunk with the nominal outputs, 'freeze the nominal' means: freeze every
+    actor parameter except the output layer, and mask the output layer's
+    gradient to the residual rows. The trunk then stays exactly as L0 left it,
+    and the residual is a linear read-out of L0's own features — which is the
+    point of a residual, and what makes the comparison attributable.
+    """
+    import torch
+    policy = runner.alg.policy          # rsl-rl >= 2.x names the ActorCritic 'policy'
+    actor = policy.actor
+    head = _last_linear(actor)
+    out_dim = head.weight.shape[0]
+    if out_dim < RESIDUAL_DIMS.stop:
+        raise RuntimeError(
+            f"actor outputs {out_dim} dims; the residual needs rows "
+            f"{RESIDUAL_DIMS.start}:{RESIDUAL_DIMS.stop}. Wrong task?")
+
+    if args.zero_init_residual:
+        with torch.no_grad():
+            head.weight[RESIDUAL_DIMS].zero_()
+            head.bias[RESIDUAL_DIMS].zero_()
+        print(f"[L1] residual head zero-initialised (rows "
+              f"{RESIDUAL_DIMS.start}:{RESIDUAL_DIMS.stop} of {out_dim})")
+
+    if args.freeze_nominal:
+        n_frozen = 0
+        for p in actor.parameters():
+            if p is head.weight or p is head.bias:
+                continue
+            p.requires_grad_(False)
+            n_frozen += p.numel()
+
+        mask_w = torch.zeros_like(head.weight)
+        mask_w[RESIDUAL_DIMS] = 1.0
+        mask_b = torch.zeros_like(head.bias)
+        mask_b[RESIDUAL_DIMS] = 1.0
+        head.weight.register_hook(lambda g: g * mask_w)
+        head.bias.register_hook(lambda g: g * mask_b)
+
+        # The exploration std is a per-action-dim parameter on the ActorCritic,
+        # not inside the actor module. Leaving it free would keep changing the
+        # NOMINAL dims' exploration noise, so the frozen policy would not
+        # actually behave like L0. Mask it to the residual dims too.
+        std_p = getattr(policy, "std", None)
+        if std_p is not None and getattr(std_p, "requires_grad", False):
+            mask_s = torch.zeros_like(std_p)
+            mask_s[RESIDUAL_DIMS] = 1.0
+            std_p.register_hook(lambda g: g * mask_s)
+            std_note = " + action-noise std masked to the residual dims"
+        else:
+            std_note = ""
+
+        trainable = int(mask_w.sum() + mask_b.sum())
+        print(f"[L1] nominal frozen: {n_frozen} actor params fixed, "
+              f"{trainable} residual-head params trainable{std_note} "
+              f"(critic still trains)")
+
+
 def main():
     _ensure_wandb_key(args_cli)
     phase = args_cli.phase if args_cli.phase is not None else 1
@@ -383,6 +479,9 @@ def main():
     env_cfg.sim.device = args_cli.device if args_cli.device is not None else "cuda:0"
     env_cfg.seed = args_cli.seed
 
+    if args_cli.w_residual is not None and hasattr(env_cfg, "task_reward"):
+        env_cfg.task_reward.w_residual = args_cli.w_residual
+
     # --- agent cfg ---
     agent_cfg: DroneBombardPPORunnerCfg = DroneBombardPPORunnerCfg()
     agent_cfg.seed = args_cli.seed
@@ -416,6 +515,9 @@ def main():
         # Phase-(N-1) checkpoint loads losslessly into Phase N.
         print(f"[INFO] Warm-starting from checkpoint: {args_cli.resume}")
         runner.load(args_cli.resume)
+
+    if args_cli.zero_init_residual or args_cli.freeze_nominal:
+        _prepare_residual_head(runner, args_cli)
 
     # --- Spot-VM preemption: save on SIGTERM before the box dies ---
     import signal

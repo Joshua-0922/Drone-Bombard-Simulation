@@ -335,6 +335,12 @@ def main():
         env_cfg.release.decide_at_physics_rate = False
     if args_cli.dr_scale is not None:
         env_cfg.model_err.scale = args_cli.dr_scale
+    if args_cli.arm == "oracle":
+        # The oracle keeps the wider authority it was measured with; tightening
+        # the LEARNED residual's range must not silently saturate T3 and move
+        # the baseline. _ccip scales the action channel by residual.scale, so
+        # raising that one number is the whole change.
+        env_cfg.residual.scale = env_cfg.residual.oracle_scale
     if args_cli.show or args_cli.video:
         # Same viewing setup play.py uses. The camera tracks the PAYLOAD rather
         # than the drone: while carried it rides underneath (so the drone is in

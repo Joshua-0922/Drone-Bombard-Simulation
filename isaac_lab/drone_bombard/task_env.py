@@ -193,6 +193,13 @@ class ResidualCfg:
     """Only meaningful when ``mode == "residual"``: False gives the L0 control arm.
     Ignored in ``"direct"`` mode, where the policy output IS the prediction."""
 
+    oracle_scale: float = 2.0
+    """Authority of the PRIVILEGED residual (T3, ``--oracle_residual``), kept
+    separate from ``scale`` so tightening the LEARNED residual's output range
+    (the Ma & Hutter recipe) does not silently saturate the oracle and move the
+    baseline. At DR_SCALE 1.5 the per-axis drift p90 is 0.72 m, so 2.0 m leaves
+    the oracle unsaturated on 99.9% of releases."""
+
     direct_scale: float = 10.0
     """L2 only. Metres per axis of the DIRECT impact-point output, measured from
     the drone's current horizontal position.
@@ -207,7 +214,14 @@ class ResidualCfg:
     already close. Report ``direct_scale`` sensitivity in ablation A6 so the
     comparison cannot be dismissed as a badly chosen range."""
 
-    scale: float = 2.0
+    scale: float = 1.0
+    """Authority of the LEARNED residual, in metres. **Lowered 2.0 -> 1.0 on
+    2026-08-30.** The measured per-axis drift p90 at DR_SCALE 1.5 is 0.72 m, so
+    1.0 m still covers the disturbance, while 2.0 m let an untrained residual
+    move the aim point 2 m in the first iterations -- the suspected cause of the
+    08-29 L1 pilot collapsing to 0.9%. Ma & Hutter's recipe reduces the residual
+    output range for exactly this reason. The ORACLE keeps 2.0 via
+    ``oracle_scale``."""
     """Metres of authority per axis. Sized 2026-08-27 against the measured drift
     across the DR_SCALE sweep: at scale 1.5 the per-axis p90 drift is 0.72 m and
     only 0.1% of releases would saturate ±2 m. Raising this is not free -- a
@@ -401,6 +415,23 @@ class TaskRewardCfg:
     job is to stop dawdling -- was -0.1. Scaling one weight by 230x obliges a
     rescale of the others on the same yardstick."""
 
+    w_residual: float = 0.0
+    """Penalty on the LEARNED residual's magnitude, in the L1+L2 mixed form
+    ``w * (eta*|delta| + |delta|^2)`` with ``delta`` in metres.
+
+    Zero for L0/L2 (L0 has no residual; L2's output IS the prediction, so
+    penalizing it would penalize aiming). **Turn this on for L1.** Without it
+    the residual is an unconstrained output that shifts the release trigger,
+    so it can farm the gate/aim terms without flying any better -- the failure
+    the exp_018 reward-hacking guard blocks on the dense aim term but NOT on
+    the trigger.
+
+    The L1+L2 mix follows Zhai et al. 2026 (arXiv 2606.27603) SIII-C: L2 alone
+    leaves persistent low-amplitude jitter, L1 alone induces deadbanding."""
+
+    eta_residual: float = 0.2
+    """L1/L2 mix ratio for ``w_residual``."""
+
     success_radius: float = 1.0
     """Restored to 1.0 m on 2026-08-29, reverting the 08-27 narrowing to 0.5.
 
@@ -580,7 +611,8 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         # ``_snapshot`` emits them as ``Episode_Reward/*``).
         for k in ("rew_progress", "rew_aim_pot", "rew_gate", "rew_drop_signal",
                   "rew_undetected", "rew_time", "rew_loiter", "rew_smooth",
-                  "rew_attitude", "rew_landing", "rew_failure", "rew_alt_band"):
+                  "rew_attitude", "rew_landing", "rew_failure", "rew_alt_band",
+                  "rew_residual"):
             self._episode_sums[k] = torch.zeros(N, device=device)
 
         # Residual magnitude in METRES. Without this "the residual is corrupting
@@ -1001,7 +1033,20 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         acc["rew_time"] += time_cost
         acc["rew_undetected"] += undetected
         acc["rew_alt_band"] += alt_band
-        r = attitude + smooth + time_cost + undetected + alt_band
+
+        # Residual magnitude cost, in METRES so the weight is interpretable.
+        # Only the LEARNED residual is charged: mode "direct" (L2) emits the
+        # prediction itself on this channel, and L0 zeroes it.
+        _rc = cfg.residual
+        if rw.w_residual > 0.0 and _rc.enabled and _rc.mode == "residual":
+            d_m = self._residual_action * _rc.scale
+            d_abs = torch.linalg.norm(d_m, dim=-1)
+            residual_cost = -rw.w_residual * (
+                rw.eta_residual * d_abs + (d_m * d_m).sum(dim=-1)) * flying
+        else:
+            residual_cost = torch.zeros_like(alt_band)
+        acc["rew_residual"] += residual_cost
+        r = attitude + smooth + time_cost + undetected + alt_band + residual_cost
 
         progress = rw.w_progress * (self._d_xy_prev - d_xy)
         if rw.potential_shaping:

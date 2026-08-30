@@ -1190,7 +1190,8 @@ class DroneBombardEnv(DirectRLEnv):
         """
         return (self.cfg.payload_phys_drag_k * self._payload_bc_scale) / self.cfg.payload_phys_mass
 
-    def oracle_impact_residual(self, pos_xy, vel_xy, alt, vz, res_scale: float):
+    def oracle_impact_residual(self, pos_xy, vel_xy, alt, vz, res_scale: float,
+                               wind_only: bool = False):
         """The PRIVILEGED impact-point residual — the exact quantity a learned
         residual approximates, computed from this episode's true wind, true
         ballistic coefficient and true release latency.
@@ -1215,13 +1216,27 @@ class DroneBombardEnv(DirectRLEnv):
         dc = self.cfg.drop
         nominal = self._nominal_impact(pos_xy, vel_xy, vz, alt)
         if bool(getattr(self.cfg, "payload_physics_enabled", False)):
-            # Privileged: knows this episode's ACTUAL latency, not just its mean.
-            tau = self._release_delay.unsqueeze(-1)
+            if wind_only:
+                # FAIR ceiling. The release latency and the ballistic coefficient
+                # are drawn per episode and revealed only AFTER the drop, so no
+                # residual -- learned or otherwise -- can know them; an oracle
+                # that does overstates what a residual could ever reach. This
+                # variant knows only the WIND, which a vehicle can in principle
+                # estimate from its own attitude/tracking bias, and uses the
+                # NOMINAL latency and coefficient like the predictor does.
+                tau_s = torch.full_like(alt, self.cfg.model_err.release_delay_mean)
+                bc = torch.full_like(alt, self.cfg.payload_phys_drag_k
+                                     / self.cfg.payload_phys_mass)
+            else:
+                # Privileged: knows this episode's ACTUAL latency and coefficient.
+                tau_s = self._release_delay
+                bc = self.payload_bc_over_m
+            tau = tau_s.unsqueeze(-1)
             pos_rel = pos_xy + vel_xy * tau
-            alt_rel = alt + vz * self._release_delay
+            alt_rel = alt + vz * tau_s
             real = integrate_payload_impact(
                 pos_rel, vel_xy, vz, alt_rel + self.cfg.payload_mount_z, self._wind_xy,
-                self.payload_bc_over_m, dc.gravity,
+                bc, dc.gravity,
                 ground_z=self.cfg.payload_ground_z + self.cfg.payload_land_eps,
                 dt=self.cfg.sim.dt,
             )
