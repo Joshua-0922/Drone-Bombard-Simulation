@@ -226,6 +226,12 @@ def summarize(rec: dict, physical_payload: bool, success_radius: float) -> dict:
         "landing_error_m": _dist(err),
         # CEP = percentile of the miss distance over delivered episodes; quoted
         # WITH delivery_rate, never alone.
+        # Success rate is a THRESHOLDED landing error and the threshold is our own
+        # reward-design choice, so the curve goes in the artifact rather than one
+        # radius being quoted as if it were the metric. Denominator is all
+        # episodes, so non-release and crash losses stay visible.
+        "success_curve": {f"{r:g}": float((err <= r).float().sum()) / max(n, 1)
+                          for r in (0.2, 0.3, 0.4, 0.5, 0.6, 0.75, 1.0, 1.25, 1.5, 2.0)},
         "cep50_m": float(torch.quantile(err, 0.5)) if err.numel() else float("nan"),
         "cep90_m": float(torch.quantile(err, 0.9)) if err.numel() else float("nan"),
         "landing_error_mean_ci95": _boot_ci(err),

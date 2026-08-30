@@ -100,6 +100,14 @@ parser.add_argument("--show", action="store_true",
 parser.add_argument("--p_control", action="store_true",
                     help="Force the legacy P-control (decelerate-onto-target) profile on every "
                          "arm, reproducing the pre-2026-08-27 baselines.")
+parser.add_argument("--release_descent", type=float, default=0.0,
+                    metavar="RATE",
+                    help="Dive-and-release: hold a constant descent of RATE m/s while above "
+                         "--release_alt instead of levelling off, so the arm fires WHILE "
+                         "descending. Wind drift scales with t_fall^2 and a descending release "
+                         "shortens the fall, so a level baseline is handed a systematically "
+                         "longer fall than a policy that dives. Needed to compare geometry-for-"
+                         "geometry against L0 (which chose alt 3.53 m, vz -1.17 m/s).")
 parser.add_argument("--kp_z", type=float, default=0.8, help="Altitude P gain (1/s).")
 parser.add_argument("--horizon", type=int, default=12,
                     help="argmin/oracle: predicted-impact horizon in policy steps.")
@@ -284,6 +292,13 @@ class BaselineController:
             v_now = vel_xy / torch.linalg.norm(vel_xy, dim=-1, keepdim=True).clamp(min=1e-6)
             v_des = torch.where(blind.unsqueeze(-1), v_now * args_cli.approach_speed, v_des)
         vz_des = torch.clamp(args_cli.kp_z * (args_cli.release_alt - alt), -2.0, 2.0)
+        if args_cli.release_descent > 0.0:
+            # Above the target altitude, command the descent rate outright; the P
+            # law only takes over as a floor once the band is reached. The arm is
+            # therefore still moving down when the release rule fires.
+            vz_des = torch.where(alt > args_cli.release_alt,
+                                 torch.full_like(alt, -abs(args_cli.release_descent)),
+                                 vz_des)
 
         drop = self._want_drop(pos_xy, vel_xy, alt, vz, aim_xy, residual)
 
