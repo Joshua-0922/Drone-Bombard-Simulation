@@ -6,6 +6,35 @@
 
 # 1. Current State
 
+**2026-09-01 — 논문의 학습 행이 채워졌다. PPO 없이.**
+
+지도학습 잔차(L1-SL): 동결 L0 + 오프라인 회귀만으로 **CEP50 −31.4%**(DR 1.5) /
+**−32.9%**(DR 2.5), 특권 오라클 천장의 **85% / 78%** 회수. 보상 코드 미변경, L0 재학습 없음.
+
+| DR 1.5, n=600 | 성공%@1.0 | 성공%@0.5 | CEP50 | CEP90 | 배달률 |
+|---|---|---|---|---|---|
+| L0 | 93.83 | 78.83 | 0.305 | 0.593 | 94.50% |
+| **L1-SL (obs+tilt, EMA 0.3)** | 93.50 | **86.50** | **0.209 (−31.4%)** | **0.464** | 94.67% |
+| 오라클 wind-only [천장] | 94.33 | 90.83 | 0.192 (−37.2%) | 0.392 | 94.67% |
+
+관측 가능성 회귀 $R^2$ (반출 에피소드): 상수 0.000 · linear(obs) 0.127 ·
+**MLP(obs) 0.436** · **MLP(obs+tilt 누적) 0.611** · MLP(obs+참바람) **0.998**.
+→ 관측은 바람에 **장님이 아니고**, 정보는 **비선형**으로 들어 있다.
+
+**tilt 채널에 L0 재학습은 필요 없다** — 지도 잔차는 정책과 분리된 네트워크라
+자기 입력을 만든다(정책 26채널 / 잔차 36채널). RL 잔차라면 Fresh Start가 강제된다.
+
+⚠️ **새 함정:** 결과 공간 잔차는 정확할 뿐 아니라 **시간적으로 매끄러워야** 한다.
+릴리즈 게이트가 첫 교차 판정이라 예측 요동(0.073~0.129 m/step vs 참값 0.018)이
+**계통 편향**으로 바뀌어 CEP를 2.5배 악화시킨다. EMA α=0.3으로 0.462 → 0.209.
+
+**L1-RL의 위치 변경:** 필수 경로 → "RL이 지도학습을 넘어서는가" **ablation**.
+
+→ [[experiments/exp_028_l1_sl_pilot]] · [[research/residual_observability]] ·
+[[research/release_gate_jitter]] · Rule 37, 38
+
+---
+
 **2026-08-30 (오후 재측정 이후)** — 평가 120회 완주, 실패 0건.
 
 ## Table 1 (seen, DR 1.5, 팔당 n=600, 평가 시드 3개)
@@ -49,6 +78,7 @@
 
 # 2. Recent Progress
 
+- **2026-09-01 (Isaac Lab, exp_028) — 잔차를 강화학습이 아니라 지도학습으로: PPO 없이 CEP50 −31.4%.** 08-30에 결정한 학습 목표($\delta^* = x_{real} - x_{nominal}$)를 실행. **Stage 1** 동결 L0를 추론만 굴려 `(관측 26, 참 드리프트 2)` 덤프(`play.py --dump_sl`, 7,008 ep / 42만 프레임, 라벨은 기존 `oracle_impact_residual(wind_only=True)` 재사용). **Stage 2** 오프라인 MLP 회귀, **분할은 에피소드 단위**(프레임 분할은 같은 바람 추출이 train/test에 걸쳐 라벨 누수). **Stage 3** 오라클과 **동일 경로**로 주입(`--sl_residual`), paired 200 ep × 36 run, 평가 시드 {3000,4000,5000}은 적합 시드 {1000,2000}과 서로소. **결과:** $R^2$ — linear(obs) 0.127 / MLP(obs) **0.436** / MLP(obs+tilt) **0.611** / MLP(참바람) **0.998**; CEP50 0.305 → **0.209 (−31.4%)**, DR 2.5에서 0.498 → **0.334 (−32.9%)**(회귀기는 DR 1.5로만 적합 — 외삽). **판정 3건:** ① 관측은 바람에 장님이 아니다(정보는 비선형으로 존재 — `--freeze_nominal`의 선형 판독이 왜 용량 부족이었는지와 정합). ② tilt 누적은 +17.5 pp인데 **L0 재학습 불필요** — 지도 잔차는 별도 네트워크라 정책이 보지 않는 입력을 먹는다. ③ **정확도만으로는 부족하다** — 게이트가 첫 교차 판정이라 예측 요동이 계통 편향("항상 일찍")이 되어 CEP를 2.5배 악화시킨다(참 드리프트 0.018 m/step vs 예측 0.073~0.129); EMA α=0.3으로 0.462 → 0.209, 단 정확도 부족은 못 메운다(obs 전용은 EMA에도 0.329 > L0 0.305). 부수: 릴리즈 프레임의 드리프트 RMS가 전 구간 대비 **0.643 → 0.341 m**로 반토막 — L0 릴리즈 기하의 프레임 단위 확인. `success@1.0`은 또 안 움직였고(93.83→93.50) `success@0.5`는 78.83→**86.50** — 지표 결정 3회차 확인. 함정 2건: `residual.enabled` 기본값이 True라 `--no_residual` 없이 평가하면 L0 성공률이 92.7→37.5%로 보임; rsl-rl은 관측을 TensorDict로 넘김. → [[experiments/exp_028_l1_sl_pilot]] / [[research/residual_observability]] / [[research/release_gate_jitter]] / Rule 37, 38
 - **2026-08-01 (repo housekeeping) — `main`을 `isaac_jk`로 승격 + `Isaac-JS` 브랜치 정리.** 10개 브랜치 전수 계보 조사로 `main`이 07-03 시점(Isaac Lab skeleton)에 정체돼 있고 실제 작업은 전부 `isaac_jk`에 있음을 확인. `Isaac-JS`(제균 개인 브랜치, 07-02 이후 Isaac Lab 코드 없이 Gazebo/SAC 문서만 추가)의 고유 연구노트(v15 회귀 진단, 보상함수 리뷰, Rule 25/26)를 `isaac_jk`로 포팅 후 브랜치 삭제. `main`을 `isaac_jk`로 force-update(구 `main`은 태그 `archive/main-pre-isaac_jk-promotion`으로 보존 — junsang `_junsang` 노트·초기 `isaac_lab_tasks/` 스켈레톤 포함). push 용량초과 보고의 실제 원인도 규명: `Isaac-JS` 마지막 커밋의 `git add .`가 SAC replay buffer/영상 ~166MB를 실수로 포함시킨 것(브랜치 삭제로 해소, repo 전체 히스토리 bloat는 별도 과제). `Issac_JS`(junsang)는 미변경 — 세션 중 junsang의 신규 커밋(v20 task 등록)이 아직 `main` 미반영. → [[daily/daily_2026-08-01]]
 - **2026-07-21 (Isaac Lab, exp_019) — 물리 페이로드 attach/detach: kinematic weld 구현 + hover-drop 검증 4/4 PASS.** 코드 전수 검토에서 릴리스 경로 결함 6종 발견(핵심: `_payload_attached`가 발화 시 False로 전환되지 않는 죽은 플래그 + 페이로드 자체가 물리적으로 부재). per-env RigidObject 페이로드 신설 — 부착=매 physics step pose+vel write(조인트 불가 제약 우회), 분리=CCIP 발화 후 release_delay(0.1 s) 카운트다운 만료 시 write 중단, 착탄=z≤0.10 m 래치로 측정 오차 기록. 검증: 추적 1.1 mm/분리 0 잔류/착탄 8/8/**측정 vs 해석적 |Δ| max 0.021 m**. 보상·종단 bit-identical, 기존 마커 env-0 버그도 수정. `play.py`에 payload_impact 통계 추가. → [[experiments/exp_019_physical_payload]] / [[research/physical_payload_attach]] / Rule 24
 - **2026-07-03 (Isaac Lab migration) — README 컨테이너 진입 절차 수정 + `play.py` 4-tuple 버그 fix.** 사용자가 혼자 재현 시도 시 실패 원인 규명: README의 `docker pull drone-bombard-isaac:latest`가 가리키는 이미지는 로컬에도 GCP Artifact Registry(`isaac-lab` 저장소, 0 items)에도 **존재하지 않음** — pull 대상이 없었음. 실제로는 `isaac-lab-local:580` 이미지로 띄운 `isaac-verify` 컨테이너가 이미 dev VM에 떠 있었음. README §5에 "이미 떠 있는 컨테이너 재사용" 절 신설 + non-root exec 시 root 소유 캐시(`/isaac-sim/kit/cache` 등)로 인한 `PermissionError` 크래시 및 chown 해결법 문서화 + `PYTHONUNBUFFERED=1` 팁(미설정 시 `simulation_app.close()`의 하드 종료로 마지막 PASS/FAIL print 유실) + README 전체의 `./isaaclab.sh`(존재하지 않는 상대경로, `/workspace/drone-bombard`에서 cwd 불일치) → `/workspace/isaaclab/isaaclab.sh` 절대경로로 일괄 수정(14곳). 검증 중 `isaac_lab/play.py`의 `run_zero_actions`/`run_scripted`/`run_policy`가 `RslRlVecEnvWrapper`(rsl_rl 4-tuple `obs,rew,dones,extras` API) 사용 중임에도 5-tuple(`obs,rew,terminated,truncated,info`) unpacking을 시도해 **항상 `ValueError`로 즉시 크래시**하던 버그 발견·수정. 수정 후 `--zero-actions`는 실행은 되나 altitude drift 12m/100 step로 FAIL(`verify_one_episode.py`는 동일 env로 148-step 안정 호버 PASS) — wrapper 경로 자체의 미해결 회귀 가능성, 후속 조사 필요. → [[isaac_container_access]] (Claude memory)
@@ -76,6 +106,18 @@
 ---
 
 # 3. Remaining Tasks (Next Steps)
+
+## 2026-09-01 이후 (exp_028 결과 반영)
+
+| 순위 | 작업 | 상태 |
+|---|---|---|
+| 0 | 적합 손실에 **시간 평활 항** $\lVert\hat\delta_t-\hat\delta_{t-1}\rVert^2$ (EMA는 사후 처치) | ❌ |
+| 0 | **조준 보상의 잔차 포함 결함 수정** (`task_env`에 exp_018 가드 복원) — L1-RL 전 필수 | ❌ |
+| 1 | **L1-RL 파일럿** (frozen / unfrozen) — 이제 ablation. 잔차 채널 평활 페널티 포함 | ❌ |
+| 1 | Table 1에서 T1 또는 T2@3.0 제거 (100 Hz 해상도에서 동일한 팔) | ❌ |
+| 2 | `research_architecture.md` §7 갱신 | ❌ |
+| 2 | unseen-R 추락률 26.8% 조사 | ❌ |
+| 3 | (선택) L0 학습 seed 3 | ❌ |
 
 ## 2026-08-23 이후 착수 순서 (research_architecture v3 §11)
 

@@ -87,6 +87,29 @@ parser.add_argument("--oracle_residual_wind_only", action="store_true",
                          "episode and revealed only AFTER the drop -- no residual can infer "
                          "them, so the full oracle OVERSTATES the reachable ceiling. This "
                          "variant is the fair ceiling for a residual with a wind estimate.")
+parser.add_argument("--sl_residual", type=str, default=None, metavar="PT",
+                    help="Inject a SUPERVISED impact residual: the TorchScript regressor "
+                         "exported by fit_sl.py, fitted offline on (observation, true drift) "
+                         "pairs from --dump_sl. Uses the same injection path and the same "
+                         "authority as --oracle_residual, so the arms differ only in where "
+                         "the correction comes from. A 36-wide module additionally consumes "
+                         "the causal per-episode tilt/velocity means -- inputs the FROZEN "
+                         "policy never sees, which is the point: the residual is a separate "
+                         "network and does not inherit L0's observation.")
+parser.add_argument("--sl_ema", type=float, default=1.0, metavar="ALPHA",
+                    help="EMA smoothing on the injected residual (1.0 = off). The release gate "
+                         "fires on the FIRST crossing of the corrected prediction over the "
+                         "target, so it samples the extreme of any step-to-step jitter, not its "
+                         "mean: a residual that is accurate on average but rough in time "
+                         "releases EARLY and systematically. The true drift moves 0.018 m per "
+                         "policy step; an unsmoothed regressor moves 0.07-0.13. Accuracy and "
+                         "smoothness are separate requirements and only the oracle has both.")
+parser.add_argument("--dump_sl", type=str, default=None, metavar="NPZ",
+                    help="Supervised-residual data collection. Writes one row per policy step: "
+                         "the observation the policy saw, and the PRIVILEGED wind-only impact "
+                         "drift (real - nominal, metres) that a residual would have to predict. "
+                         "Training a regressor on this answers whether the observation carries "
+                         "the wind at all -- separately from whether PPO can find it.")
 parser.add_argument("--oracle_residual", action="store_true",
                     help="Run the LEARNED policy for flight and the drop decision, but replace "
                          "its impact residual with the PRIVILEGED one (this episode's true wind, "
@@ -344,6 +367,96 @@ def _load_policy(env, policy_path):
     return runner.get_inference_policy(device=env.unwrapped.device)
 
 
+# --- supervised residual, injected -------------------------------------------
+# Mirrors fit_sl.tilt_features EXACTLY (same channels, same order, same causal
+# running mean). The instantaneous tilt is ambiguous -- a drone pitches to
+# accelerate as well as to hold against wind -- but the manoeuvre part averages
+# out over an episode and the wind part does not.
+_TILT_N = 10
+
+
+def _tilt_channels(o):
+    roll, pitch, sy, cy = o[:, 9], o[:, 10], o[:, 11], o[:, 12]
+    return torch.stack([roll, pitch,
+                        roll * cy, roll * sy, pitch * cy, pitch * sy,
+                        o[:, 6], o[:, 7], o[:, 21], o[:, 22]], dim=-1)
+
+
+class _SLResidual:
+    def __init__(self, path, u):
+        self.m = torch.jit.load(path, map_location=u.device).eval()
+        n_in = int(self.m.mu.numel())
+        self.use_tilt = n_in > u.cfg.observation_space
+        self.acc = torch.zeros(u.num_envs, _TILT_N, device=u.device)
+        self.cnt = torch.zeros(u.num_envs, 1, device=u.device)
+        self.prev = torch.zeros(u.num_envs, device=u.device)
+        self.alpha = float(args_cli.sl_ema)
+        self.ema = torch.zeros(u.num_envs, 2, device=u.device)
+        print(f"[sl_residual] {path}  in={n_in}  tilt_accum={self.use_tilt}  "
+              f"ema_alpha={self.alpha}")
+
+    def __call__(self, obs, u):
+        o = obs["policy"] if hasattr(obs, "keys") else obs
+        # DirectRLEnv resets inside step(), so a slot whose counter did not
+        # advance is a fresh episode -- same test fit_sl.py used offline.
+        elb = u.episode_length_buf.float()
+        new = elb <= self.prev
+        self.prev = elb
+        self.acc[new] = 0.0
+        self.cnt[new] = 0.0
+        self.acc += _tilt_channels(o)
+        self.cnt += 1.0
+        x = torch.cat([o, self.acc / self.cnt], dim=-1) if self.use_tilt else o
+        with torch.no_grad():
+            d = self.m(x)             # metres
+        if self.alpha >= 1.0:
+            return d
+        self.ema = torch.where(new.unsqueeze(-1), d,
+                               self.alpha * d + (1.0 - self.alpha) * self.ema)
+        return self.ema
+
+
+# --- supervised-residual data collection -------------------------------------
+# The residual's regression target is drift = real_impact - nominal_impact in
+# METRES, unclamped. oracle_impact_residual returns drift/res_scale clamped to
+# +-1, so it is called with a scale far above any physical drift and undone --
+# the clamp is a property of the ACTION channel, not of the quantity being
+# learned, and saturating the labels would hide exactly the large-wind cases
+# the regression is being asked about.
+_SL_BIG = 1000.0
+
+
+def _sl_row(obs, u):
+    # rsl-rl hands the policy a TensorDict, not a bare tensor.
+    o = obs["policy"] if hasattr(obs, "keys") else obs
+    pos = u._robot.data.root_pos_w - u.scene.env_origins
+    vel = u._robot.data.root_lin_vel_w
+    drift = u.oracle_impact_residual(pos[:, :2], vel[:, :2], pos[:, 2], vel[:, 2],
+                                     _SL_BIG, wind_only=True) * _SL_BIG
+    ep = u.episode_length_buf.float().unsqueeze(-1)
+    return torch.cat([
+        o, drift, u._wind_xy, ep,
+        u._payload_attached.float().unsqueeze(-1),
+        u._detected.float().unsqueeze(-1),
+    ], dim=-1).float().cpu()
+
+
+def _sl_save(dump, path, u):
+    import numpy as np
+    a = torch.stack(dump).numpy()                     # (T, num_envs, n_obs + 7)
+    n_obs = a.shape[-1] - 7
+    np.savez_compressed(
+        path,
+        obs=a[..., :n_obs], drift=a[..., n_obs:n_obs + 2],
+        wind=a[..., n_obs + 2:n_obs + 4], ep_len=a[..., n_obs + 4],
+        attached=a[..., n_obs + 5], detected=a[..., n_obs + 6],
+        dr_scale=np.float32(u.cfg.model_err.scale),
+        seed=np.int32(args_cli.seed),
+    )
+    print(f"[dump_sl] wrote {a.shape[0]} steps x {a.shape[1]} envs "
+          f"(obs dim {n_obs}) to {path}", flush=True)
+
+
 def run_policy_paired(env, policy_path, episodes):
     """Learned arm (T4/T5) through the SHARED harness — same collector, same
     metric definitions, same JSON schema as the rule-based baselines, so Table 1
@@ -353,9 +466,14 @@ def run_policy_paired(env, policy_path, episodes):
     import eval_harness
 
     policy = _load_policy(env, policy_path)
+    dump = [] if args_cli.dump_sl else None
+    sl = _SLResidual(args_cli.sl_residual, env.unwrapped) if args_cli.sl_residual else None
 
     def act(obs, u):
         a = policy(obs)
+        if sl is not None:
+            a = a.clone()
+            a[:, 5:7] = torch.clamp(sl(obs, u) / float(u.cfg.residual.scale), -1.0, 1.0)
         if args_cli.oracle_residual or args_cli.oracle_residual_wind_only:
             pos = u._robot.data.root_pos_w - u.scene.env_origins
             vel = u._robot.data.root_lin_vel_w
@@ -364,6 +482,8 @@ def run_policy_paired(env, policy_path, episodes):
                 pos[:, :2], vel[:, :2], pos[:, 2], vel[:, 2],
                 float(u.cfg.residual.scale),
                 wind_only=args_cli.oracle_residual_wind_only)
+        if dump is not None:
+            dump.append(_sl_row(obs, u))
         return a
 
     eval_harness.run_and_report(
@@ -382,6 +502,9 @@ def run_policy_paired(env, policy_path, episodes):
             "policy": policy_path},
         out_json=args_cli.out_json,
     )
+
+    if dump is not None:
+        _sl_save(dump, args_cli.dump_sl, env.unwrapped)
 
 
 def run_policy(env, policy_path, episodes=10):
@@ -579,7 +702,8 @@ def main():
     if hasattr(env_cfg, "residual") and args_cli.no_residual:
         env_cfg.residual.enabled = False
     if hasattr(env_cfg, "residual") and (
-            args_cli.oracle_residual or args_cli.oracle_residual_wind_only):
+            args_cli.oracle_residual or args_cli.oracle_residual_wind_only
+            or args_cli.sl_residual):
         # L0 was trained with the channel off; turn it on so the injected
         # correction actually reaches _ccip, and give it the oracle's wider
         # authority (the learned range is deliberately tighter). Nothing else

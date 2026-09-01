@@ -12,6 +12,38 @@ type: index
 
 ---
 
+## 현재 상태 (2026-09-01)
+
+### ⭐⭐ 오늘의 결론 — 논문의 학습 행이 채워졌다 (PPO 없이)
+
+- **⭐⭐⭐ 지도학습 잔차가 동작한다: [[experiments/exp_028_l1_sl_pilot]]**
+  동결 L0 + 오프라인 회귀만으로 **CEP50 0.305 → 0.209 (−31.4%)**, DR 2.5에서도
+  **0.498 → 0.334 (−32.9%)**. 특권 오라클 천장(0.192 / 0.288)의 **85% / 78%**를 회수한다.
+  **PPO 없음, L0 재학습 없음, 보상 코드 미변경.** 배달률·추락 수는 전 팔 동일.
+- **⭐⭐ 관측은 바람에 장님이 아니다: [[research/residual_observability]]**
+  회귀 $R^2$ — 상수 0.000 · linear(obs) **0.127** · MLP(obs) **0.436** ·
+  MLP(obs+tilt 누적) **0.611** · MLP(obs+참바람) **0.998**.
+  정보는 있고, **비선형으로** 들어 있다. 두 학습 시드·두 DR 수준에서 순서가 같다.
+- **⭐⭐ tilt 채널 판정 — 넣을 값어치는 있지만 L0 재학습은 필요 없다.**
+  지도 잔차는 정책과 **분리된 네트워크**라 자기 입력을 만든다 (정책 26채널 / 잔차 36채널).
+  RL 잔차라면 관측 확장 → `observation_space` 변경 → **Fresh Start**가 강제된다.
+- **⭐⭐ 새 함정 — 결과 공간 잔차는 매끄러워야 한다: [[research/release_gate_jitter]]**
+  RMSE가 멀쩡한 잔차가 CEP를 **2.5배 악화**시켰다. 게이트가 **첫 교차** 판정이라
+  예측의 스텝간 요동(0.073~0.129 m/step vs 참값 0.018)의 **극값을 표집**하고,
+  릴리즈가 계통적으로 빨라진다. **EMA α=0.3 한 줄로 0.462 → 0.209.**
+  → RL 잔차에도 그대로 적용됨. 08-29 L1 붕괴의 새 원인 후보.
+- **`success@1.0`은 또 안 움직였다** (93.83 → 93.50). `success@0.5`는 **78.83 → 86.50**.
+  [[research/paper_metrics]]의 지표 결정이 세 번째로 확인됨.
+
+### 🔧 코드 (2026-09-01)
+
+- `play.py` — `--dump_sl` (관측·참드리프트 덤프), `--sl_residual` (지도 잔차 주입,
+  오라클과 동일 경로), `--sl_ema` (시간 평활)
+- `_SLResidual` — 인과적 tilt 누적 10채널을 온라인 유지. 정책이 보지 않는 입력이다.
+- L1-RL의 위치 변경: 필수 경로 → **"RL이 지도학습을 넘어서는가" ablation**
+
+---
+
 ## 현재 상태 (2026-08-30)
 
 ### ⭐ 오늘의 결론 (오후 재측정 이후)
@@ -283,6 +315,8 @@ type: index
 ## 노트 인덱스
 
 ### 연구 (research/)
+- [[research/residual_observability]] — **(09-01) 관측이 바람을 담고 있는가 — 지도 회귀 $R^2$ 0.44(obs) / 0.61(+tilt) / 0.998(참바람). tilt 채널에 L0 재학습이 필요 없는 이유 (Rule 37)**
+- [[research/release_gate_jitter]] — **(09-01) 첫 교차 게이트 앞에서 예측 요동은 계통 편향이 된다 — 정확도와 매끄러움은 별개 요구조건, EMA로 CEP 0.462→0.209 (Rule 38)**
 - [[research/research_architecture]] — **(08-23) 최종 아키텍처 v3 — 코드 실측 대조 개정판. 착수 전 필수 수정 B1~B5, DR 축 정정, 관측 프레임 결정**
 - [[research/t3_oracle_entrainment]] — **(08-27) T3 오라클이 상한선이 아니었다 — 즉시 엔트레인먼트 가정, 그리고 지배 오차는 바람이 아니라 자기속도 항력 (Rule 31)**
 - [[research/ccip_vz_omission]] — **(08-23) CCIP 수직속도 누락 — 잔차가 배우던 것은 바람이 아니라 공식 결손이었다 (Rule 30)**
@@ -320,6 +354,7 @@ type: index
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
+- [[experiments/exp_028_l1_sl_pilot]] — **(09-01) L1-SL 파일럿 — PPO 없이 CEP50 −31.4%(DR1.5) / −32.9%(DR2.5), 오라클 천장의 85%**
 - [[experiments/exp_001_8otphxy8_linear_reward]] — 선형 거리 보상 + CRUISE retry
 - [[experiments/exp_002_reward_shaping_patches]] — 보상 패치 Fresh Training (대기 중)
 - [[experiments/exp_003_rtf_dryrun]] — RTF 1/2/4 dry-run 비교. RTF=2 최적 확정.
