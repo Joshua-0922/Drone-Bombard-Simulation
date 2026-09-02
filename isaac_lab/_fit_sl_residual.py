@@ -48,6 +48,10 @@ p.add_argument("--export", default=None, metavar="PT",
                     "The module takes the RAW feature vector and returns METRES, so the "
                     "normalisation travels with the weights and cannot drift.")
 p.add_argument("--export_arm", default="tilt", choices=["obs", "tilt"])
+p.add_argument("--train_ep", type=int, default=0, metavar="N",
+               help="Cap the TRAINING set at N episodes (0 = all). The held-out test "
+                    "episodes are untouched, so R2 across different N is measured on the "
+                    "same test set -- that is what makes the label-count curve readable.")
 a = p.parse_args()
 
 
@@ -136,7 +140,13 @@ rng = np.random.default_rng(a.seed)
 te_ep = np.zeros(n_ep, bool)
 te_ep[rng.permutation(n_ep)[: max(1, n_ep // 3)]] = True
 te, tr = te_ep[E], ~te_ep[E]
-print(f"train {tr.sum()} frames / {(~te_ep).sum()} eps    "
+n_tr_ep = int((~te_ep).sum())
+if a.train_ep:
+    keep = np.zeros(n_ep, bool)
+    keep[rng.permutation(np.flatnonzero(~te_ep))[: a.train_ep]] = True
+    tr = keep[E]
+    n_tr_ep = int(keep.sum())
+print(f"train {tr.sum()} frames / {n_tr_ep} eps    "
       f"test {te.sum()} frames / {te_ep.sum()} eps")
 
 ybar = Y[tr].mean(0)

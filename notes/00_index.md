@@ -12,6 +12,38 @@ type: index
 
 ---
 
+## 현재 상태 (2026-09-02)
+
+### ⭐⭐ 오늘의 결론 — 일반화 감사: 두 축 통과, 한 축 실패
+
+- **⭐⭐⭐ 정책 전이 실패: [[research/residual_policy_coupling]]**
+  seed-1 정책으로 적합한 회귀기를 **seed-2 정책에 주입하면 순손실**이다 —
+  CEP50은 −7%로 좋아 보이지만 succ@1.0 **96.0 → 89.3%**, CEP90 **0.542 → 0.830**.
+  seed-2 자체 데이터로 재적합하면 −22.0%, CEP90 0.562로 복구.
+  **obs→drift 사상은 물리가 아니라 정책의 성질이다** — tilt가 재는 것은
+  $\bar\theta \approx F_{wind}/K_{policy}$ 이고 $K$는 컨트롤러마다 다르다 (Rule 39).
+- **⭐⭐ 미지 사거리 통과: [[experiments/exp_029_l1_sl_generalization]] §3**
+  26–30 m(적합은 18–22 m)에서 CEP50 0.299 → **0.218 (−27.3%)**,
+  오라클 회수율 **85.3%** — 훈련 범위(85.0%)와 소수 둘째 자리까지 같다.
+  기하를 외운 게 아니라 바람을 읽는다. 배달률은 세 arm 모두 73.83%로 동일.
+- **⭐⭐ 오라클 간극의 정체 = 정보, 데이터 아님: [[research/residual_label_efficiency]]**
+  같은 네트워크에 **참바람을 주면 100 에피소드에서 $R^2$ 0.982**. 관측만이면
+  2,334 ep에서도 0.611(배증당 증가폭 0.081→0.032 감쇠, 점근선 0.65–0.70).
+  **실기 보정 예산 = 1,000회 투하** (최종 이득의 96%).
+- **⚠️ 새 함정 — 잘못 보정된 잔차는 꼬리를 먼저 망친다 (Rule 40).**
+  라벨 100개 arm: CEP50 −5.5%(개선)인데 CEP90 **+43%**, succ@1.0 **−6.5 pp**.
+  전이 arm과 **같은 서명**. **CEP50 단독 판정 금지** — CEP90·succ@1.0 동반 보고.
+- **DAgger가 최우선으로 올라감** — 축 P가 분포 이동의 파괴력을 실측으로 보여줬다.
+
+### 🔧 코드 (2026-09-02)
+
+- `_fit_sl_residual.py --train_ep N` — 테스트 분할 고정한 채 학습 에피소드만 절단
+- `_agg_sl_eval.py` — arm 자동 탐지(파일명 파싱) + `--wandb` (실험당 run 1개, Table 1장)
+- `_sl_gen.sh` — 세 축 배치 (33 run, ~20분)
+- wandb: `sl_gen_unseenR` / `sl_gen_policy_transfer` / `sl_gen_label_count` (job_type=eval)
+
+---
+
 ## 현재 상태 (2026-09-01)
 
 ### ⭐⭐ 오늘의 결론 — 논문의 학습 행이 채워졌다 (PPO 없이)
@@ -315,6 +347,8 @@ type: index
 ## 노트 인덱스
 
 ### 연구 (research/)
+- [[research/residual_policy_coupling]] — **(09-02) 잔차 회귀기는 물리가 아니라 정책에 결합되어 있다 — 전이하면 순손실, 재적합으로 복구 (Rule 39)**
+- [[research/residual_label_efficiency]] — **(09-02) 라벨 1,000개면 이득의 96%. 오라클과의 간극은 데이터가 아니라 정보다 (Rule 40)**
 - [[research/residual_observability]] — **(09-01) 관측이 바람을 담고 있는가 — 지도 회귀 $R^2$ 0.44(obs) / 0.61(+tilt) / 0.998(참바람). tilt 채널에 L0 재학습이 필요 없는 이유 (Rule 37)**
 - [[research/release_gate_jitter]] — **(09-01) 첫 교차 게이트 앞에서 예측 요동은 계통 편향이 된다 — 정확도와 매끄러움은 별개 요구조건, EMA로 CEP 0.462→0.209 (Rule 38)**
 - [[research/research_architecture]] — **(08-23) 최종 아키텍처 v3 — 코드 실측 대조 개정판. 착수 전 필수 수정 B1~B5, DR 축 정정, 관측 프레임 결정**
@@ -354,6 +388,7 @@ type: index
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
+- [[experiments/exp_029_l1_sl_generalization]] — **(09-02) 일반화 감사 — 미지 사거리 ✅ 85.3% 회수 / 정책 전이 ⛔ 순손실 / 라벨 1,000개면 96%**
 - [[experiments/exp_028_l1_sl_pilot]] — **(09-01) L1-SL 파일럿 — PPO 없이 CEP50 −31.4%(DR1.5) / −32.9%(DR2.5), 오라클 천장의 85%**
 - [[experiments/exp_001_8otphxy8_linear_reward]] — 선형 거리 보상 + CRUISE retry
 - [[experiments/exp_002_reward_shaping_patches]] — 보상 패치 Fresh Training (대기 중)

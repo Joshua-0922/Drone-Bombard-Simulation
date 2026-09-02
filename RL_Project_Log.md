@@ -6,6 +6,61 @@
 
 # 1. Current State
 
+**2026-09-02 — 일반화 감사 완료. 두 축 통과, 한 축 실패.**
+
+exp_028이 남긴 미측정 축 세 개를 닫았다 (arm당 600 짝지은 에피소드, DR 1.5).
+
+**✅ 축 R — 미지 사거리 26–30 m (적합은 18–22 m):**
+
+| n=600 | 성공%@1.0 | 성공%@0.5 | CEP50 | CEP90 | 배달률 |
+|---|---|---|---|---|---|
+| L0 | 73.00 | 60.67 | 0.299 | 0.617 | 73.83% |
+| **L1-SL (tilt, EMA 0.3)** | 73.33 | **67.83** | **0.218 (−27.3%)** | 0.469 | 73.83% |
+| 오라클 [천장] | 73.83 | 69.83 | 0.204 (−31.7%) | 0.409 | 74.17% |
+
+오라클 회수율 **85.3%** — 훈련 범위(85.0%)와 동일. **기하 암기가 아니라 바람 추정이다.**
+배달률이 세 arm 모두 73.83%로 같아, 잔차가 비행을 건드리지 않음이 재확인됐다.
+
+**⛔ 축 P — 정책 전이 (seed 1 회귀기 → seed 2 정책): 순손실**
+
+| n=600 | 성공%@1.0 | CEP50 | CEP90 | 평균오차 | 회수율 |
+|---|---|---|---|---|---|
+| L0 seed 2 | 96.00 | 0.274 | 0.542 | 0.305 | — |
+| **전이 (seed 1에서 적합)** | **89.33** | 0.255 (−7.0%) | **0.830** | **0.361** | 22.9% |
+| **재적합 (seed 2 데이터)** | 92.50 | 0.214 (−22.0%) | 0.562 | 0.294 | 72.3% |
+| 오라클 [천장] | 94.33 | 0.191 (−30.2%) | 0.432 | 0.247 | 100% |
+
+**obs→drift 사상은 물리가 아니라 정책의 성질이다.** tilt가 재는 것은 바람이 아니라
+$\bar\theta \approx F_{wind}/K_{policy}$ 이고 $K$는 컨트롤러마다 다르다.
+정보 문제가 아님의 증거: 오라클은 같은 정책에서 −30.2%, seed 2의 회귀 $R^2$는
+오히려 높고(0.631), 재적합하면 꼬리가 복구된다. → **정책마다 재적합 필요 (Rule 39).**
+
+**✅ 축 N — 라벨 수: 1,000회면 이득의 96%**
+
+| 학습 ep | 100 | 200 | 500 | 1000 | 2334 |
+|---|---|---|---|---|---|
+| $R^2$ (obs+tilt) | 0.382 | 0.463 | 0.537 | 0.573 | 0.611 |
+| $R^2$ (obs+**참바람**) | **0.982** | 0.991 | 0.995 | 0.997 | 0.998 |
+| CEP50 Δ vs L0 | −5.5% | −14.8% | −23.8% | **−30.1%** | −31.4% |
+| succ@1.0 (L0 93.83) | **87.33** | 89.33 | 90.00 | 92.50 | 93.50 |
+
+**오라클과의 간극은 데이터가 아니라 정보다** — 참바람을 주면 100 ep에서 이미 0.982.
+배증당 증가폭 0.081→0.032 감쇠, 점근선 0.65–0.70. **실기 예산 = 1,000회 투하.**
+
+⚠️ **새 함정 (Rule 40):** 잘못 보정된 잔차는 **중앙값보다 꼬리를 먼저 망친다.**
+n=100 arm은 CEP50 −5.5%(개선)인데 CEP90 +43%, succ@1.0 −6.5 pp — 전이 arm과 같은 서명.
+**CEP50 단독으로 잔차 arm을 판정하지 말 것.**
+
+**L1-RL 재평가:** 축 P는 RL의 실질적 장점(공동 적응 → 구조적으로 정책 결합 없음)을
+만들어 준다. SL이 본선이라는 결론은 유지하되, 비교 절에 이 장점을 적어야 한다.
+
+wandb: `sl_gen_unseenR` / `sl_gen_policy_transfer` / `sl_gen_label_count` (job_type=eval)
+
+→ [[experiments/exp_029_l1_sl_generalization]] · [[research/residual_policy_coupling]] ·
+[[research/residual_label_efficiency]] · Rule 39, 40
+
+---
+
 **2026-09-01 — 논문의 학습 행이 채워졌다. PPO 없이.**
 
 지도학습 잔차(L1-SL): 동결 L0 + 오프라인 회귀만으로 **CEP50 −31.4%**(DR 1.5) /
@@ -78,6 +133,17 @@
 
 # 2. Recent Progress
 
+## 2026-09-02 — L1-SL 일반화 감사 (exp029)
+
+- **주입 평가 39 run** (세 축 36 + 전이 확증 3), arm당 600 짝지은 에피소드,
+  평가 시드 {3000,4000,5000} — 적합 시드 {1000,2000}과 서로소.
+- **오프라인 적합 6종** — 라벨 수 곡선 5종(`--train_ep` 100…2000) + seed-2 자체 대조군.
+- **코드:** `_fit_sl_residual.py --train_ep` / `_agg_sl_eval.py` arm 자동탐지 + `--wandb` /
+  `_sl_gen.sh` 신설. paired eval에는 wandb 훅이 없어(비-paired 경로 전용)
+  **집계 단계에 붙여 실험당 run 1개**로 처리.
+- **결론 3건:** 기하 축 일반화 확인 · 정책 결합 발견(Rule 39) · 간극의 정체 = 정보(Rule 40).
+- **DAgger 우선순위 최상위로 상향** — 축 P가 분포 이동의 파괴력을 실측으로 보여줌.
+
 - **2026-09-01 (Isaac Lab, exp_028) — 잔차를 강화학습이 아니라 지도학습으로: PPO 없이 CEP50 −31.4%.** 08-30에 결정한 학습 목표($\delta^* = x_{real} - x_{nominal}$)를 실행. **Stage 1** 동결 L0를 추론만 굴려 `(관측 26, 참 드리프트 2)` 덤프(`play.py --dump_sl`, 7,008 ep / 42만 프레임, 라벨은 기존 `oracle_impact_residual(wind_only=True)` 재사용). **Stage 2** 오프라인 MLP 회귀, **분할은 에피소드 단위**(프레임 분할은 같은 바람 추출이 train/test에 걸쳐 라벨 누수). **Stage 3** 오라클과 **동일 경로**로 주입(`--sl_residual`), paired 200 ep × 36 run, 평가 시드 {3000,4000,5000}은 적합 시드 {1000,2000}과 서로소. **결과:** $R^2$ — linear(obs) 0.127 / MLP(obs) **0.436** / MLP(obs+tilt) **0.611** / MLP(참바람) **0.998**; CEP50 0.305 → **0.209 (−31.4%)**, DR 2.5에서 0.498 → **0.334 (−32.9%)**(회귀기는 DR 1.5로만 적합 — 외삽). **판정 3건:** ① 관측은 바람에 장님이 아니다(정보는 비선형으로 존재 — `--freeze_nominal`의 선형 판독이 왜 용량 부족이었는지와 정합). ② tilt 누적은 +17.5 pp인데 **L0 재학습 불필요** — 지도 잔차는 별도 네트워크라 정책이 보지 않는 입력을 먹는다. ③ **정확도만으로는 부족하다** — 게이트가 첫 교차 판정이라 예측 요동이 계통 편향("항상 일찍")이 되어 CEP를 2.5배 악화시킨다(참 드리프트 0.018 m/step vs 예측 0.073~0.129); EMA α=0.3으로 0.462 → 0.209, 단 정확도 부족은 못 메운다(obs 전용은 EMA에도 0.329 > L0 0.305). 부수: 릴리즈 프레임의 드리프트 RMS가 전 구간 대비 **0.643 → 0.341 m**로 반토막 — L0 릴리즈 기하의 프레임 단위 확인. `success@1.0`은 또 안 움직였고(93.83→93.50) `success@0.5`는 78.83→**86.50** — 지표 결정 3회차 확인. 함정 2건: `residual.enabled` 기본값이 True라 `--no_residual` 없이 평가하면 L0 성공률이 92.7→37.5%로 보임; rsl-rl은 관측을 TensorDict로 넘김. → [[experiments/exp_028_l1_sl_pilot]] / [[research/residual_observability]] / [[research/release_gate_jitter]] / Rule 37, 38
 - **2026-08-01 (repo housekeeping) — `main`을 `isaac_jk`로 승격 + `Isaac-JS` 브랜치 정리.** 10개 브랜치 전수 계보 조사로 `main`이 07-03 시점(Isaac Lab skeleton)에 정체돼 있고 실제 작업은 전부 `isaac_jk`에 있음을 확인. `Isaac-JS`(제균 개인 브랜치, 07-02 이후 Isaac Lab 코드 없이 Gazebo/SAC 문서만 추가)의 고유 연구노트(v15 회귀 진단, 보상함수 리뷰, Rule 25/26)를 `isaac_jk`로 포팅 후 브랜치 삭제. `main`을 `isaac_jk`로 force-update(구 `main`은 태그 `archive/main-pre-isaac_jk-promotion`으로 보존 — junsang `_junsang` 노트·초기 `isaac_lab_tasks/` 스켈레톤 포함). push 용량초과 보고의 실제 원인도 규명: `Isaac-JS` 마지막 커밋의 `git add .`가 SAC replay buffer/영상 ~166MB를 실수로 포함시킨 것(브랜치 삭제로 해소, repo 전체 히스토리 bloat는 별도 과제). `Issac_JS`(junsang)는 미변경 — 세션 중 junsang의 신규 커밋(v20 task 등록)이 아직 `main` 미반영. → [[daily/daily_2026-08-01]]
 - **2026-07-21 (Isaac Lab, exp_019) — 물리 페이로드 attach/detach: kinematic weld 구현 + hover-drop 검증 4/4 PASS.** 코드 전수 검토에서 릴리스 경로 결함 6종 발견(핵심: `_payload_attached`가 발화 시 False로 전환되지 않는 죽은 플래그 + 페이로드 자체가 물리적으로 부재). per-env RigidObject 페이로드 신설 — 부착=매 physics step pose+vel write(조인트 불가 제약 우회), 분리=CCIP 발화 후 release_delay(0.1 s) 카운트다운 만료 시 write 중단, 착탄=z≤0.10 m 래치로 측정 오차 기록. 검증: 추적 1.1 mm/분리 0 잔류/착탄 8/8/**측정 vs 해석적 |Δ| max 0.021 m**. 보상·종단 bit-identical, 기존 마커 env-0 버그도 수정. `play.py`에 payload_impact 통계 추가. → [[experiments/exp_019_physical_payload]] / [[research/physical_payload_attach]] / Rule 24
@@ -106,6 +172,18 @@
 ---
 
 # 3. Remaining Tasks (Next Steps)
+
+## 2026-09-02 기준 우선순위
+
+| # | 무엇 | 왜 | 비용 |
+|---|---|---|---|
+| **1** | **DAgger 1바퀴** (잔차 켠 채 재수집 → 재적합) | 축 P가 분포 이동의 파괴력 실증 → **최상위로 상향** | ~30분 |
+| **2** | 조준 보상 잔차 포함 결함 수정 | **L1-RL 전 필수** | ~30분 |
+| 3 | 적합 손실에 시간 평활 항 | EMA의 원인 처치 | ~20분 |
+| 4 | seed 2 재수집(3,500 ep) 후 재적합 | "라벨 부족 vs 여유 부족" 구분 | ~10분 |
+| 5 | 3-seed 각각 재적합 → 분산 보고 | Rule 39가 seed별 재적합을 요구 → 논문 표 변경 | ~40분 |
+| 6 | OU(시변) 바람 ablation | tilt 누적의 전제 — 남은 마지막 한계 | ~1시간 |
+| 7 | Table 1에서 T1 또는 T2@3.0 제거 · `research_architecture` §7 갱신 | 100 Hz 판정에서 동일해진 arm | ~20분 |
 
 ## 2026-09-01 이후 (exp_028 결과 반영)
 
@@ -218,3 +296,4 @@
 | 2026-07-23 | **exp020 물리 페이로드 부착 첫 학습 (o5jn9xzk train / vryuc6mu eval, Isaac PPO, 병행 트랙)** | 400 iters (2048 envs, warm-start=exp018_B0, 보상 bit-match) | **물리 페이로드(kinematic weld) 학습 비용 = 0 — det 200-ep success/release 100.00%, drop err 0.169 m.** `physical_payload=True`가 유일한 델타, release_rate 첫 롤아웃부터 100%(재학습 과도기 없음). σ 드리프트 1.41→1.71 모니터 대상. `play.py --wandb` eval-figure 파이프라인 신설. 컨테이너 빈 WANDB_API_KEY 함정(`--env-file` 필수). ckpt 호스트 `/opt/drone-bombard/checkpoints/exp020/`. → [[experiments/exp_020_o5jn9xzk_payload_training]] |
 | 2026-07-30 | **exp021 v19 + 이동 타겟 CV/CT/CA warm-start 학습 (a6saa42b/29jqq1lu/ntumqwoz, Isaac PPO, 병행 트랙)** | 3 runs × 1000 iters (2048 envs, warm-start=준상 v19 precise 사본) | **이동타겟 모션(CV/CT/CA)을 v19에 obs-보존 포팅 → 3종 학습 완주.** 종반 창: cv release 0.67–0.90/drop 0.39–0.90 m, ct 0.43–0.80/0.24–1.24 m, ca 0.40–0.78/0.32–1.96 m(reward 음수 잔존 — 가속 타겟 최난). 난이도 cv<ct<ca. det eval 후속. ckpt `/opt/drone-bombard/checkpoints/exp021/`. → [[experiments/exp_021_v19_moving_target]] |
 | 2026-07-30 | **exp021 det 200-ep eval 3종 (1nvvuogg/prdqujah/gdow3vfg, eval)** | 0 (deterministic eval only) | **cv success 44.5%/release 81.5%/drop med 0.775 m · ct 33.8%/82.6%/0.783 m · ca 16.5%/63.5%/1.063 m.** 릴리스 이월·명중은 리드 부재로 경계 몰림(released-miss>success). 개선 1순위=리드 개입(KF obs 포팅/target-vel obs/w_lead). play.py --wandb NameError(impacted) 수정, eval seed 미고정 표본 변동(32↔44.5%) 확인. → [[experiments/exp_021_v19_moving_target]] §3b |
+| 2026-09-02 | **exp029 L1-SL 일반화 감사 — 미지 사거리 · 정책 전이 · 라벨 수 (주입 39 run + 오프라인 적합 6종, 학습 없음)** | 0 (추론 롤아웃 + 오프라인 회귀; arm당 600 짝지은 ep, 평가 시드 3000/4000/5000) | **✅ 미지 사거리 26–30 m: CEP50 0.299→0.218(−27.3%), 오라클 회수율 85.3% = 훈련 범위(85.0%)와 동일 — 기하 암기 아님. ⛔ 정책 전이(seed1→seed2): CEP50 −7.0%인데 succ@1.0 96.0→89.3%, CEP90 0.542→0.830 = 순손실; seed2 재적합 시 −22.0%·CEP90 0.562로 복구 → obs→drift는 정책의 성질($\bar\theta \approx F_{wind}/K_{policy}$), 정책마다 재적합 필요 (Rule 39). ✅ 라벨 수: 100/200/500/1000/2334 ep → CEP50 −5.5/−14.8/−23.8/−30.1/−31.4%, 1,000회면 이득의 96% = 실기 예산. 참바람 입력은 100 ep에서 이미 $R^2$ 0.982 → 오라클 간극은 데이터가 아니라 정보. ⚠️ 오보정 잔차는 중앙값보다 꼬리를 먼저 망침(n=100: CEP90 +43%, succ@1.0 −6.5 pp) — CEP50 단독 판정 금지 (Rule 40).** wandb `sl_gen_unseenR`/`sl_gen_policy_transfer`/`sl_gen_label_count`. → [[experiments/exp_029_l1_sl_generalization]] / [[research/residual_policy_coupling]] / [[research/residual_label_efficiency]] |
