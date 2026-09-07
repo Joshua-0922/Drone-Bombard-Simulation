@@ -44,6 +44,12 @@ parser.add_argument("--no_handoff_dr", action="store_true",
                     help="Evaluate with the handoff pinned to its nominal (fixed heading/speed/altitude/"
                          "attitude) even if the task randomizes it — the train/test-mismatch protocol "
                          "needs both directions.")
+parser.add_argument("--wind_tau", type=float, default=None, metavar="SEC",
+                    help="Ornstein-Uhlenbeck correlation time of the wind, seconds. "
+                         "Omit (or 0) for the trained condition: one draw per episode, "
+                         "held constant. >0 makes the wind time-varying with the SAME "
+                         "stationary distribution, so the ablation isolates time "
+                         "variation rather than wind strength.")
 parser.add_argument("--dr_scale", type=float, default=None,
                     help="A-GROUP domain-randomization strength at EVALUATION time (wind, payload ballistic "
                          "coefficient, release-latency spread). Set it ABOVE the training value for the "
@@ -110,6 +116,15 @@ parser.add_argument("--dump_sl", type=str, default=None, metavar="NPZ",
                          "drift (real - nominal, metres) that a residual would have to predict. "
                          "Training a regressor on this answers whether the observation carries "
                          "the wind at all -- separately from whether PPO can find it.")
+parser.add_argument("--oracle_ema", type=float, default=None, metavar="ALPHA",
+                    help="Apply the same temporal smoothing to the ORACLE residual that "
+                         "--sl_ema applies to the learned one. Off by default, because "
+                         "under constant wind the oracle's output is already smooth and "
+                         "every published oracle number was measured raw. It is needed "
+                         "under time-varying wind (--wind_tau): the wind jitters at "
+                         "physics rate, the oracle's predicted impact point jitters with "
+                         "it, and the first-crossing gate samples the extreme -- without "
+                         "this the ceiling arm loses to no-residual at all.")
 parser.add_argument("--oracle_residual", action="store_true",
                     help="Run the LEARNED policy for flight and the drop decision, but replace "
                          "its impact residual with the PRIVILEGED one (this episode's true wind, "
@@ -426,6 +441,29 @@ class _SLResidual:
         return self.ema
 
 
+class _ResidualEMA:
+    """Temporal smoothing for an already-computed residual stream.
+
+    Same rule as _SLResidual's built-in EMA (reset to the raw value on a new
+    episode, exponential thereafter), factored out so the oracle arm can be held
+    to the same smoothness as the learned arms. Accuracy and smoothness are
+    separate requirements in front of a first-crossing gate -- see Rule 38.
+    """
+
+    def __init__(self, alpha, u):
+        self.alpha = float(alpha)
+        self.prev = torch.zeros(u.num_envs, device=u.device)
+        self.ema = torch.zeros(u.num_envs, 2, device=u.device)
+
+    def __call__(self, d, u):
+        elb = u.episode_length_buf.float()
+        new = elb <= self.prev
+        self.prev = elb
+        self.ema = torch.where(new.unsqueeze(-1), d,
+                               self.alpha * d + (1.0 - self.alpha) * self.ema)
+        return self.ema
+
+
 # --- supervised-residual data collection -------------------------------------
 # The residual's regression target is drift = real_impact - nominal_impact in
 # METRES, unclamped. oracle_impact_residual returns drift/res_scale clamped to
@@ -478,6 +516,8 @@ def run_policy_paired(env, policy_path, episodes):
     policy = _load_policy(env, policy_path)
     dump = [] if args_cli.dump_sl else None
     sl = _SLResidual(args_cli.sl_residual, env.unwrapped) if args_cli.sl_residual else None
+    orc_ema = (_ResidualEMA(args_cli.oracle_ema, env.unwrapped)
+               if args_cli.oracle_ema is not None and args_cli.oracle_ema < 1.0 else None)
 
     def act(obs, u):
         a = policy(obs)
@@ -488,10 +528,11 @@ def run_policy_paired(env, policy_path, episodes):
             pos = u._robot.data.root_pos_w - u.scene.env_origins
             vel = u._robot.data.root_lin_vel_w
             a = a.clone()
-            a[:, 5:7] = u.oracle_impact_residual(
+            d = u.oracle_impact_residual(
                 pos[:, :2], vel[:, :2], pos[:, 2], vel[:, 2],
                 float(u.cfg.residual.scale),
                 wind_only=args_cli.oracle_residual_wind_only)
+            a[:, 5:7] = orc_ema(d, u) if orc_ema is not None else d
         if dump is not None:
             dump.append(_sl_row(obs, u))
         return a
@@ -707,6 +748,8 @@ def main():
         env_cfg.dyn_dr.enabled = False
     if args_cli.dr_scale is not None and hasattr(env_cfg, "model_err"):
         env_cfg.model_err.scale = args_cli.dr_scale
+    if args_cli.wind_tau is not None:
+        env_cfg.model_err.wind_tau_s = args_cli.wind_tau
     if hasattr(env_cfg, "model_err") and args_cli.observe_wind:
         env_cfg.model_err.observe_wind = True
     if hasattr(env_cfg, "residual") and args_cli.no_residual:

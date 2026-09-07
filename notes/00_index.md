@@ -56,6 +56,20 @@ type: index
   단일 상관은 roll이 가장 높았지만(0.211) tilt 누적이 이미 그 평균을 담고 있어
   순간값은 잉여다. SNR 0.4의 다른 얼굴. → [[experiments/exp_030_gain_invariant_residual]] §5.5
 
+- **⛔⛔ 마지막 미검증 전제가 닫혔다 — 그리고 한계가 실재한다: [[experiments/exp_031_ou_wind]]**
+  바람을 OU(상관시간 $\tau$)로 바꾸자 잔차의 이득이 $\tau\approx10$ s에서 소멸하고
+  $\tau\lesssim3$ s에서 **순손실**이 됐다(+3.5% / +9.8% / +10.7%).
+  ⭐⭐ **그런데 참 바람을 아는 특권 팔이 같은 지점에서 진다**(+6.0% / +40% / +92%, EMA 적용 후).
+  착탄점은 **낙하 0.85 s 구간의 바람 적분**인데 오라클은 릴리즈 순간의 바람만 안다 — 나머지는
+  **미래**다. **관측이 아니라 예보의 문제**이므로 이 한계는 우리 방법의 흠이 아니라
+  **문제 자체의 성질**이다. 경험칙 $\tau \gtrsim 10\,t_{fall}$ (Rule 42).
+  **비행은 멀쩡하다** — L0 CEP50 0.305 → 0.272~0.294, 배달률 95% 유지.
+  → [[research/residual_wind_stationarity]]
+- **⚠️ 부수 발견 — 상한선 팔에도 평활을 걸어야 한다.** 원본 오라클은 $\tau=10$ 에서
+  **잔차 없음보다 나쁘다**(+15.8%, CEP90 0.392 → **1.233**). 오라클에는 EMA가 없었고,
+  상수 바람에서는 출력이 원래 매끄러워 티가 안 났다. **천장이 지면 회수율 지표가 무의미해진다.**
+  상수 바람 대조에서 EMA는 오라클을 0.192 → 0.188로 거의 바꾸지 않는다(부작용 없음).
+
 ### 🔧 코드 (2026-09-07)
 
 - `_fit_sl_residual.py` — `--gi`(접두 평균 가속 2채널, 36→38 입력) · `--test_npz`(파일 단위
@@ -65,6 +79,9 @@ type: index
 - `_agg_table1.py` — 여러 스윕 디렉터리를 섞어 한 표로. **시드셋 일치를 assert**한다
 - `_r2_groups.py` — leave-one-group-out 재적합 (더하기 사다리의 빼기 짝) · `_corr.py` — 채널별 상관
 - `_gi_headline.sh` — gi 승격에 따른 헤드라인 재측정 15 run
+- ⭐ `model_err.wind_tau_s` (신설) — OU 시변 바람. **정상분포를 학습 조건에 고정**했으므로
+  세기가 아니라 **변화만** 잰다. `tau=0`은 난수를 안 뽑아 기존 런과 **bit-identical**
+- `play.py --wind_tau` / `--oracle_ema` · `_ou_test.sh`(48 run) · `_ou_orc.sh`(12 run)
 
 ---
 
@@ -408,6 +425,7 @@ type: index
 ## 노트 인덱스
 
 ### 연구 (research/)
+- [[research/residual_wind_stationarity]] — ⛔ **(09-07) 잔차는 외란의 준정상성을 전제한다 — 경계 $\tau\approx3$ s, 특권 팔도 같은 지점에서 진다 (Rule 42)**
 - [[research/residual_policy_coupling]] — **(09-02 발견 → ✅ 09-07 해결) 잔차가 기저 정책에 결합된다 — 접두 평균 가속 2채널로 소멸, 전이 회수율 22.9% → 77.1% (Rule 39 개정)**
 - [[research/residual_label_efficiency]] — **(09-02) 라벨 1,000개면 이득의 96%. 오라클과의 간극은 데이터가 아니라 정보다 (Rule 40)**
 - [[research/residual_observability]] — **(09-01) 관측이 바람을 담고 있는가 — 지도 회귀 $R^2$ 0.44(obs) / 0.61(+tilt) / 0.998(참바람). tilt 채널에 L0 재학습이 필요 없는 이유 (Rule 37)**
@@ -449,6 +467,7 @@ type: index
 
 ### 실험 (experiments/)
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
+- [[experiments/exp_031_ou_wind]] — ⛔ **(09-07) 시변(OU) 바람 ablation — 잔차의 마지막 미검증 전제, 60 run**
 - [[experiments/exp_030_gain_invariant_residual]] — ⭐⭐ **(09-07) 게인 무관 특징으로 정책 결합 해소(회수율 22.9 → 77.1%) + Table 1 시드 정렬 — 파레토 전 축 지배 복귀**
 - [[experiments/exp_029_l1_sl_generalization]] — **(09-02) 일반화 감사 — 미지 사거리 ✅ 85.3% 회수 / 정책 전이 ⛔ 순손실 / 라벨 1,000개면 96%**
 - [[experiments/exp_028_l1_sl_pilot]] — **(09-01) L1-SL 파일럿 — PPO 없이 CEP50 −31.4%(DR1.5) / −32.9%(DR2.5), 오라클 천장의 85%**

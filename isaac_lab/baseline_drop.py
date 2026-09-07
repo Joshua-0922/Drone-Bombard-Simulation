@@ -62,6 +62,12 @@ parser.add_argument("--arm", type=str, default="argmin",
                     choices=["hover", "ccip", "argmin", "oracle"],
                     help="Release rule: T0 hover / T1 ccip / T2 argmin / T3 oracle.")
 parser.add_argument("--task", type=str, default="Isaac-DroneBombard-Task-v0")
+parser.add_argument("--wind_tau", type=float, default=None, metavar="SEC",
+                    help="Ornstein-Uhlenbeck correlation time of the wind, seconds. "
+                         "Omit (or 0) for the trained condition: one draw per episode, "
+                         "held constant. >0 makes the wind time-varying with the SAME "
+                         "stationary distribution, so the ablation isolates time "
+                         "variation rather than wind strength.")
 parser.add_argument("--dr_scale", type=float, default=None,
                     help="A-group DR strength. Must match the learned arm being compared against.")
 parser.add_argument("--release_10hz", action="store_true",
@@ -335,6 +341,8 @@ def main():
         env_cfg.release.decide_at_physics_rate = False
     if args_cli.dr_scale is not None:
         env_cfg.model_err.scale = args_cli.dr_scale
+    if args_cli.wind_tau is not None:
+        env_cfg.model_err.wind_tau_s = args_cli.wind_tau
     if args_cli.arm == "oracle":
         # The oracle keeps the wider authority it was measured with; tightening
         # the LEARNED residual's range must not silently saturate T3 and move

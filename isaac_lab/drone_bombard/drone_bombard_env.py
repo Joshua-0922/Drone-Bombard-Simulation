@@ -320,6 +320,27 @@ class DroneBombardModelErrorCfg:
     """Magnitude cap on the sampled wind vector, also scaled. Prevents the
     Gaussian tail from producing drifts the residual cannot physically cover."""
 
+    wind_tau_s: float = 0.0
+    """Ornstein-Uhlenbeck correlation time of the wind, in SECONDS.
+
+    ``0`` (default) keeps the wind constant for the whole episode -- the training
+    condition, and the condition every published number was measured under. It
+    draws NO random numbers, so a run with ``wind_tau_s = 0`` is bit-identical to
+    one built before this field existed.
+
+    ``> 0`` turns the wind into a mean-reverting OU process whose STATIONARY
+    distribution is the same ``N(0, wind_std*scale)`` the constant sampler draws
+    from, so the marginal wind at any instant is unchanged and the ablation
+    isolates TIME VARIATION rather than wind strength. Small tau = fast gusts.
+
+    This is an EVALUATION knob. The residual's accumulated features average the
+    self-motion over the episode so far, which presumes the wind being estimated
+    is roughly stationary over that window; tau probes exactly that presumption.
+    It also breaks the T3/oracle arm's exactness (an exact oracle would need the
+    FUTURE wind during the payload's ~1 s fall), which is why it stays out of
+    training -- see ``sample_wind_capped``.
+    """
+
     payload_bc_rel: float = 0.20
     """Payload ballistic coefficient k/m, U[1 - rel*scale, 1 + rel*scale].
     Equivalent to randomizing the payload mass, with no PhysX write (Rule 19).
@@ -1113,10 +1134,38 @@ class DroneBombardEnv(DirectRLEnv):
             self._lpf_snap[:] = False
         self._physics_tick += 1
 
+        self._step_wind_ou()
         self._run_velocity_controller(self._v_filt)
 
         if self.cfg.payload_physics_enabled:
             self._step_payload_physics()
+
+    def _step_wind_ou(self):
+        """Advance the wind one physics step when ``wind_tau_s > 0``.
+
+        Exact-discretisation OU toward zero mean:
+
+            w <- w * exp(-dt/tau) + sigma * sqrt(1 - exp(-2 dt/tau)) * eps
+
+        which holds the stationary distribution at ``N(0, sigma^2)`` for ANY dt,
+        so the marginal wind matches the constant sampler and tau alone controls
+        how fast it moves. The Euler form would inflate the variance at large
+        dt/tau. Magnitude is re-capped exactly as ``sample_wind_capped`` does
+        (scaled down, never rotated) so the tail behaves the same way.
+
+        tau == 0 returns immediately WITHOUT touching the RNG -- the constant-wind
+        runs stay bit-identical, the same contract ``model_err.scale == 0`` has.
+        """
+        me = self.cfg.model_err
+        tau = me.wind_tau_s
+        if tau <= 0.0 or me.scale <= 0.0:
+            return
+        sigma = me.wind_std * me.scale
+        a = math.exp(-self.cfg.sim.dt / tau)
+        w = self._wind_xy * a + sigma * math.sqrt(max(0.0, 1.0 - a * a)) * torch.randn_like(self._wind_xy)
+        cap = me.wind_max * me.scale
+        mag = torch.linalg.norm(w, dim=-1, keepdim=True)
+        self._wind_xy = w * torch.clamp(cap / mag.clamp(min=1e-6), max=1.0)
 
     def _nominal_impact(
         self,
