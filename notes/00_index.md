@@ -78,6 +78,7 @@ type: index
   seed-2 자체 데이터로 재적합하면 −22.0%, CEP90 0.562로 복구.
   **obs→drift 사상은 물리가 아니라 정책의 성질이다** — tilt가 재는 것은
   $\bar\theta \approx F_{wind}/K_{policy}$ 이고 $K$는 컨트롤러마다 다르다 (Rule 39).
+  *(⚠️ 09-07 정정: 실제 오염원은 게인이 아니라 **기동 성분**. → [[research/residual_policy_coupling]] §2)*
 - **⭐⭐ 미지 사거리 통과: [[experiments/exp_029_l1_sl_generalization]] §3**
   26–30 m(적합은 18–22 m)에서 CEP50 0.299 → **0.218 (−27.3%)**,
   오라클 회수율 **85.3%** — 훈련 범위(85.0%)와 소수 둘째 자리까지 같다.
