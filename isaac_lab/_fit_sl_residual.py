@@ -48,6 +48,14 @@ p.add_argument("--export", default=None, metavar="PT",
                     "The module takes the RAW feature vector and returns METRES, so the "
                     "normalisation travels with the weights and cannot drift.")
 p.add_argument("--export_arm", default="tilt", choices=["obs", "tilt"])
+p.add_argument("--test_npz", nargs="*", default=[], metavar="NPZ",
+               help="Hold these files out ENTIRELY instead of splitting episodes at "
+                    "random. Fitting on one policy's dump and scoring on another's is "
+                    "the OFFLINE form of the policy-transfer test (exp_029 axis P): it "
+                    "measures the calibration error without flying anything.")
+p.add_argument("--gi", action="store_true",
+               help="Gain-invariant arm: append the prefix-mean acceleration "
+                    "(v_t - v_0)/t to the tilt block -- see tilt_features().")
 p.add_argument("--train_ep", type=int, default=0, metavar="N",
                help="Cap the TRAINING set at N episodes (0 = all). The held-out test "
                     "episodes are untouched, so R2 across different N is measured on the "
@@ -55,7 +63,7 @@ p.add_argument("--train_ep", type=int, default=0, metavar="N",
 a = p.parse_args()
 
 
-def tilt_features(obs, new):
+def tilt_features(obs, new, want_gi=False):
     """Causal per-episode running mean of the channels that carry the wind.
 
     The instantaneous tilt is ambiguous -- a drone pitches to accelerate as well
@@ -80,19 +88,31 @@ def tilt_features(obs, new):
     out = np.empty_like(v)
     acc = np.zeros((N, C), np.float32)
     cnt = np.zeros((N, 1), np.float32)
+    # Prefix-mean acceleration (v_t - v_0)/t. The mean tilt over a WHOLE episode
+    # is already a gain-free read of the wind, because mean(a) ~ 0 telescopes:
+    # mean(g*tan(theta)) = mean(a) - mean(F_w/m). But the accumulator the policy
+    # actually carries is a PREFIX mean, and over a prefix mean(a) = (v_t-v_0)/t
+    # is NOT zero -- it is how hard this controller accelerated, i.e. exactly the
+    # K_policy term that broke the seed-1 -> seed-2 transfer (exp_029 axis P).
+    # Handing that term over separately lets the network subtract it out.
+    gi = np.zeros((T, N, 2), np.float32)
+    v0 = np.zeros((N, 2), np.float32)
+    vxy = np.stack([obs[..., I_VX], obs[..., I_VY]], axis=-1).astype(np.float32)
     for t in range(T):                      # T ~ 700; explicit and obviously causal
         r = new[t]
         acc[r] = 0.0
         cnt[r] = 0.0
+        v0[r] = vxy[t][r]
         acc += v[t]
         cnt += 1.0
         out[t] = acc / cnt
-    return out
+        gi[t] = (vxy[t] - v0) / cnt
+    return np.concatenate([out, gi], axis=-1) if want_gi else out
 
 
-OBS, TILT, DRIFT, WIND, EPI = [], [], [], [], []
+OBS, TILT, DRIFT, WIND, EPI, SRC = [], [], [], [], [], []
 ep_base = 0
-for f in a.npz:
+for f, held_out in [(f, False) for f in a.npz] + [(f, True) for f in a.test_npz]:
     d = np.load(f)
     obs, drift, wind = d["obs"], d["drift"], d["wind"]
     ep_len, att, det = d["ep_len"], d["attached"], d["detected"]
@@ -101,7 +121,7 @@ for f in a.npz:
     new[1:] = ep_len[1:] <= ep_len[:-1]          # a reset happened in this slot
     epi = np.cumsum(new, axis=0) - 1 + ep_base + np.arange(N) * T
     ep_base += N * T
-    tilt = tilt_features(obs, new)
+    tilt = tilt_features(obs, new, a.gi)
     if a.mask.startswith("last"):
         k = int(a.mask[4:])
         carried = att > 0.5
@@ -123,11 +143,13 @@ for f in a.npz:
              "all": np.ones_like(att, bool)}[a.mask]
     OBS.append(obs[m]); TILT.append(tilt[m]); DRIFT.append(drift[m])
     WIND.append(wind[m]); EPI.append(epi[m])
+    SRC.append(np.full(int(m.sum()), held_out, bool))
 
 X = np.concatenate(OBS).astype(np.float32)
 Tl = np.concatenate(TILT).astype(np.float32)
 Y = np.concatenate(DRIFT).astype(np.float32)
 W = np.concatenate(WIND).astype(np.float32)
+S = np.concatenate(SRC)
 _, E = np.unique(np.concatenate(EPI), return_inverse=True)
 n_ep = E.max() + 1
 mag = np.linalg.norm(Y, axis=1)
@@ -141,13 +163,18 @@ te_ep = np.zeros(n_ep, bool)
 te_ep[rng.permutation(n_ep)[: max(1, n_ep // 3)]] = True
 te, tr = te_ep[E], ~te_ep[E]
 n_tr_ep = int((~te_ep).sum())
+n_te_ep = int(te_ep.sum())
+if a.test_npz:                      # file-level hold-out overrides the episode split
+    te, tr = S, ~S
+    n_tr_ep, n_te_ep = len(np.unique(E[tr])), len(np.unique(E[te]))
 if a.train_ep:
     keep = np.zeros(n_ep, bool)
     keep[rng.permutation(np.flatnonzero(~te_ep))[: a.train_ep]] = True
     tr = keep[E]
     n_tr_ep = int(keep.sum())
 print(f"train {tr.sum()} frames / {n_tr_ep} eps    "
-      f"test {te.sum()} frames / {te_ep.sum()} eps")
+      f"test {te.sum()} frames / {n_te_ep} eps"
+      + ("   [file-level hold-out]" if a.test_npz else ""))
 
 ybar = Y[tr].mean(0)
 dev = "cuda" if torch.cuda.is_available() else "cpu"
@@ -216,7 +243,8 @@ rows.append(("linear(obs)", np.c_[Xs[te], np.ones(te.sum(), np.float32)] @ coef)
 XT = np.c_[X, Tl].astype(np.float32)
 rows.append(("MLP(obs)                <- today",
              mlp(Xs, raw=X, export=a.export if a.export_arm == "obs" else None)))
-rows.append(("MLP(obs + tilt accum)   <- proposed",
+rows.append((f"MLP(obs + tilt{' + gi' if a.gi else ''} accum)"
+             f"{'   <- gain-invariant' if a.gi else '   <- proposed'}",
              mlp(np.c_[Xs, Ts], raw=XT,
                  export=a.export if a.export_arm == "tilt" else None)))
 rows.append(("MLP(obs + TRUE wind)    [ceiling]", mlp(np.c_[Xs, Ws])))

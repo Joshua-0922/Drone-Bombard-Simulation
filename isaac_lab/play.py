@@ -386,14 +386,20 @@ class _SLResidual:
     def __init__(self, path, u):
         self.m = torch.jit.load(path, map_location=u.device).eval()
         n_in = int(self.m.mu.numel())
-        self.use_tilt = n_in > u.cfg.observation_space
+        n_extra = n_in - u.cfg.observation_space
+        self.use_tilt = n_extra > 0
+        # 12 extra channels = tilt accumulator + the two gain-invariant ones
+        # (prefix-mean acceleration). Keep this in lock-step with
+        # _fit_sl_residual.tilt_features(); they diverged once already.
+        self.use_gi = n_extra == _TILT_N + 2
         self.acc = torch.zeros(u.num_envs, _TILT_N, device=u.device)
         self.cnt = torch.zeros(u.num_envs, 1, device=u.device)
+        self.v0 = torch.zeros(u.num_envs, 2, device=u.device)
         self.prev = torch.zeros(u.num_envs, device=u.device)
         self.alpha = float(args_cli.sl_ema)
         self.ema = torch.zeros(u.num_envs, 2, device=u.device)
         print(f"[sl_residual] {path}  in={n_in}  tilt_accum={self.use_tilt}  "
-              f"ema_alpha={self.alpha}")
+              f"gain_invariant={self.use_gi}  ema_alpha={self.alpha}")
 
     def __call__(self, obs, u):
         o = obs["policy"] if hasattr(obs, "keys") else obs
@@ -404,9 +410,13 @@ class _SLResidual:
         self.prev = elb
         self.acc[new] = 0.0
         self.cnt[new] = 0.0
+        self.v0[new] = o[new][:, 6:8]
         self.acc += _tilt_channels(o)
         self.cnt += 1.0
-        x = torch.cat([o, self.acc / self.cnt], dim=-1) if self.use_tilt else o
+        extra = self.acc / self.cnt
+        if self.use_gi:
+            extra = torch.cat([extra, (o[:, 6:8] - self.v0) / self.cnt], dim=-1)
+        x = torch.cat([o, extra], dim=-1) if self.use_tilt else o
         with torch.no_grad():
             d = self.m(x)             # metres
         if self.alpha >= 1.0:
