@@ -45,6 +45,17 @@ type: index
 - **📄 [[research/research_architecture]] v4 → v5** — §7 전면 갱신(Table 1·지표·ablation·그림),
   §7.6 신설(L1-SL 경로), §9.4 신설(주 결과의 학습 프로토콜은 PPO가 아니다).
 
+- **⭐⭐ gi를 본 방법으로 승격 — 개선폭이 외삽에서 가장 크다**
+  모든 헤드라인 숫자를 gi로 재측정(15 run, FAIL 0). DR 1.5 CEP90 회수율 64% → **90.5%**,
+  DR 2.5 회수율 78% → **89.5%**, 미지 사거리 85.3% → **92.6%**.
+  T2와의 격차가 tilt에서는 DR 1.5→2.5에 +0.073 → +0.071로 **포화**했는데
+  gi는 **+0.073 → +0.095로 계속 벌어진다.** 36채널(gi 없음)은 ablation으로 강등.
+- **⭐ 정보는 순간이 아니라 누적에 있다 — 채널 그룹 기여도 분해**
+  38채널에서 그룹을 하나씩 빼고 재적합: tilt 누적 **−0.124** · gi **−0.057** ·
+  나머지 5그룹 합 **−0.028**. ⭐ **자세(roll·pitch·yaw)를 통째로 빼도 −0.001** —
+  단일 상관은 roll이 가장 높았지만(0.211) tilt 누적이 이미 그 평균을 담고 있어
+  순간값은 잉여다. SNR 0.4의 다른 얼굴. → [[experiments/exp_030_gain_invariant_residual]] §5.5
+
 ### 🔧 코드 (2026-09-07)
 
 - `_fit_sl_residual.py` — `--gi`(접두 평균 가속 2채널, 36→38 입력) · `--test_npz`(파일 단위
@@ -52,6 +63,8 @@ type: index
 - `play.py` — `_SLResidual`이 `n_extra == _TILT_N + 2`면 gi 채널 생성. 기존 36입력은 그대로
 - `_t_reseed.sh` — Table 1 시드 정렬 23 run · `_dr_axis.sh` — 그림 4 재측정 27 run
 - `_agg_table1.py` — 여러 스윕 디렉터리를 섞어 한 표로. **시드셋 일치를 assert**한다
+- `_r2_groups.py` — leave-one-group-out 재적합 (더하기 사다리의 빼기 짝) · `_corr.py` — 채널별 상관
+- `_gi_headline.sh` — gi 승격에 따른 헤드라인 재측정 15 run
 
 ---
 
