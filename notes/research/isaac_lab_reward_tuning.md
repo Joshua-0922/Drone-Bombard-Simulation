@@ -70,6 +70,13 @@ Gazebo/SAC 트랙은 `ros2_ws/src/rl_navigation/config/hyperparams_v13.yaml`처�
 
 ## 2. 보상 함수 — `DroneBombardRewardCfg` (`math_utils.compute_reward`)
 
+> ⚠️ **2026-09-11 — 이 절은 현재 학습에 쓰이지 않는다.** `DroneBombardRewardCfg`는 base env의
+> Phase-1 보상(v13/v15 이식)이다. 2026-08-27 환경 재구축 이후 모든 학습·평가는
+> `task_env.py`의 **`TaskRewardCfg` + `DroneBombardTaskEnv._get_rewards`** 를 쓰며, 이 절의
+> `w_dist`·`w_proximity`·`w_vision_center`·`penalty_*`는 task env에서 전부 무시된다
+> (`Episode_Reward/*`의 base 키는 0으로 찍힌다). **현재 보상 → [[research/reward_design]]**.
+> 아래 내용은 이력으로 보존한다.
+
 Gazebo 4-layer 보상([[research/reward_design]])과 동일 계열의 3-layer 구조
 (Layer 1 종단 페널티는 `_get_rewards`에서 `_done_flags` 기반으로 별도 가산).
 

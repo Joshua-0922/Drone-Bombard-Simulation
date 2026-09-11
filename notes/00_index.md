@@ -407,7 +407,7 @@ type: index
 | 자주 쓰는 명령어 | `notes/sessions/commands.md` |
 | RL 규칙 | `notes/research/rl_rules.md` |
 | VM 완전 복구 가이드 | `notes/Environment/README.md` |
-| 보상 함수 설계 | `notes/research/reward_design.md` |
+| 보상 함수 (현재 Isaac task env + MDP 정의) | `notes/research/reward_design.md` |
 | 전체 시스템 아키텍처 (Gazebo/PX4/ROS2, `jekyun`) | `notes/research/system_overview.md` |
 | 전체 시스템 아키텍처 (Isaac Lab, `feat/isaac-env-migration`) | `notes/research/isaac_lab_architecture.md` |
 | Isaac Lab 다른 연구자용 온보딩 (보상/하이퍼파라미터/WandB/실험 절차) | `notes/research/isaac_lab_reward_tuning.md` · `notes/research/isaac_lab_wandb_guide.md` · `notes/research/isaac_lab_experiment_workflow.md` |
@@ -443,7 +443,7 @@ type: index
 - [[research/research_overview_for_paper]] — **(08-02) 전 연구 통합 개요 — 계보·warm-start 체인·발견 F1~F12·ablation 설계(논문용)**
 - [[research/vision_obs_refactor]] — Vision 기반 obs 리팩토링 (GPS 제거, YOLO 전환)
 - [[research/phase1_plan]] — Phase 1 CCIP 기반 자율 접근 연구 계획 (8주, 5/8-6/30)
-- [[research/reward_design]] — 4-layer 보상 함수 (LaTeX 수식)
+- [[research/reward_design]] — **(09-11 전면 개정) 현재 보상 함수 + MDP 정의(task · 관측 26 · 행동 7 · 종료)** — `TaskRewardCfg` 기준, 항별 에피소드 기여 포함. Gazebo 4-layer는 §이력
 - [[research/architecture]] — Method A (1-World-4-Payload) 아키텍처
 - [[research/system_overview]] — 전체 시스템 (패키지, 토픽, 좌표계, 브리지) — `jekyun`(Gazebo/PX4/ROS2) 브랜치
 - [[research/isaac_lab_architecture]] — Isaac Lab 전체 구조 (`isaac_lab/` 레이아웃, 데이터 흐름, Gazebo 대비 구조 차이) — `feat/isaac-env-migration` 브랜치
@@ -458,7 +458,7 @@ type: index
 - [[research/reset_throughput_bottleneck]] — 리셋 병목 = teleport 후 EKF 재수렴(param으론 못 고침). soft reset(teleport 회피)으로 ~3.9× (Rule 14).
 - [[research/control_smoothness_wobble]] — RL 인수 후 wobble = smoothness-control 문제(정책, 탐험 아님). LPF+근접 속도댐핑+smoothness 가중 (Rule 15).
 - [[research/isaac_velocity_controller]] — Isaac Lab 캐스케이드 속도 컨트롤러, PX4 게인 매핑. **PX4 대비 미검정**(게인 초기값) — 7-포인트 스텝응답 검정 계획.
-- [[research/isaac_lab_reward_tuning]] — Isaac Lab 보상·하이퍼파라미터 레퍼런스 (다른 연구자용 온보딩). cfg 필드별 의미·튜닝 시 주의(overshoot moat, fresh-start 판단 등).
+- [[research/isaac_lab_reward_tuning]] — Isaac Lab 보상·하이퍼파라미터 레퍼런스 (다른 연구자용 온보딩). ⚠️ §2 보상은 base env 구버전 — 현재 보상은 [[research/reward_design]]. cfg 필드별 의미·튜닝 시 주의(overshoot moat, fresh-start 판단 등).
 - [[research/isaac_lab_wandb_guide]] — Isaac Lab WandB 메트릭 가이드. `Episode_Termination/*`·`Episode_Reward/*` 등 신규 네임스페이스, Gazebo 트랙과 대조표. 첫 실 학습 전이라 rsl_rl 표준 키(§5)는 미검증 표시.
 - [[research/isaac_lab_experiment_workflow]] — Isaac Lab 실험 실행 절차 (dry-run 사다리, fresh/resume 판단, WandB run 관리, 실험 로깅).
 - [[research/isaac_ppo_tuning_recommendations]] — exp_013 결론: 무엇을 바꿔야 하는가 (conf 거리감쇠·reward_success 300·entropy 0 우선; 스폰 고도는 유지). Rule 17·18의 근거 문서.
