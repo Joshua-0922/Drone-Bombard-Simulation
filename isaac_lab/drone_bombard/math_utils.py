@@ -339,6 +339,32 @@ def apply_ccip_residual(pred_impact: torch.Tensor, residual_action: torch.Tensor
     return pred_impact + residual_action * scale
 
 
+TILT_ACCUM_N = 10
+"""Width of :func:`tilt_channels` -- the observation channels whose per-episode
+running mean carries the wind (see notes/research/residual_observability.md)."""
+
+_TILT_IDX = (9, 10, 11, 12, 6, 7, 21, 22)  # roll, pitch, sin yaw, cos yaw, vx, vy, cmd vx, cmd vy
+
+
+def tilt_channels(obs: torch.Tensor) -> torch.Tensor:
+    """The 10 observation-derived channels the residual's accumulator averages.
+
+    The instantaneous tilt is ambiguous -- a drone pitches to accelerate as well
+    as to hold against wind -- but the manoeuvre part averages out over an
+    episode while the wind part does not. The roll/pitch x sin/cos-yaw products
+    make the WORLD-frame tilt recoverable by a linear combination; actual and
+    commanded velocity are kept separate because they carry different
+    normalisations (a hard-coded difference would fix the wrong combination).
+
+    ONE definition, shared by the env (``accum_obs``), ``play.py`` and, in numpy,
+    ``_fit_sl_residual.tilt_features``. They diverged once already.
+    """
+    roll, pitch, sy, cy, vx, vy, cx, cyaw = (obs[..., i] for i in _TILT_IDX)
+    return torch.stack([roll, pitch,
+                        roll * cy, roll * sy, pitch * cy, pitch * sy,
+                        vx, vy, cx, cyaw], dim=-1)
+
+
 def step_target_velocity(
     vel_xy: torch.Tensor,
     theta: float,

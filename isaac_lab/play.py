@@ -63,6 +63,17 @@ parser.add_argument("--release_10hz", action="store_true",
                          "physics rate (the ablation arm for release-timing resolution).")
 parser.add_argument("--no_residual", action="store_true",
                     help="L0 Analytic-Aim: the analytic CCIP alone, residual channel inert.")
+parser.add_argument("--accum_obs", action="store_true",
+                    help="Env appends the accumulator channels (26 -> 38 obs). Required to load an "
+                         "L1-RL checkpoint trained with train.py --accum_obs; with --sl_residual "
+                         "the 38-wide regressor then reads them straight from the observation.")
+parser.add_argument("--residual_scale", type=float, default=None,
+                    help="Override residual.scale for a LEARNED residual (an L1-RL policy's own "
+                         "channel). --sl_residual/--oracle_* already use oracle_scale (2.0); an "
+                         "L1-RL policy trained at 2.0 must be evaluated at 2.0 too.")
+parser.add_argument("--residual_ema", type=float, default=None,
+                    help="residual.ema_alpha inside the env, for an L1-RL policy's own channel "
+                         "(the arm was trained with it). Do not combine with --sl_ema.")
 parser.add_argument("--e2e", action="store_true",
                     help="L2 End-to-End Aim: policy outputs the impact point directly (no CCIP).")
 parser.add_argument("--pixel_vision", action="store_true",
@@ -378,23 +389,38 @@ def _load_policy(env, policy_path):
 
     agent_cfg = DroneBombardPPORunnerCfg()
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=None, device=agent_cfg.device)
-    runner.load(policy_path)
+    sd = torch.load(policy_path, map_location=env.unwrapped.device,
+                    weights_only=False)["model_state_dict"]
+    n_env = int(env.unwrapped.cfg.observation_space)
+    if any(k.startswith("actor.nominal.") for k in sd):
+        # L1-RL checkpoint (train.py --residual_net): frozen nominal + residual trunk.
+        from drone_bombard.residual_actor import attach_from_checkpoint
+        attach_from_checkpoint(runner.alg.policy, sd)
+    elif sd["actor.0.weight"].shape[1] != n_env:
+        # A 26-obs checkpoint (L0) in a wider env (--accum_obs, residual injected
+        # from outside): fly it on its own channels. Inference reads the actor
+        # only, so nothing else is loaded.
+        from drone_bombard.residual_actor import NarrowObs, mlp_from_state_dict
+        n_ck = sd["actor.0.weight"].shape[1]
+        runner.alg.policy.actor = NarrowObs(mlp_from_state_dict(sd, "actor."), n_ck).to(
+            env.unwrapped.device)
+        print(f"[play] {os.path.basename(policy_path)}: {n_ck}-obs actor in a {n_env}-obs env "
+              f"(sliced)")
+        return runner.get_inference_policy(device=env.unwrapped.device)
+    # Inference only -- and an L1-RL optimizer state covers just the trainable
+    # subset, which the freshly built optimizer would refuse.
+    runner.load(policy_path, load_optimizer=False)
     return runner.get_inference_policy(device=env.unwrapped.device)
 
 
 # --- supervised residual, injected -------------------------------------------
-# Mirrors fit_sl.tilt_features EXACTLY (same channels, same order, same causal
-# running mean). The instantaneous tilt is ambiguous -- a drone pitches to
-# accelerate as well as to hold against wind -- but the manoeuvre part averages
-# out over an episode and the wind part does not.
-_TILT_N = 10
-
-
-def _tilt_channels(o):
-    roll, pitch, sy, cy = o[:, 9], o[:, 10], o[:, 11], o[:, 12]
-    return torch.stack([roll, pitch,
-                        roll * cy, roll * sy, pitch * cy, pitch * sy,
-                        o[:, 6], o[:, 7], o[:, 21], o[:, 22]], dim=-1)
+# The accumulator channels are ONE definition, math_utils.tilt_channels (also
+# what the env appends under accum_obs and, in numpy, what
+# _fit_sl_residual.tilt_features fits on). The instantaneous tilt is ambiguous
+# -- a drone pitches to accelerate as well as to hold against wind -- but the
+# manoeuvre part averages out over an episode and the wind part does not.
+from drone_bombard.math_utils import TILT_ACCUM_N as _TILT_N  # noqa: E402
+from drone_bombard.math_utils import tilt_channels as _tilt_channels  # noqa: E402
 
 
 class _SLResidual:
@@ -763,6 +789,14 @@ def main():
         # about the arm changes.
         env_cfg.residual.enabled = True
         env_cfg.residual.scale = env_cfg.residual.oracle_scale
+    if hasattr(env_cfg, "residual") and args_cli.residual_scale is not None:
+        env_cfg.residual.scale = args_cli.residual_scale
+    if hasattr(env_cfg, "residual") and args_cli.residual_ema is not None:
+        env_cfg.residual.ema_alpha = args_cli.residual_ema
+    if hasattr(env_cfg, "accum_obs"):
+        env_cfg.accum_obs = args_cli.accum_obs
+    elif args_cli.accum_obs:
+        raise SystemExit("[play] --accum_obs is task-env only")
     if hasattr(env_cfg, "residual") and args_cli.e2e:
         env_cfg.residual.mode = "direct"
     if hasattr(env_cfg, "release") and args_cli.release_10hz:

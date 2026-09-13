@@ -1030,5 +1030,22 @@ def test_kf_coasts_prediction_through_dropout():
     assert P[0, 0, 0] > P0[0, 0, 0]  # honesty: uncertainty grows while blind
 
 
+# =====================================================================
+# Residual accumulator channels (accum_obs / play.py --sl_residual / fit_sl)
+# =====================================================================
+
+def test_tilt_channels_layout_matches_the_fitted_regressor():
+    """Same channels, same order as _fit_sl_residual.tilt_features -- the
+    exported regressors (res_gi.pt) were fitted on exactly this layout."""
+    torch.manual_seed(3)
+    o = torch.randn(5, 26)
+    t = mu.tilt_channels(o)
+    roll, pitch, sy, cy = o[:, 9], o[:, 10], o[:, 11], o[:, 12]
+    want = torch.stack([roll, pitch, roll * cy, roll * sy, pitch * cy, pitch * sy,
+                        o[:, 6], o[:, 7], o[:, 21], o[:, 22]], dim=-1)
+    assert t.shape == (5, mu.TILT_ACCUM_N)
+    assert torch.equal(t, want)
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

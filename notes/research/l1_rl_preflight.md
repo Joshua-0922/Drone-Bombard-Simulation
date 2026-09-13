@@ -1,7 +1,7 @@
 ---
 date: 2026-09-13
 tags: [research, residual, l1, rl, ppo, preflight, audit]
-status: active
+status: applied
 type: research
 ---
 
@@ -12,7 +12,8 @@ type: research
 > 먹는다(보상 해킹 통로, 08-30 미수정), ② RL 잔차의 입력이 26채널이라 L1-SL(38채널)보다
 > **정보가 적다** — 같은 정보량의 SL 팔은 이미 L0에게 진다, ③ 잔차 채널에 평활이 없어
 > 첫 교차 게이트의 요동 편향(Rule 38)을 RL만 떠안는다. 셋 다 "RL이냐 SL이냐"와 무관한
-> 이유로 RL 팔을 지게 만든다. 코드 감사만 했고 **아무것도 고치지 않았다.**
+> 이유로 RL 팔을 지게 만든다. ~~코드 감사만 했고 **아무것도 고치지 않았다.**~~
+> ✅ **같은 날 오후, §1의 6건을 전부 적용하고 §6에서 검증했다.**
 
 관련: [[research/residual_ceiling]] §7.4·§8 · [[research/research_architecture]] §7.6.6·§8.4 ·
 [[errors/err_20260830_aim_reward_residual_inclusive]] · [[research/release_gate_jitter]] ·
@@ -193,3 +194,99 @@ L1-SL(2.0)과 클램프가 다르다(DR 2.5·외삽 행에서 특히). `--residu
    `residual_mag` 로그가 0 근처에서 출발하는지
 4. 파일럿 2팔 × 500 iter (0 초기화 / SL 초기화), seed 1
 5. 평가 `_gi_headline.sh` 조건 복제 → `_agg_table1.py`(시드셋 assert)로 L0 · L1-SL gi · L1-RL × 2 · 오라클 한 표
+
+---
+
+## 6. ✅ 적용 결과 (2026-09-13 오후)
+
+### 6.1 코드 변경
+
+| 파일 | 변경 |
+|---|---|
+| `drone_bombard/task_env.py` | §1.1 `_ccip`이 `_d_impact_nominal` 캐시, `_get_rewards` 조준 항·`_d_impact_prev`가 그것만 읽음 · §1.3 `ResidualCfg.ema_alpha`(기본 1.0) + `_pre_physics_step` EMA(에피소드 첫 스텝 원값) · §1.2 `DroneBombardTaskCfg.accum_obs`(26 → 38, 맨 뒤에 추가, `_perturb_obs` **이후**라 재잡음 없음) · `obs_perturbed_width` · `observe_wind`와 동시 사용 금지 |
+| `drone_bombard/drone_bombard_env.py` | `_obs_bias` 폭을 `obs_perturbed_width`로(있을 때만) |
+| `drone_bombard/math_utils.py` | `TILT_ACCUM_N`, `tilt_channels()` — **단일 정의**. env·`play.py`가 공유 (`_fit_sl_residual.py`의 numpy판과 같은 인덱스) |
+| `drone_bombard/residual_actor.py` (신설) | §1.4 `ResidualActor`(동결 nominal 행 0:5 + 잔차 트렁크 38→128→128→2, 출력층 0 초기화) · `fold_sl_regressor`(`res_gi.pt`의 mu/sd를 첫 층에, 미터→action 단위로 `/scale`) · `attach_frozen_nominal`(크리틱 입력 0열 확장 warm-start, std 잔차 행만 학습, **새 Adam**) · `attach_from_checkpoint`(play용) · `NarrowObs`(26-obs L0를 38-obs env에서 비행) |
+| `train.py` | `--residual_net --residual_init_from --residual_init_std --accum_obs --residual_scale --residual_ema` · §1.5 기존 `--zero_init_residual/--freeze_nominal` 경로는 `load_optimizer=False` · run_name `_isr_rl_{zero,slinit}` |
+| `play.py` | §1.6 `--accum_obs --residual_scale --residual_ema` · `_load_policy`가 L1-RL 체크포인트(`actor.nominal.*`)와 폭 불일치 L0(슬라이스)를 처리, `load_optimizer=False` · 로컬 `_tilt_channels` 삭제 → `math_utils` import |
+| `tests/test_residual_actor.py` (신설) | 8건: 0 초기화 = nominal · 학습 후 nominal bit-identical · **마스킹만으로는 Adam 모멘텀을 못 막는다**(§1.5 증명) · SL 폴딩 = `play.py` 주입(1e-5) · 크리틱 확장 · 체크포인트 재구성 |
+| `tests/test_math.py` | `tilt_channels` 레이아웃 = 적합 스크립트 |
+
+컨테이너 단위테스트 **98/98 PASS** (`test_residual_actor` 8 · `test_math` 58 · `test_residual_head` 6 · `test_domain_rand`).
+
+### 6.2 등가 검사 — env 누적 채널 = `play.py` 누적 (비트 동일)
+
+`play.py --accum_obs --sl_residual res_gi.pt --sl_ema 0.3` (회귀기가 38채널 관측을 **그대로** 읽음)
+vs 기존 `/tmp/sl_GI/SLgiE_dr1.5_s3000.json` (play.py 내부 누적): **16개 에피소드 지표 × 200 에피소드,
+차이 0건.** 요약 101개 스칼라 전부 동일. 새 채널이 재잡음되지 않는다는 것까지 포함한 확인이다.
+
+### 6.3 SL 초기화 L1-RL @ iteration 0 = L1-SL (전 경로 검증)
+
+`train.py --residual_net --residual_init_from res_gi.pt --max_iterations 0` → `model_final.pt`
+→ `play.py --accum_obs --residual_scale 2.0 --residual_ema 0.3` (정책 자체 잔차 채널, env EMA), seed 3000:
+
+| | L1-SL gi (주입) | **L1-RL SL-init @0** |
+|---|---|---|
+| succ@1.0 | 95.00% | **95.00%** |
+| succ@0.5 | 92.0% | **92.0%** |
+| CEP50 | 0.2252 | **0.2252** |
+| CEP90 | 0.3865 | **0.3865** |
+| 배달률 / 시간 | 95.5% / 5.80 s | **95.5% / 5.80 s** |
+
+에피소드 단위로는 146~191/200에서 ≤ 0.04 m(착탄오차) 차이가 있다 — 정규화를 가중치에 접는
+부동소수 재결합(1e-6)이 물리율 첫 교차 시점을 서브스텝 단위로 흔든 것. 통계는 4자리까지 같다.
+**합성 액터 로드·SL 폴딩·`/scale`·env EMA·평가 경로가 한 사슬로 맞는다.**
+
+### 6.4 dry-run (0 초기화, 3 iteration × 2048 envs) — 그리고 탐험 잡음의 용량-반응
+
+학습 루프는 정상이다: `[L1-RL]` 요약 출력, NaN 없음, 16~18 s/iter (**500 iter ≈ 2.3 h**),
+`Episode_Reward/rew_aim_pot` ≈ 15~23(공칭 조준만), `Episode_Metric/residual_mag_m`이 std에 비례,
+`model_{0,2,final}.pt` 저장. 그런데 iteration 0의 **롤아웃 성공률이 결정론적 L0의 95%에 한참 못 미쳤고**,
+원인을 두 단계로 분리했다:
+
+| nominal std | 잔차 std (action) | 잔차 잡음 (m/axis, EMA 전) | 롤아웃 succ@1.0 (it 0/1/2) |
+|---|---|---|---|
+| L0 그대로 (≈3.1) | 0.2 | 0.4 | 66 / 66 / 50% |
+| **0.01** | 0.2 | 0.4 | 60 / 55 / 50% |
+| 0.01 | **0.001** | 0.002 | **100 / 92 / 96%** |
+| 0.01 | **0.05** (채택) | 0.1 | 79 / 80 / 67% |
+
+1. **nominal std는 원인이 아니다.** L0는 자기 학습 말기에 std 5.17에서도 롤아웃 92.4%였고,
+   0.01로 고정해도 성공률이 안 오른다. 그래도 고정한다 — SL 데이터와 모든 평가가 **결정론적 L0**의
+   비행 분포이므로 잔차가 경험을 모으는 분포도 거기에 맞춘다(동결 행은 PPO 비율에서 상쇄되어
+   목적함수에는 영향 없음). `--nominal_std 0.01`.
+2. ⭐ **잔차 탐험 잡음이 곧 Rule 38이다.** 잔차 std 0.2(0.4 m 백색 잡음)만으로 성공률이 반토막 난다.
+   첫 교차 게이트가 잡음의 극값에서 발사하므로 탐험 잡음은 "무해한 요동"이 아니라 **계통적 조기
+   릴리즈**다. 이것이 [[research/research_architecture]] §7.6.6이 예고한 대가 ①의 실측이며, RL 잔차가
+   SL 잔차와 같은 정보·권한·평활을 받아도 **탐험 자체가 비용**임을 뜻한다.
+   → `--residual_init_std 0.05`(0.1 m, EMA 후 ≈0.04 m) 채택, `--entropy_coef 0.0`(L0의 std를
+   0.8 → 5.17로 밀어 올린 항; 잔차에는 그 압력을 주지 않는다). 둘 다 파일럿의 노브다.
+
+> Rule 29의 조기 중단 서명(σ 단조 상승)은 여기서 `Mean action noise std`의 잔차 성분으로 읽는다.
+> 잔차 std가 0.1을 넘어가면 게이트가 무너지므로 그 자체가 중단 신호다.
+
+---
+
+## 7. 파일럿 실행 (준비 완료, 미착수)
+
+`isaac_lab/_l1rl_pilot.sh` — 컨테이너 `/tmp/rebuild`에 복사되어 있다. 호스트에서:
+
+```bash
+docker exec --env-file /opt/drone-bombard/.wandb.env -e PYTHONUNBUFFERED=1 -d isaac-verify \
+    bash /tmp/rebuild/_l1rl_pilot.sh        # ITERS=500 기본, 환경변수로 변경
+```
+
+| 팔 | 학습 | 무엇을 묻나 |
+|---|---|---|
+| `L1RL_zero` | 0 초기화, 500 iter | PPO가 종단 보상만으로 드리프트를 찾는가 |
+| `L1RL_slinit` | `res_gi.pt` 초기화, 500 iter | **종단 보상이 드리프트 예측 위에 더할 것이 있는가** (§0) |
+
+공통: 동결 L0 seed 1 · `--accum_obs --residual_scale 2.0 --residual_ema 0.3 --nominal_std 0.01
+--residual_init_std 0.05 --entropy_coef 0.0` · 2048 envs · seed 1. 평가는 `_gi_headline.sh`와 동일
+(paired 200 ep × seed {3000,4000,5000} × DR {1.5, 2.5}), 산출물 `/tmp/l1rl/L1RL_*_dr*_s*.json`
+→ `_agg_table1.py`로 L0 · L1-SL gi · L1-RL × 2 · 오라클 한 표(시드셋 assert).
+
+**판정.** Rule 40대로 CEP50·CEP90·succ@0.5·succ@1.0·배달시간·투하 v를 함께.
+`L1RL_slinit`이 L1-SL(CEP50 0.209, n=600)보다 유의하게 낫지 않으면 **음성 결과로 확정**:
+*"잔차의 최적값은 드리프트 예측이고, 종단 보상은 그 위에 더할 것이 없다."*
+학습 중 잔차 std가 0.1을 넘거나 롤아웃 성공률이 200 iter 이상 평탄하면 중단(Rule 29).

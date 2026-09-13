@@ -12,6 +12,18 @@ type: index
 
 ---
 
+## 현재 상태 (2026-09-13)
+
+### ⭐ 오늘의 결론 — L1-RL을 L1-SL과 "학습 신호만 다른" 팔로 만들었다
+
+- 감사: 기존 코드로 돌리면 RL과 무관한 이유로 지는 결함 6건 → 전부 수정·검증 → [[research/l1_rl_preflight]]
+- 핵심 설계: **동결 L0(행 0:5) + 별도 잔차 트렁크 38→128→128→2(행 5:7)**, 입력·권한(2.0 m)·EMA(0.3)·평가 시드를 L1-SL과 일치.
+  `res_gi.pt`로 초기화하면 iteration 0이 곧 L1-SL이다(CEP50 0.2252 = 0.2252).
+- 신규 발견: `runner.load()`의 Adam 모멘텀이 마스킹된 동결 행을 움직인다 → **Rule 43**. L0 nominal std ≈ 3.1 → `--nominal_std 0.01`.
+- 다음: `isaac_lab/_l1rl_pilot.sh` (2팔 × 500 iter ≈ 4.6 h + 평가 12 run)
+
+---
+
 ## 현재 상태 (2026-09-07)
 
 ### ⭐⭐ 오늘의 결론 — 어제의 실패 축이 채널 2개로 지워졌다
@@ -430,7 +442,7 @@ type: index
 ## 노트 인덱스
 
 ### 연구 (research/)
-- [[research/l1_rl_preflight]] — 🔍 **(09-13) L1-RL 사전점검 — 조준 보상 잔차 포함(미수정) · 입력 26 vs 38 정보 불공정 · 잔차 EMA 부재 · 동결 팔 잔차 트렁크 부재 · Adam 모멘텀 누출(신규). 수정 전 run은 비교 무효**
+- [[research/l1_rl_preflight]] — ✅ **(09-13) L1-RL 사전점검 → 6건 수정·검증 완료 — 조준 보상 nominal-only · `accum_obs`(26→38) · 잔차 EMA · 별도 잔차망(`residual_actor.py`) · Adam 모멘텀 누출 차단 · 평가 스위치. SL-init@0 = L1-SL (4자리). 파일럿은 `_l1rl_pilot.sh` (Rule 43)**
 - [[research/residual_wind_stationarity]] — ⛔ **(09-07) 잔차는 외란의 준정상성을 전제한다 — 경계 $\tau\approx3$ s, 특권 팔도 같은 지점에서 진다 (Rule 42)**
 - [[research/residual_policy_coupling]] — **(09-02 발견 → ✅ 09-07 해결) 잔차가 기저 정책에 결합된다 — 접두 평균 가속 2채널로 소멸, 전이 회수율 22.9% → 77.1% (Rule 39 개정)**
 - [[research/residual_label_efficiency]] — **(09-02) 라벨 1,000개면 이득의 96%. 오라클과의 간극은 데이터가 아니라 정보다 (Rule 40)**

@@ -87,6 +87,48 @@ parser.add_argument("--w_residual", type=float, default=None,
                     help="Weight of the residual-magnitude penalty (metres, L1+L2 mixed). "
                          "Off by default; turn it on for L1 so the residual cannot farm the "
                          "release trigger without flying better.")
+parser.add_argument("--residual_net", action="store_true",
+                    help="L1-RL, the comparable-to-L1-SL recipe: the actor becomes a FROZEN "
+                         "nominal (the --resume L0 checkpoint, rows 0:5) plus a SEPARATE residual "
+                         "trunk over the full observation (rows 5:7), the critic is warm-started "
+                         "with its input widened, and the optimizer is rebuilt over the "
+                         "trainable parameters only. Supersedes --freeze_nominal, which trains "
+                         "just the output rows and cannot see channels L0 never saw. "
+                         "Use with --accum_obs --residual_scale 2.0 --residual_ema 0.3 so the "
+                         "arm differs from L1-SL only in the learning signal.")
+parser.add_argument("--residual_init_from", type=str, default=None, metavar="PT",
+                    help="--residual_net: initialise the residual trunk from a TorchScript "
+                         "regressor exported by _fit_sl_residual.py (e.g. res_gi.pt). The run "
+                         "then starts exactly at L1-SL and PPO asks whether the terminal reward "
+                         "adds anything on top of drift prediction. Default: zero-init (delta=0).")
+parser.add_argument("--residual_init_std", type=float, default=0.05,
+                    help="--residual_net: initial exploration std on the residual rows (action "
+                         "units; x residual.scale = metres). 0.8 x 2 m would be 1.6 m RMS of aim noise "
+                         "-- twice T2's whole error; even 0.2 (0.4 m) halves rollout success through "
+                         "the first-crossing gate (Rule 38). 0.05 = 0.1 m, EMA-smoothed ~0.04 m.")
+parser.add_argument("--nominal_std", type=float, default=None,
+                    help="--residual_net: fix the FROZEN nominal rows' rollout std (default: keep "
+                         "L0's, which ended at ~3.1 -- bang-bang flight under sampling, rollout "
+                         "success 66%% vs 95%% deterministic). The supervised arm's data and every "
+                         "evaluation use the deterministic L0; 0.01 puts the rollouts on that "
+                         "flight distribution. Has no effect on the PPO objective (frozen rows "
+                         "cancel in the ratio), only on where the residual collects experience.")
+parser.add_argument("--entropy_coef", type=float, default=None,
+                    help="Override algorithm.entropy_coef (cfg 0.005). For --residual_net use 0.0: "
+                         "the entropy bonus is what drove L0's std from 0.8 to 5.2 over training, and "
+                         "on a result-space residual that noise is not free -- the first-crossing "
+                         "release gate turns it into a systematic early release (Rule 38; dry-run "
+                         "2026-09-13: residual std 0.2 -> rollout success 60%%, 0.001 -> 95%%).")
+parser.add_argument("--accum_obs", action="store_true",
+                    help="Append the residual's accumulator channels (tilt means x10, prefix-mean "
+                         "acceleration x2) to the observation: 26 -> 38, same inputs as the "
+                         "supervised residual. Task env only.")
+parser.add_argument("--residual_scale", type=float, default=None,
+                    help="Override residual.scale (metres of authority of the learned residual). "
+                         "L1-SL was evaluated at 2.0 (oracle_scale); match it for L1-RL.")
+parser.add_argument("--residual_ema", type=float, default=None,
+                    help="residual.ema_alpha: EMA on the learned residual channel inside the env "
+                         "(1.0 = off). L1-SL used 0.3 outside the env (play.py --sl_ema).")
 parser.add_argument("--w_aim", type=float, default=None,
                     help="Dense CCIP aim-error reward weight (reward.w_aim). Default None keeps the "
                          "cfg value (0.0 = term off, exp_014 Phase-1 reward parity). exp_017 Stage A.")
@@ -446,7 +488,12 @@ def main():
         if args_cli.release_10hz:
             env_cfg.release.decide_at_physics_rate = False
         env_cfg.perception.pixel_quantize = args_cli.pixel_vision
-        # observation width depends on observe_wind -- re-derive after the edits.
+        env_cfg.accum_obs = args_cli.accum_obs
+        if args_cli.residual_scale is not None:
+            env_cfg.residual.scale = args_cli.residual_scale
+        if args_cli.residual_ema is not None:
+            env_cfg.residual.ema_alpha = args_cli.residual_ema
+        # observation width depends on observe_wind/accum_obs -- re-derive after the edits.
         env_cfg.__post_init__()
     else:
         env_cfg = DroneBombardEnvCfg()
@@ -502,12 +549,16 @@ def main():
     agent_cfg.seed = args_cli.seed
     if args_cli.max_iterations is not None:
         agent_cfg.max_iterations = args_cli.max_iterations
+    if args_cli.entropy_coef is not None:
+        agent_cfg.algorithm.entropy_coef = args_cli.entropy_coef
     agent_cfg.logger = args_cli.logger
     agent_cfg.wandb_project = args_cli.wandb_project
     agent_cfg.run_name = args_cli.run_name if args_cli.run_name else (
         "task_dr{:g}{}{}{}".format(
             env_cfg.model_err.scale,
-            "_e2e" if args_cli.e2e else ("_nores" if args_cli.no_residual else "_isr"),
+            "_e2e" if args_cli.e2e else ("_nores" if args_cli.no_residual else (
+                "_isr_rl" + ("_slinit" if args_cli.residual_init_from else "_zero")
+                if args_cli.residual_net else "_isr")),
             "_wind" if args_cli.observe_wind else "",
             "_px" if args_cli.pixel_vision else "",
         ) if args_cli.task_env else f"phase{phase}")
@@ -525,11 +576,24 @@ def main():
     env = RslRlVecEnvWrapper(env, clip_actions=agent_cfg.clip_actions)
     runner = OnPolicyRunner(env, agent_cfg.to_dict(), log_dir=log_dir, device=agent_cfg.device)
 
-    if args_cli.resume:
-        # Warm-start: the 6-dim action space is identical across phases, so a
-        # Phase-(N-1) checkpoint loads losslessly into Phase N.
+    if args_cli.residual_net:
+        if not args_cli.resume:
+            raise SystemExit("[train] --residual_net needs --resume <L0 checkpoint>: the nominal "
+                             "is frozen, so it has to come from somewhere.")
+        from drone_bombard.residual_actor import attach_frozen_nominal
+        attach_frozen_nominal(runner, args_cli.resume, init_std=args_cli.residual_init_std,
+                              init_from=args_cli.residual_init_from,
+                              scale=float(env_cfg.residual.scale),
+                              nominal_std=args_cli.nominal_std)
+    elif args_cli.resume:
+        # Warm-start: the action space is identical across phases, so an older
+        # checkpoint loads losslessly. For the L1 head recipes the optimizer
+        # state is NOT restored: Adam keeps stepping a parameter whose gradient
+        # is masked to zero (only ``grad is None`` is skipped), so L0's restored
+        # moments would move the very rows --freeze_nominal promises to hold.
         print(f"[INFO] Warm-starting from checkpoint: {args_cli.resume}")
-        runner.load(args_cli.resume)
+        runner.load(args_cli.resume,
+                    load_optimizer=not (args_cli.zero_init_residual or args_cli.freeze_nominal))
 
     if args_cli.zero_init_residual or args_cli.freeze_nominal:
         _prepare_residual_head(runner, args_cli)

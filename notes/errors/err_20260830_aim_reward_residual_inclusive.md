@@ -1,13 +1,16 @@
 ---
 date: 2026-08-30
-tags: [error, reward-hacking, residual, l1, open]
-status: open
+tags: [error, reward-hacking, residual, l1, resolved]
+status: resolved
 type: error
 ---
 
 # task_env의 dense aim 보상이 잔차 포함 오차를 먹고 있다
 
-> **L0에는 영향 없다** (`residual.enabled=False`라 잔차가 0). **L1/L2를 돌리기 전에 고쳐야 한다.**
+> **L0에는 영향 없다** (`residual.enabled=False`라 잔차가 0). ~~**L1/L2를 돌리기 전에 고쳐야 한다.**~~
+> ✅ **2026-09-13 수정 완료** — `_ccip`이 공칭 예측 거리를 `_d_impact_nominal`에 캐시하고 `_get_rewards`의
+> 조준 포텐셜과 `_d_impact_prev`가 그것만 읽는다. 게이트·교차 판정·관측 채널은 잔차 포함 그대로.
+> L2(direct 모드)는 공칭 예측이 없으므로 종전과 동일하게 자기 출력을 쓴다. → [[research/l1_rl_preflight]] §1.1
 
 관련: [[research/residual_ceiling]] · [[experiments/exp_018_release_terminal]] ·
 [[research/rl_rules]]

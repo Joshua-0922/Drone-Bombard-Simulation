@@ -6,6 +6,32 @@
 
 # 1. Current State
 
+**2026-09-13 — L1-RL(잔차 PPO)을 L1-SL과 비교 가능한 형태로 만들었다. 학습은 아직 안 돌렸다.**
+
+오전 감사에서 *지금 코드로 돌리면 RL과 무관한 이유로 지는* 결함 6건을 찾았고
+([[notes/research/l1_rl_preflight]] §1), 오후에 전부 적용·검증했다(§6):
+
+| # | 결함 | 처방 |
+|---|---|---|
+| 1 | 조준 포텐셜이 잔차 포함 오차를 먹음 (08-30, 미수정) | `_ccip` → `_d_impact_nominal`, 조준 항은 공칭만 |
+| 2 | RL 잔차 입력 26ch vs SL 38ch — 같은 정보량의 SL은 L0에게도 진다 | `accum_obs`: 누적 12ch을 관측 **뒤에**, 재잡음 없이 |
+| 3 | 잔차 채널 EMA 부재 (Rule 38을 RL만 떠안음) | `residual.ema_alpha` (env 내부) |
+| 4 | `--freeze_nominal`은 출력층 행만 학습 → 새 채널을 못 봄 | **별도 잔차망** `residual_actor.py` (동결 L0 행 0:5 + 38→128→128→2) |
+| 5 | `runner.load()`의 Adam 모멘텀이 마스킹된 동결 행을 움직임 (신규 발견) | 새 Adam(학습 파라미터만), 구 경로는 `load_optimizer=False` |
+| 6 | 평가에서 학습 잔차 권한을 맞출 스위치 없음 | `play.py --accum_obs --residual_scale --residual_ema` |
+
+**검증.** 단위테스트 98/98 · env 누적 채널 = `play.py` 누적 (16지표 × 200ep 동일) ·
+`res_gi.pt`로 초기화한 L1-RL @ iteration 0 = L1-SL (CEP50 0.2252 / 0.2252, 4자리 일치) ·
+0 초기화 3 iter dry-run 정상(16~18 s/iter → 500 iter ≈ 2.3 h). **부수 발견:** L0의 nominal 행 std가
+≈3.1 → `--nominal_std 0.01`로 SL 데이터·평가와 같은 결정론적 비행 분포에 맞춘다. ⭐ 롤아웃 성공률
+60%의 진짜 원인은 **잔차 탐험 잡음**(std 0.2 = 0.4 m → 첫 교차 게이트 조기 발사, Rule 38): 0.001이면 96~100%,
+0.05면 ~80% → `--residual_init_std 0.05 --entropy_coef 0.0` 채택. 탐험 자체가 결과 공간 잔차의 비용이다.
+
+**다음:** `_l1rl_pilot.sh` — 0 초기화 / SL 초기화 × 500 iter, seed {3000,4000,5000} × DR {1.5, 2.5} 평가.
+남은 질문은 하나: *"종단 보상이 드리프트 예측 위에 더할 것이 있는가."* Rule 43 신설.
+
+---
+
 **2026-09-07 — 어제의 실패 축이 채널 2개로 지워졌다. Table 1은 시드 정렬 완료.**
 **오후: 그 결과로 중간보고서 Isaac Lab 파트의 초고·요약본까지 작성했다(§2 참조).**
 
@@ -334,10 +360,10 @@ wandb: `sl_gen_unseenR` / `sl_gen_policy_transfer` / `sl_gen_label_count` (job_t
 | 1c | (선택) 릴리즈 고도 하향 스윕 | $t_{fall}$ 을 줄이면 준정상성 경계가 어디로 가나 — Rule 42의 직접 검증 | ~20분 | ❌ |
 | 3 | gi 회귀기를 seed-2 데이터로 **재적합** | 77.1%가 더 오르는가 | ~5분 | ❌ |
 | 4 | **DAgger 1바퀴** (잔차 켠 채 재수집 → 합쳐 재적합) | **커버리지** 부족은 아직 남아 있다 (gi가 고친 것은 보정) | ~30분 | ❌ |
-| 5 | 조준 보상 잔차 포함 결함 수정 | **L1-RL 전 필수** — 09-13 감사에서 필수 수정 6건으로 확장: [[notes/research/l1_rl_preflight]] §1 (누적 채널 obs · 잔차 EMA · 별도 잔차망 · `load_optimizer=False` · 평가 `--residual_scale`) | ~반나절 | ❌ |
+| ~~5~~ | ~~조준 보상 잔차 포함 결함 수정 + L1-RL 필수 수정 6건~~ | 09-13 완료·검증 ([[notes/research/l1_rl_preflight]] §6) | — | ✅ |
 | ~~6~~ | ~~OU(시변) 바람 ablation~~ | 완료 (60 run) — 위 완료 행 참조 | — | ✅ |
 | 7 | 적합 손실에 시간 평활 항 | EMA의 원인 처치 | ~20분 | ❌ |
-| 8 | L1-RL 파일럿 — 2팔(0 초기화 / `res_gi.pt` 초기화) × 500 iter, 동결 L0 seed 1 | ablation. 남은 질문은 *"종단 보상이 드리프트 예측 위에 더할 것이 있는가"* 하나. 조건표: [[notes/research/l1_rl_preflight]] §0·§2 | ~2 h × 2팔 (L0 1000 iter = 4 h 16 m 실측) | ❌ (5번 선행) |
+| **8** | **L1-RL 파일럿** — `isaac_lab/_l1rl_pilot.sh`: 2팔(0 초기화 / `res_gi.pt` 초기화) × 500 iter, 동결 L0 seed 1, 평가 3 seed × DR {1.5, 2.5} | ablation. 남은 질문은 *"종단 보상이 드리프트 예측 위에 더할 것이 있는가"* 하나. 조건표: [[notes/research/l1_rl_preflight]] §0·§2·§7 | ~2.3 h × 2팔 + 평가 12 run | ❌ **착수 가능** |
 
 **L1-RL이 8번인 이유.** 결합이 해소되면서 RL의 근거 하나가 사라졌다 — "재적합 필요"는
 더 이상 RL의 장점이 아니다. 남는 질문은 종단 보상의 한계 가치 하나이고, 그 답이 어느 쪽이든

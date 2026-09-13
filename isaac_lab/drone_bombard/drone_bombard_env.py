@@ -902,7 +902,13 @@ class DroneBombardEnv(DirectRLEnv):
         # Countdown for a drop command that has been issued but not yet acted on.
         # NaN-free sentinel: negative means "no pending release".
         self._release_pending = torch.full((N,), -1.0, device=device)
-        self._obs_bias = torch.zeros(N, int(self.cfg.observation_space), device=device)
+        # Width of the PERTURBED observation. A task cfg may append derived
+        # channels (task_env ``accum_obs``) that are computed from the already
+        # noisy observation and must not be noised a second time; it declares
+        # ``obs_perturbed_width`` so the bias buffer covers only the raw part.
+        self._obs_bias = torch.zeros(
+            N, int(getattr(self.cfg, "obs_perturbed_width", None) or self.cfg.observation_space),
+            device=device)
         self._act_bias = torch.zeros(N, 4, device=device)
         print(f"[DroneBombardEnv] control mass={self._ctrl_mass_nominal:.3f}kg max_thrust={self._max_thrust:.2f}N "
               f"inertia_diag={self._inertia_diag.detach().cpu().numpy()} body_id={self._body_id} "

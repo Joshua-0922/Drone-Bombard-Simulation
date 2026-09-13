@@ -44,7 +44,8 @@ from isaaclab.utils import configclass
 from isaaclab.utils.math import euler_xyz_from_quat, quat_from_euler_xyz
 
 from .drone_bombard_env import DroneBombardDynDRCfg, DroneBombardEnv, DroneBombardEnvCfg
-from .math_utils import apply_ccip_residual, rate_limit_action, release_gate, time_to_fall
+from .math_utils import (TILT_ACCUM_N, apply_ccip_residual, rate_limit_action, release_gate,
+                         tilt_channels, time_to_fall)
 from .mdp.domain_rand import sample_uniform
 
 
@@ -228,6 +229,19 @@ class ResidualCfg:
     large authority lets an untrained residual corrupt the gate badly enough to
     stall the bootstrap (the v18 deadlock, which was fixed by lowering it from
     3.0)."""
+
+    ema_alpha: float = 1.0
+    """Temporal smoothing of the LEARNED residual channel, applied in
+    ``_pre_physics_step``: ``r <- a*raw + (1-a)*r``, reset to the raw value on
+    the first step of an episode. 1.0 = off (every published L0 number).
+
+    The release gate fires on the FIRST crossing of the corrected prediction
+    over the target, so it samples the extreme of any step-to-step jitter and
+    a residual that is accurate on average but rough in time releases EARLY,
+    systematically (Rule 38, notes/research/release_gate_jitter.md). The
+    supervised arm gets the same smoothing outside the env (``play.py
+    --sl_ema``); an RL residual has to get it here so that training and
+    evaluation see the same gate. Do not combine the two on one arm."""
 
 
 @configclass
@@ -538,6 +552,25 @@ class DroneBombardTaskCfg(DroneBombardEnvCfg):
 
     action_space: int = 7   # [0:4] velocity + yaw rate, [4] drop signal, [5:7] impact residual
 
+    accum_obs: bool = False
+    """Append the residual's accumulator channels to the observation: the causal
+    per-episode mean of :func:`math_utils.tilt_channels` (10) and the prefix-mean
+    acceleration ``(v_t - v_0)/t`` (2). 26 -> 38 channels, appended at the END so
+    ``obs[:, :26]`` stays bit-identical to what L0 was trained on.
+
+    These are exactly the extra inputs of the supervised residual (``res_gi.pt``,
+    38-wide), which ``play.py`` computed outside the env. An RL residual is a
+    policy output and can only see the observation, so without this switch it
+    gets 26 channels against the supervised arm's 38 -- and a supervised
+    regressor on those 26 alone already loses to no residual at all
+    (exp_028: CEP50 0.305 -> 0.329). Information parity first, then compare.
+
+    Computed from the already-perturbed observation and NOT perturbed again
+    (``obs_perturbed_width``), matching ``play.py --sl_residual`` exactly."""
+
+    obs_perturbed_width: int | None = None
+    """Set by ``__post_init__``: how many leading channels ``_perturb_obs`` covers."""
+
     episode_length_s: float = 20.0
     """Cut from 30.0 s as a direct consequence of the ``w_time`` recalibration,
     not as independent tuning.
@@ -557,7 +590,12 @@ class DroneBombardTaskCfg(DroneBombardEnvCfg):
         # be derived rather than declared. The base env allocates the per-episode
         # observation-bias buffer from this number and hard-raises on a mismatch,
         # which is the guardrail that catches a hand-edited width.
-        self.observation_space = 26 + (2 if self.model_err.observe_wind else 0)
+        self.obs_perturbed_width = 26 + (2 if self.model_err.observe_wind else 0)
+        self.observation_space = self.obs_perturbed_width + (TILT_ACCUM_N + 2 if self.accum_obs else 0)
+        if self.accum_obs and self.model_err.observe_wind:
+            # observe_wind inserts its channels in the MIDDLE of the vector and
+            # would shift every index tilt_channels() reads.
+            raise ValueError("accum_obs and model_err.observe_wind cannot be combined")
 
 
 # =====================================================================
@@ -621,6 +659,17 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         self._residual_mag_sum = torch.zeros(N, device=device)
         self._residual_steps = torch.zeros(N, device=device)
 
+        # Reward-hacking guard (exp_018, err_20260830): the dense aim shaping
+        # is fed the NOMINAL-only prediction error, cached here by _ccip.
+        self._d_impact_nominal = torch.zeros(N, device=device)
+        # residual.ema_alpha state: the smoothed channel and "no step yet".
+        self._residual_ema = torch.zeros(N, 2, device=device)
+        self._residual_fresh = torch.ones(N, dtype=torch.bool, device=device)
+        # accum_obs state: running sums, step count, first-step velocity.
+        self._accum_sum = torch.zeros(N, TILT_ACCUM_N, device=device)
+        self._accum_cnt = torch.zeros(N, 1, device=device)
+        self._accum_v0 = torch.zeros(N, 2, device=device)
+
     # ------------------------------------------------------------------
     # helpers
     # ------------------------------------------------------------------
@@ -663,12 +712,21 @@ class DroneBombardTaskEnv(DroneBombardEnv):
             # has to learn the whole ballistic map -- including the parts the
             # CCIP formula gets exactly right for free.
             impact = pos_xy + self._residual_action * rescfg.direct_scale
+            nominal = impact   # L2 has no analytic prediction to fall back on
         else:
-            impact = self._nominal_impact(pos_xy, vel_xy, vel_z, altitude)
-            if rescfg.enabled:
-                impact = apply_ccip_residual(impact, self._residual_action, rescfg.scale)
+            nominal = self._nominal_impact(pos_xy, vel_xy, vel_z, altitude)
+            impact = (apply_ccip_residual(nominal, self._residual_action, rescfg.scale)
+                      if rescfg.enabled else nominal)
 
         ccip_err = impact - perceived
+        # DELIBERATE (reward-hacking guard, exp_018 / err_20260830): the dense
+        # aim shaping in _get_rewards reads THIS, never the residual-corrected
+        # distance. The residual is an unconstrained policy output; paying for
+        # a quantity it can shift by +-residual.scale without flying differently
+        # would let it farm rew_aim_pot. The release TRIGGER and the crossing
+        # test stay residual-inclusive by design -- biasing them is the
+        # residual's job, and the result is scored on the real landing.
+        self._d_impact_nominal = torch.linalg.norm(nominal - perceived, dim=-1)
         return ccip_err, torch.linalg.norm(ccip_err, dim=-1), time_to_fall(
             altitude, vel_z, self.cfg.drop.gravity)
 
@@ -702,8 +760,16 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         self._wants_drop = clipped[:, 4] > 0.5
         # Zeroed only for L0. L1 uses it as a correction, L2 as the prediction.
         aim_active = self.cfg.residual.enabled or self.cfg.residual.mode == "direct"
-        self._residual_action = (clipped[:, 5:7] if aim_active
-                                 else torch.zeros_like(clipped[:, 5:7]))
+        residual = clipped[:, 5:7] if aim_active else torch.zeros_like(clipped[:, 5:7])
+        alpha = self.cfg.residual.ema_alpha
+        if alpha < 1.0:
+            # Same rule as play.py's _SLResidual / _ResidualEMA: raw value on
+            # the first step of an episode, exponential thereafter.
+            residual = torch.where(self._residual_fresh.unsqueeze(-1), residual,
+                                   alpha * residual + (1.0 - alpha) * self._residual_ema)
+            self._residual_ema = residual
+            self._residual_fresh[:] = False
+        self._residual_action = residual
         self._prev_action = torch.cat([limited_vel, self._residual_action], dim=-1)
 
         a = self.cfg.action
@@ -813,8 +879,19 @@ class DroneBombardTaskEnv(DroneBombardEnv):
             # channels, so it cannot be used as a covert "am I close yet" signal.
             parts.insert(2, c(self._wind_xy, cfg.obs.wind_scale) * m)
 
-        obs = torch.nan_to_num(torch.cat(parts, dim=-1), nan=0.0)
-        return {"policy": self._perturb_obs(obs)}
+        obs = self._perturb_obs(torch.nan_to_num(torch.cat(parts, dim=-1), nan=0.0))
+        if cfg.accum_obs:
+            # Causal per-episode means of the noisy observation, appended
+            # UNPERTURBED -- exactly what play.py --sl_residual fed the
+            # supervised regressor. A slot whose counter is 0 was just reset
+            # (DirectRLEnv resets inside step(), before this is built).
+            new = (self._accum_cnt == 0.0)
+            self._accum_v0 = torch.where(new, obs[:, 6:8], self._accum_v0)
+            self._accum_sum += tilt_channels(obs)
+            self._accum_cnt += 1.0
+            obs = torch.cat([obs, self._accum_sum / self._accum_cnt,
+                             (obs[:, 6:8] - self._accum_v0) / self._accum_cnt], dim=-1)
+        return {"policy": obs}
 
     # ------------------------------------------------------------------
     # Reset: cruise handoff
@@ -891,6 +968,10 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         self._live_steps[env_ids] = 0.0
         self._residual_mag_sum[env_ids] = 0.0
         self._residual_steps[env_ids] = 0.0
+        self._residual_ema[env_ids] = 0.0
+        self._residual_fresh[env_ids] = True
+        self._accum_sum[env_ids] = 0.0
+        self._accum_cnt[env_ids] = 0.0
 
         # Seed the controller AT the cruise setpoint. Without this the step-1
         # command is whatever the untrained policy emits, producing a
@@ -1010,7 +1091,9 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         rw = cfg.task_reward
         pos, _, ang, roll, pitch, _ = self._kinematics()
         f = self._done_flags
-        d_impact = self._d_impact
+        # NOMINAL-only aim distance (see _ccip): the residual must not be able
+        # to earn the aim potential by pointing the correction at the target.
+        d_impact = self._d_impact_nominal
         d_xy = self._current_d_xy()
         det = (d_xy <= cfg.perception.reveal_radius).float()
         # Shaping stops at release: the remaining flight is the payload's, and
