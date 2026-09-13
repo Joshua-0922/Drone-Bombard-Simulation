@@ -20,7 +20,7 @@ type: index
 - 핵심 설계: **동결 L0(행 0:5) + 별도 잔차 트렁크 38→128→128→2(행 5:7)**, 입력·권한(2.0 m)·EMA(0.3)·평가 시드를 L1-SL과 일치.
   `res_gi.pt`로 초기화하면 iteration 0이 곧 L1-SL이다(CEP50 0.2252 = 0.2252).
 - 신규 발견: `runner.load()`의 Adam 모멘텀이 마스킹된 동결 행을 움직인다 → **Rule 43**. L0 nominal std ≈ 3.1 → `--nominal_std 0.01`.
-- 🔄 15:23 **파일럿 착수** — `ARMS=zero` 한 팔(0 초기화, 500 iter ≈ 2.5 h + 평가 9 run), wandb `ac0mhdof` → [[experiments/exp_032_ac0mhdof_l1rl_zero_pilot]]. SL은 다시 하지 않는다; 기존 표와 비교
+- 🔄 15:27 **파일럿 착수** — `ARMS=zero` 한 팔(0 초기화, **1000 iter** ≈ 4.8 h + 평가 9 run), wandb `icpj8p4r`(500 iter run `ac0mhdof`는 중단) → [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]]. SL은 다시 하지 않는다; 기존 표와 비교
 
 ---
 
@@ -484,7 +484,7 @@ type: index
 - [[research/curriculum_phase_convergence]] — **(07-12 baseline §7 + 07-13 이어학습 §8)** warm-start 무손실 실증, reward 우상향 ≠ 임무 능력, P2/P3 릴리스 명중은 500 iter로 미형성 — **+2000 iter 연장도 0.8m 미돌파(P2 정체, P3 회귀)**. 해법=exp_018 종단구조 (Rule 20e/f).
 
 ### 실험 (experiments/)
-- [[experiments/exp_032_ac0mhdof_l1rl_zero_pilot]] — 🔄 **(09-13 진행 중) L1-RL 파일럿(0 초기화, 500 iter) — L1-SL gi와 학습 신호만 다른 팔. 기존 exp_030 표와 비교**
+- [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] — 🔄 **(09-13 진행 중) L1-RL 파일럿(0 초기화, 1000 iter) — L1-SL gi와 학습 신호만 다른 팔. 기존 exp_030 표와 비교**
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
 - [[experiments/exp_031_ou_wind]] — ⛔ **(09-07) 시변(OU) 바람 ablation — 잔차의 마지막 미검증 전제, 60 run**
 - [[experiments/exp_030_gain_invariant_residual]] — ⭐⭐ **(09-07) 게인 무관 특징으로 정책 결합 해소(회수율 22.9 → 77.1%) + Table 1 시드 정렬 — 파레토 전 축 지배 복귀**

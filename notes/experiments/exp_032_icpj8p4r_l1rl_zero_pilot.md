@@ -3,7 +3,7 @@ date: 2026-09-13
 tags: [experiment, residual, l1, rl, ppo, pilot, running]
 status: running
 type: experiment
-wandb_run: "ac0mhdof (2026-09-13_15-23-41_pilot_zero)"
+wandb_run: "icpj8p4r (2026-09-13_15-27-10_pilot_zero)"
 ---
 
 # exp_032 — L1-RL 파일럿 (0 초기화): 종단 보상만으로 드리프트를 찾는가
@@ -20,6 +20,16 @@ wandb_run: "ac0mhdof (2026-09-13_15-23-41_pilot_zero)"
 
 ## 1. 설정
 
+### 1.0 L1-SL gi가 적합된 조건과의 정합 (사용자 요청으로 재확인)
+
+컨테이너 `/tmp/sl_collect.sh`·[[experiments/exp_028_l1_sl_pilot]] §2·[[experiments/exp_030_gain_invariant_residual]]:
+`res_gi.pt`는 **동결 L0 seed 1**을 `--no_residual`(결정론적 추론)로 굴려 **DR 1.5 · 사거리 18–22 m**에서
+모은 덤프(seed 1000·2000, 256 envs, 3,501 슬롯-에피소드)로만 적합했다. 아래 파일럿은 같은 정책·같은 DR·
+같은 사거리·결정론적 비행 분포(`--nominal_std 0.01`)이므로 **조건이 일치**한다. 다른 것은 학습 신호(PPO on
+종단 보상 vs MSE on 드리프트)와 데이터 양(PPO는 iteration당 약 2,000 에피소드)뿐이다.
+
+> 15:23에 500 iter로 먼저 걸었던 run(`ac0mhdof`)은 6분 만에 중단하고 1000 iter로 재착수했다(사용자 결정).
+
 | 항목 | 값 |
 |---|---|
 | 액터 | **동결 L0 seed 1** (`2026-08-30_03-50-27_task_dr1.5_nores/model_final.pt`, 행 0:5) + **잔차 트렁크** 38→128→128→2 ELU (행 5:7), 출력층 0 초기화 |
@@ -29,8 +39,8 @@ wandb_run: "ac0mhdof (2026-09-13_15-23-41_pilot_zero)"
 | PPO | rsl_rl 3.1.2, 2048 envs × 96 steps, lr 3e-4 adaptive(KL 0.01), **entropy_coef 0.0**, 크리틱 L0 warm-start(입력 0열 확장), 새 Adam |
 | 보상 | 현행 task reward, **조준 포텐셜 nominal-only**(09-13 수정), `w_residual` 0 |
 | DR | `model_err.scale` 1.5, 사거리 18–22 m |
-| 반복 | **500 iter**, seed 1, 약 17.8 s/iter → ≈2.5 h |
-| 명령 | `_l1rl_pilot.sh` (`ARMS=zero ITERS=500`), 로그 컨테이너 `/tmp/l1rl/train_zero.log` |
+| 반복 | **1000 iter**, seed 1, 약 17 s/iter → ≈4.8 h (L0 자체 학습과 같은 반복 수) |
+| 명령 | `_l1rl_pilot.sh` (`ARMS=zero ITERS=1000`), 로그 컨테이너 `/tmp/l1rl/train_zero.log` |
 
 **평가** (학습 종료 후 자동): `play.py --paired_eval --accum_obs --residual_scale 2.0 --residual_ema 0.3`,
 200 ep × seed {3000,4000,5000} × {DR 1.5 · DR 2.5 · 사거리 26–30}. 산출물 `/tmp/l1rl/L1RL_zero_*.json`.
@@ -52,4 +62,4 @@ wandb_run: "ac0mhdof (2026-09-13_15-23-41_pilot_zero)"
 
 ## 3. 결과
 
-(진행 중 — iteration 0 롤아웃 succ@1.0 79.1%, 잔차 std 0.05, `residual_mag_m` 0.059)
+(진행 중, 15:27 착수 — iteration 0/1 롤아웃 succ@1.0 79.1 / 80.5%, 잔차 std 0.05, ETA 약 20:20 평가 포함)
