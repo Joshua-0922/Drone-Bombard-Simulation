@@ -27,7 +27,13 @@
 60%의 진짜 원인은 **잔차 탐험 잡음**(std 0.2 = 0.4 m → 첫 교차 게이트 조기 발사, Rule 38): 0.001이면 96~100%,
 0.05면 ~80% → `--residual_init_std 0.05 --entropy_coef 0.0` 채택. 탐험 자체가 결과 공간 잔차의 비용이다.
 
-**🔄 15:27 파일럿 착수** — `ARMS=zero` 한 팔(0 초기화, **1000 iter**, L1-SL 적합 조건과 정합: 동결 L0 s1 · DR 1.5 · 18–22 m · 결정론 비행), wandb `icpj8p4r`(500 iter run은 중단), 종료 후 seed {3000,4000,5000} × {DR 1.5, DR 2.5, 사거리 26–30} 자동 평가 → [[notes/experiments/exp_032_icpj8p4r_l1rl_zero_pilot]]. **SL은 다시 하지 않는다** — 비교 대상은 exp_030의 기존 표.
+**⛔ 파일럿 결과 (exp_032, wandb `icpj8p4r`, 15:27 → 17:00 Rule 29 중단, 308/1000 iter).** 0 초기화 잔차 PPO는
+**L0와 구별되지 않았다** — model_300 paired n=600: CEP50 0.299 (L0 0.305, **SL 0.209**), CEP90 0.583, succ@0.5 78.67%.
+잔차 std가 iteration 80에 0.05 → 0.01로 바닥에 붙고(첫 교차 게이트가 잡음을 벌함, entropy 0) 잔차 크기 0.05 m 평탄.
+롤아웃 성공률 79 → 92%는 전부 잡음 제거. **std가 바닥이면 평균이 움직일 신호가 없다** → 남은 690 iter가 답을 바꿀 경로 없음.
+결론(잠정, Rule 44): *결과 공간 잔차의 학습 목표는 드리프트 예측이고, 종단 보상은 그것을 발견하지 못한다.*
+→ [[notes/experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] · [[notes/research/residual_rl_exploration_collapse]]
+**다음 후보(사용자 결정):** std 고정 팔 / `res_gi.pt` 초기화 미세조정 팔, 각 300 iter ≈ 1.5 h.
 남은 질문은 하나: *"종단 보상이 드리프트 예측 위에 더할 것이 있는가."* Rule 43 신설.
 
 ---
@@ -363,7 +369,8 @@ wandb: `sl_gen_unseenR` / `sl_gen_policy_transfer` / `sl_gen_label_count` (job_t
 | ~~5~~ | ~~조준 보상 잔차 포함 결함 수정 + L1-RL 필수 수정 6건~~ | 09-13 완료·검증 ([[notes/research/l1_rl_preflight]] §6) | — | ✅ |
 | ~~6~~ | ~~OU(시변) 바람 ablation~~ | 완료 (60 run) — 위 완료 행 참조 | — | ✅ |
 | 7 | 적합 손실에 시간 평활 항 | EMA의 원인 처치 | ~20분 | ❌ |
-| **8** | **L1-RL 파일럿** — `isaac_lab/_l1rl_pilot.sh`: 2팔(0 초기화 / `res_gi.pt` 초기화) × 500 iter, 동결 L0 seed 1, 평가 3 seed × DR {1.5, 2.5} | ablation. 남은 질문은 *"종단 보상이 드리프트 예측 위에 더할 것이 있는가"* 하나. 조건표: [[notes/research/l1_rl_preflight]] §0·§2·§7 | ~2.3 h × 2팔 + 평가 12 run | ❌ **착수 가능** |
+| ~~8~~ | ~~L1-RL 파일럿 0 초기화~~ | 09-13 완료 — **음성** (CEP50 −1.9%, 탐험 소멸). [[notes/experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] | 1.5 h | ✅ |
+| **8b** | **L1-RL 후속 2팔** — std 고정(0.03~0.05, 학습 불가) / `res_gi.pt` 초기화 미세조정, 각 300 iter | *"탐험을 강제하면 평균이 가는가"* / *"종단 보상이 예측 위에 더하는가"* — Rule 44 확정 조건 | ~1.5 h × 2 | ❌ 사용자 결정 |
 
 **L1-RL이 8번인 이유.** 결합이 해소되면서 RL의 근거 하나가 사라졌다 — "재적합 필요"는
 더 이상 RL의 장점이 아니다. 남는 질문은 종단 보상의 한계 가치 하나이고, 그 답이 어느 쪽이든
@@ -468,6 +475,8 @@ SL은 정책 변경 시 몇 분짜리 재적합, RL은 애초에 전체 재학�
 ---
 
 # 4. Training History
+
+- **2026-09-13:** **exp_032 L1-RL 파일럿(0 초기화, `icpj8p4r`) — 308/1000 iter Rule 29 중단, 음성.** 동결 L0 s1 + 별도 잔차 트렁크(38ch, scale 2.0, EMA 0.3, nominal std 0.01, 잔차 std 0.05, entropy 0). 잔차 std 80 iter 만에 0.01로 소멸 → 잔차 크기 0.05 m 평탄. model_300 paired n=600: CEP50 0.299(L0 0.305, SL 0.209), succ@0.5 78.67%. → [[notes/experiments/exp_032_icpj8p4r_l1rl_zero_pilot]]
 
 > **전체 히스토리:** `notes/experiments/training_history.md`
 > **개별 실험 노트:** `notes/experiments/exp_NNN_*.md`

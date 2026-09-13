@@ -20,7 +20,8 @@ type: index
 - 핵심 설계: **동결 L0(행 0:5) + 별도 잔차 트렁크 38→128→128→2(행 5:7)**, 입력·권한(2.0 m)·EMA(0.3)·평가 시드를 L1-SL과 일치.
   `res_gi.pt`로 초기화하면 iteration 0이 곧 L1-SL이다(CEP50 0.2252 = 0.2252).
 - 신규 발견: `runner.load()`의 Adam 모멘텀이 마스킹된 동결 행을 움직인다 → **Rule 43**. L0 nominal std ≈ 3.1 → `--nominal_std 0.01`.
-- 🔄 15:27 **파일럿 착수** — `ARMS=zero` 한 팔(0 초기화, **1000 iter** ≈ 4.8 h + 평가 9 run), wandb `icpj8p4r`(500 iter run `ac0mhdof`는 중단) → [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]]. SL은 다시 하지 않는다; 기존 표와 비교
+- ⛔ **파일럿 결과 (15:27~17:00, 308 iter에서 Rule 29 중단)** — 0 초기화 잔차 PPO는 **L0와 구별되지 않았다**(CEP50 0.299 vs 0.305, n=600; SL 0.209). 잔차 std가 80 iter 만에 0.01로 소멸 → 평균이 움직일 신호 없음. **Rule 44(잠정)** → [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] · [[research/residual_rl_exploration_collapse]]
+- 다음 후보(사용자 결정): std 고정 팔 / `res_gi.pt` 초기화 미세조정 팔, 각 ~1.5 h → [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]]. SL은 다시 하지 않는다; 기존 표와 비교
 
 ---
 
@@ -442,6 +443,7 @@ type: index
 ## 노트 인덱스
 
 ### 연구 (research/)
+- [[research/residual_rl_exploration_collapse]] — ⛔ **(09-13) 결과 공간 잔차의 PPO 탐험은 스스로 소멸한다 — 첫 교차 게이트가 잡음을 벌하므로 std → 0, 평균 정지. RL의 자리는 드리프트 예측 위의 미세조정 (Rule 44, 잠정)**
 - [[research/l1_rl_preflight]] — ✅ **(09-13) L1-RL 사전점검 → 6건 수정·검증 완료 — 조준 보상 nominal-only · `accum_obs`(26→38) · 잔차 EMA · 별도 잔차망(`residual_actor.py`) · Adam 모멘텀 누출 차단 · 평가 스위치. SL-init@0 = L1-SL (4자리). 파일럿은 `_l1rl_pilot.sh` (Rule 43)**
 - [[research/residual_wind_stationarity]] — ⛔ **(09-07) 잔차는 외란의 준정상성을 전제한다 — 경계 $\tau\approx3$ s, 특권 팔도 같은 지점에서 진다 (Rule 42)**
 - [[research/residual_policy_coupling]] — **(09-02 발견 → ✅ 09-07 해결) 잔차가 기저 정책에 결합된다 — 접두 평균 가속 2채널로 소멸, 전이 회수율 22.9% → 77.1% (Rule 39 개정)**
@@ -484,7 +486,7 @@ type: index
 - [[research/curriculum_phase_convergence]] — **(07-12 baseline §7 + 07-13 이어학습 §8)** warm-start 무손실 실증, reward 우상향 ≠ 임무 능력, P2/P3 릴리스 명중은 500 iter로 미형성 — **+2000 iter 연장도 0.8m 미돌파(P2 정체, P3 회귀)**. 해법=exp_018 종단구조 (Rule 20e/f).
 
 ### 실험 (experiments/)
-- [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] — 🔄 **(09-13 진행 중) L1-RL 파일럿(0 초기화, 1000 iter) — L1-SL gi와 학습 신호만 다른 팔. 기존 exp_030 표와 비교**
+- [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] — ⛔ **(09-13) L1-RL 파일럿(0 초기화) 음성 결과 — 308 iter 중단, CEP50 −1.9% (SL −31.6%). 탐험 std 소멸이 원인 (Rule 44)**
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
 - [[experiments/exp_031_ou_wind]] — ⛔ **(09-07) 시변(OU) 바람 ablation — 잔차의 마지막 미검증 전제, 60 run**
 - [[experiments/exp_030_gain_invariant_residual]] — ⭐⭐ **(09-07) 게인 무관 특징으로 정책 결합 해소(회수율 22.9 → 77.1%) + Table 1 시드 정렬 — 파레토 전 축 지배 복귀**

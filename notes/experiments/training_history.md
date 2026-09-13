@@ -13,7 +13,7 @@ type: reference
 
 | 날짜 | Run ID | Steps | Mean Drop Error | 요약 |
 |------|--------|-------|-----------------|------|
-| 2026-09-13 | exp_032 L1-RL zero pilot (`icpj8p4r`, pilot_zero; `ac0mhdof`는 500 iter로 잘못 걸어 6분 만에 중단) | 0/1000 (진행 중, 17 s/iter) | 평가 대기 | **L1-RL(잔차 PPO) 파일럿 — L1-SL gi와 학습 신호만 다른 팔.** 동결 L0 seed 1 + 별도 잔차 트렁크 38→128→128→2, `accum_obs`·scale 2.0·EMA 0.3·seed 정합. 잔차 std 0.05, entropy 0. 판정: 기존 exp_030 표(CEP50 0.209)와 비교. → [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] / [[research/l1_rl_preflight]] |
+| 2026-09-13 | exp_032 L1-RL zero pilot (`icpj8p4r`, pilot_zero; `ac0mhdof`는 500 iter로 잘못 걸어 6분 만에 중단) | **308/1000 — Rule 29 중단** (17 s/iter) | model_300 paired n=600: **CEP50 0.299 (−1.9% vs L0)**, CEP90 0.583, succ@0.5 78.67% — L0와 동일. SL은 0.209 | **L1-RL(잔차 PPO) 파일럿 — L1-SL gi와 학습 신호만 다른 팔.** 동결 L0 seed 1 + 별도 잔차 트렁크 38→128→128→2, `accum_obs`·scale 2.0·EMA 0.3·seed 정합. 잔차 std 0.05, entropy 0. **음성 결과:** 잔차 std가 80 iter 만에 0.01로 소멸(첫 교차 게이트가 잡음을 벌함, Rule 38) → 잔차 크기 0.05 m 평탄, 결정론 평가 L0와 동일. Rule 44(잠정). → [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] / [[research/residual_rl_exploration_collapse]] / [[research/l1_rl_preflight]] |
 | 2026-03-12 | vekkz83a | 386 | — | 첫 run 중단; 0 FPS (60 s/episode RTF 고정). Phase 7 최적화 적용. |
 | 2026-03-13 | vekkz83a | resumed | — | preempt + replay buffer 재개. RTF=0, headless. |
 | 2026-03-17 | apax52d7 | ~3K | — | dartsim 크래시 수정, EKF yaw fix (COM_ARM_WO_GPS=1). ~25 steps/sec. |

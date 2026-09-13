@@ -290,3 +290,10 @@ docker exec --env-file /opt/drone-bombard/.wandb.env -e PYTHONUNBUFFERED=1 -d is
 `L1RL_slinit`이 L1-SL(CEP50 0.209, n=600)보다 유의하게 낫지 않으면 **음성 결과로 확정**:
 *"잔차의 최적값은 드리프트 예측이고, 종단 보상은 그 위에 더할 것이 없다."*
 학습 중 잔차 std가 0.1을 넘거나 롤아웃 성공률이 200 iter 이상 평탄하면 중단(Rule 29).
+
+---
+
+## 8. 결과 → [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]]
+
+0 초기화 팔은 **음성**(308 iter 중단, CEP50 −1.9% vs SL −31.6%). 원인은 §6.4가 예고한 탐험 비용의 귀결 —
+학습 가능한 std가 바닥에 붙어 평균이 움직일 신호를 잃었다. → [[research/residual_rl_exploration_collapse]] · Rule 44.
