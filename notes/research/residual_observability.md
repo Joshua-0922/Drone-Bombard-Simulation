@@ -13,7 +13,7 @@ type: research
 > 지도학습 경로에서 잔차는 정책과 **분리된 별도 네트워크**이므로 정책이 보지 않는
 > 입력을 먹일 수 있다. 실제로 그렇게 돌려서 **CEP50 −31.4%**를 얻었다 (§5).
 
-관련: [[research/residual_ceiling]] · [[research/error_budget_l0]] ·
+관련: [[research/l1_sl_pipeline]] · [[research/residual_ceiling]] · [[research/error_budget_l0]] ·
 [[research/release_gate_jitter]] · [[experiments/exp_028_l1_sl_pilot]] ·
 [[research/paper_metrics]] · [[research/rl_rules]]
 

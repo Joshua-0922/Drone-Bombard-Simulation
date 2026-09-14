@@ -11,7 +11,7 @@ type: research
 > DR 2.5에서 **−35%**다. 그리고 **그 이득의 전부가 바람**이다.
 > `success@1.0`으로는 이 이득이 **0으로 측정된다**.
 
-관련: [[research/error_budget_l0]] · [[research/paper_metrics]] ·
+관련: [[research/l1_sl_pipeline]] (파이프라인 개요) · [[research/error_budget_l0]] · [[research/paper_metrics]] ·
 [[experiments/exp_027_seen_unseen_3seed]] · [[research/research_architecture]] §1.2 ·
 [[research/rl_rules]] (Rule 34)
 
