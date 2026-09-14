@@ -296,4 +296,5 @@ docker exec --env-file /opt/drone-bombard/.wandb.env -e PYTHONUNBUFFERED=1 -d is
 ## 8. 결과 → [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]]
 
 0 초기화 팔은 **음성**(308 iter 중단, CEP50 −1.9% vs SL −31.6%). 원인은 §6.4가 예고한 탐험 비용의 귀결 —
-학습 가능한 std가 바닥에 붙어 평균이 움직일 신호를 잃었다. → [[research/residual_rl_exploration_collapse]] · Rule 44.
+학습 가능한 std가 바닥에 붙어 평균이 움직일 신호를 잃었다. std 고정 팔([[experiments/exp_033_tog7jqs5_l1rl_fixed_std_pilot]])도
+**음성**(110 iter 중단, CEP50 +18.2%, 반대 방향). → [[research/residual_rl_exploration_collapse]] · Rule 44 확정.

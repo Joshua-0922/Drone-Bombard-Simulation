@@ -21,7 +21,8 @@ type: index
   `res_gi.pt`로 초기화하면 iteration 0이 곧 L1-SL이다(CEP50 0.2252 = 0.2252).
 - 신규 발견: `runner.load()`의 Adam 모멘텀이 마스킹된 동결 행을 움직인다 → **Rule 43**. L0 nominal std ≈ 3.1 → `--nominal_std 0.01`.
 - ⛔ **파일럿 결과 (15:27~17:00, 308 iter에서 Rule 29 중단)** — 0 초기화 잔차 PPO는 **L0와 구별되지 않았다**(CEP50 0.299 vs 0.305, n=600; SL 0.209). 잔차 std가 80 iter 만에 0.01로 소멸 → 평균이 움직일 신호 없음. **Rule 44(잠정)** → [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] · [[research/residual_rl_exploration_collapse]]
-- 🔄 09-14 00:56 **std 고정 팔 착수** (`tog7jqs5`, 1000 iter, 100 iter마다 probe 판정) → [[experiments/exp_033_tog7jqs5_l1rl_fixed_std_pilot]]. 이것도 안 되면 잔차 RL은 행동 공간으로(사용자 결정) → [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]]. SL은 다시 하지 않는다; 기존 표와 비교
+- ⛔ 09-14 **std 고정 팔(exp_033)도 음성** — 110 iter 중단. 잔차가 0.19 m로 자랐지만 참 드리프트와 **반대 방향**(R² −0.48), 결정론 CEP50 **+18.2%**. 가설: 릴리즈 트리거로 시간 비용 farming. **두 RL 팔로 Rule 44 확정** → [[experiments/exp_033_tog7jqs5_l1rl_fixed_std_pilot]]
+- 결정 대기: 행동 공간(제어기) 잔차 RL로 갈지 — 주 claim(결과 공간 잔차 지도학습)에는 불필요 → [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]]. SL은 다시 하지 않는다; 기존 표와 비교
 
 ---
 
@@ -486,7 +487,7 @@ type: index
 - [[research/curriculum_phase_convergence]] — **(07-12 baseline §7 + 07-13 이어학습 §8)** warm-start 무손실 실증, reward 우상향 ≠ 임무 능력, P2/P3 릴리스 명중은 500 iter로 미형성 — **+2000 iter 연장도 0.8m 미돌파(P2 정체, P3 회귀)**. 해법=exp_018 종단구조 (Rule 20e/f).
 
 ### 실험 (experiments/)
-- [[experiments/exp_033_tog7jqs5_l1rl_fixed_std_pilot]] — 🔄 **(09-14 진행 중) L1-RL 파일럿 2: 탐험 std 0.05 고정, 1000 iter. exp_032의 탐험 소멸 처방**
+- [[experiments/exp_033_tog7jqs5_l1rl_fixed_std_pilot]] — ⛔ **(09-14) L1-RL 파일럿 2(std 고정) 음성 — 110 iter 중단, 잔차가 반대 방향으로 자라 CEP50 +18.2%. Rule 44 확정**
 - [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] — ⛔ **(09-13) L1-RL 파일럿(0 초기화) 음성 결과 — 308 iter 중단, CEP50 −1.9% (SL −31.6%). 탐험 std 소멸이 원인 (Rule 44)**
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
 - [[experiments/exp_031_ou_wind]] — ⛔ **(09-07) 시변(OU) 바람 ablation — 잔차의 마지막 미검증 전제, 60 run**
