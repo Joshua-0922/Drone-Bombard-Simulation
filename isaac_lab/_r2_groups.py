@@ -60,6 +60,13 @@ GROUPS = {
     "각속도":                            [13, 14, 15],
     "지령 (prev_action)":                [21, 22, 23, 24],
     "tilt 누적 (10ch)":                  list(range(26, 36)),
+    # controller-dependence probe (2026-09-14): the attitude means exist under ANY
+    # controller (force balance: mg*tan(theta) = F_wind); the velocity/command
+    # means exist only because the sim velocity loop is P-only (a PID, e.g. PX4,
+    # integrates the steady-state error away). How much of the fit rides on the
+    # second kind is the sim2real question.
+    "누적: 자세 6ch (roll/pitch x yaw)":  list(range(26, 32)),
+    "누적: 속도·명령 4ch (P 제어 흔적)": list(range(32, 36)),
     "gi 접두가속 (2ch)":                 [36, 37],
 }
 
