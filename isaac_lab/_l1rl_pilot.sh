@@ -14,8 +14,9 @@ cd /tmp/rebuild
 IL=/workspace/isaaclab/isaaclab.sh
 CK1=/tmp/l0b/logs/drone_bombard_ppo/2026-08-30_03-50-27_task_dr1.5_nores/model_final.pt
 ITERS=${ITERS:-500}
-ARMS=${ARMS:-zero}      # "zero" = residual RL from delta=0 (the arm compared with the existing L1-SL table);
-                        # "zero slinit" adds PPO fine-tuning that starts from res_gi.pt (still RL, not a new fit)
+ARMS=${ARMS:-fixed}     # "zero"   = residual RL from delta=0, learnable std (exp_032: std collapsed, learned nothing)
+                        # "fixed"  = same but the exploration std is pinned (--residual_fixed_std)   <- current pilot
+                        # "slinit" = PPO fine-tuning that starts from res_gi.pt (still RL, not a new fit)
 OUT=/tmp/l1rl; mkdir -p $OUT/logs
 TRAIN="--task_env --resume $CK1 --residual_net --accum_obs --residual_scale 2.0 --residual_ema 0.3 \
        --nominal_std 0.01 --residual_init_std 0.05 --entropy_coef 0.0 --dr_scale 1.5 --headless --num_envs 2048 --seed 1 \
@@ -27,7 +28,11 @@ run() { local f=$1.json; shift
   echo "=== $(date +%T) $f"; "$@" --out-json "$f" > "${f%.json}.log" 2>&1 || echo "FAIL $f"; }
 
 for ARM in $ARMS; do
-  if [ "$ARM" = slinit ]; then EXTRA="--residual_init_from /tmp/sl/res_gi.pt"; else EXTRA=""; fi
+  case $ARM in
+    slinit) EXTRA="--residual_init_from /tmp/sl/res_gi.pt" ;;
+    fixed)  EXTRA="--residual_fixed_std" ;;
+    *)      EXTRA="" ;;
+  esac
   echo "=== $(date +%T) train L1RL_$ARM ($ITERS iter)"
   $IL -p train.py $TRAIN $EXTRA --run_name pilot_$ARM > $OUT/train_$ARM.log 2>&1 || echo "FAIL train $ARM"
   CK=$(ls -d $OUT/logs/drone_bombard_ppo/*pilot_$ARM/model_final.pt 2>/dev/null | tail -1)

@@ -21,7 +21,7 @@ type: index
   `res_gi.pt`로 초기화하면 iteration 0이 곧 L1-SL이다(CEP50 0.2252 = 0.2252).
 - 신규 발견: `runner.load()`의 Adam 모멘텀이 마스킹된 동결 행을 움직인다 → **Rule 43**. L0 nominal std ≈ 3.1 → `--nominal_std 0.01`.
 - ⛔ **파일럿 결과 (15:27~17:00, 308 iter에서 Rule 29 중단)** — 0 초기화 잔차 PPO는 **L0와 구별되지 않았다**(CEP50 0.299 vs 0.305, n=600; SL 0.209). 잔차 std가 80 iter 만에 0.01로 소멸 → 평균이 움직일 신호 없음. **Rule 44(잠정)** → [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] · [[research/residual_rl_exploration_collapse]]
-- 다음 후보(사용자 결정): std 고정 팔 / `res_gi.pt` 초기화 미세조정 팔, 각 ~1.5 h → [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]]. SL은 다시 하지 않는다; 기존 표와 비교
+- 🔄 09-14 00:56 **std 고정 팔 착수** (`tog7jqs5`, 1000 iter, 100 iter마다 probe 판정) → [[experiments/exp_033_tog7jqs5_l1rl_fixed_std_pilot]]. 이것도 안 되면 잔차 RL은 행동 공간으로(사용자 결정) → [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]]. SL은 다시 하지 않는다; 기존 표와 비교
 
 ---
 
@@ -486,6 +486,7 @@ type: index
 - [[research/curriculum_phase_convergence]] — **(07-12 baseline §7 + 07-13 이어학습 §8)** warm-start 무손실 실증, reward 우상향 ≠ 임무 능력, P2/P3 릴리스 명중은 500 iter로 미형성 — **+2000 iter 연장도 0.8m 미돌파(P2 정체, P3 회귀)**. 해법=exp_018 종단구조 (Rule 20e/f).
 
 ### 실험 (experiments/)
+- [[experiments/exp_033_tog7jqs5_l1rl_fixed_std_pilot]] — 🔄 **(09-14 진행 중) L1-RL 파일럿 2: 탐험 std 0.05 고정, 1000 iter. exp_032의 탐험 소멸 처방**
 - [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] — ⛔ **(09-13) L1-RL 파일럿(0 초기화) 음성 결과 — 308 iter 중단, CEP50 −1.9% (SL −31.6%). 탐험 std 소멸이 원인 (Rule 44)**
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
 - [[experiments/exp_031_ou_wind]] — ⛔ **(09-07) 시변(OU) 바람 ablation — 잔차의 마지막 미검증 전제, 60 run**
@@ -535,6 +536,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-09-14]] — exp_032 사후 분석 + exp_033(std 고정) 착수 + main claim 검토
 - [[daily/daily_2026-09-13]] — L1-RL 사전점검(코드 감사, 수정 없음)
 - [[daily/daily_2026-08-27]] — **T3 오라클 재정의**(즉시 엔트레인먼트 → 플랜트 동일 적분) · 페이로드 항력 프레임 버그 · **DR_SCALE 스윕 사전 검증에서 결정론적 오차 바닥 발견**(0.44 → 0.015 m) · 환경 재구축 계획 승인 · Rule 31 신설
 - [[daily/daily_2026-08-23]] — **CCIP $v_z$ 누락 발견·수정**(모델오차의 ~70%) · 아키텍처 문서 v3 전면 개정(전제 1개 거짓 + 버그 4개 + 성립불가 DR 3개) · 기존 학습 산출물 폐기 결정 · Rule 30 신설

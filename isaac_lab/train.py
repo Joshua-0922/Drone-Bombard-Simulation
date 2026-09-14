@@ -106,6 +106,11 @@ parser.add_argument("--residual_init_std", type=float, default=0.05,
                          "units; x residual.scale = metres). 0.8 x 2 m would be 1.6 m RMS of aim noise "
                          "-- twice T2's whole error; even 0.2 (0.4 m) halves rollout success through "
                          "the first-crossing gate (Rule 38). 0.05 = 0.1 m, EMA-smoothed ~0.04 m.")
+parser.add_argument("--residual_fixed_std", action="store_true",
+                    help="--residual_net: do NOT learn the exploration std -- keep --residual_init_std "
+                         "for the whole run. exp_032 (2026-09-13): a learnable std fell 0.05 -> 0.01 in "
+                         "80 iterations because the first-crossing gate punishes jitter, and the mean "
+                         "residual then stopped learning (R^2 vs true drift ~0 for 300 iterations).")
 parser.add_argument("--nominal_std", type=float, default=None,
                     help="--residual_net: fix the FROZEN nominal rows' rollout std (default: keep "
                          "L0's, which ended at ~3.1 -- bang-bang flight under sampling, rollout "
@@ -558,6 +563,7 @@ def main():
             env_cfg.model_err.scale,
             "_e2e" if args_cli.e2e else ("_nores" if args_cli.no_residual else (
                 "_isr_rl" + ("_slinit" if args_cli.residual_init_from else "_zero")
+                + ("_fixstd" if args_cli.residual_fixed_std else "")
                 if args_cli.residual_net else "_isr")),
             "_wind" if args_cli.observe_wind else "",
             "_px" if args_cli.pixel_vision else "",
@@ -584,7 +590,8 @@ def main():
         attach_frozen_nominal(runner, args_cli.resume, init_std=args_cli.residual_init_std,
                               init_from=args_cli.residual_init_from,
                               scale=float(env_cfg.residual.scale),
-                              nominal_std=args_cli.nominal_std)
+                              nominal_std=args_cli.nominal_std,
+                              fixed_std=args_cli.residual_fixed_std)
     elif args_cli.resume:
         # Warm-start: the action space is identical across phases, so an older
         # checkpoint loads losslessly. For the L1 head recipes the optimizer

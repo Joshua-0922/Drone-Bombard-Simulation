@@ -143,7 +143,7 @@ def _first_linear(m: nn.Module) -> nn.Linear:
 
 def attach_frozen_nominal(runner, ckpt_path: str, init_std: float,
                           init_from: str | None, scale: float,
-                          nominal_std: float | None = None) -> None:
+                          nominal_std: float | None = None, fixed_std: bool = False) -> None:
     """train.py --residual_net: replace the runner's actor with L0-frozen +
     residual trunk, warm-start the critic (input widened), rebuild the optimizer.
 
@@ -176,9 +176,16 @@ def attach_frozen_nominal(runner, ckpt_path: str, init_std: float,
             # flight distribution. Must stay > 0 (Normal log-prob).
             policy.std[:NOMINAL_DIMS] = nominal_std
         policy.std[RESIDUAL_DIMS] = init_std
-    mask = torch.zeros_like(policy.std)
-    mask[RESIDUAL_DIMS] = 1.0
-    policy.std.register_hook(lambda g: g * mask)   # nominal exploration never trains
+    if fixed_std:
+        # exp_032: a learnable residual std collapses to ~0.01 within 80
+        # iterations (the first-crossing gate punishes every bit of jitter) and
+        # the mean then has no exploration left to learn from. Pin it -- the
+        # parameter leaves the optimizer entirely, so nothing can move it.
+        policy.std.requires_grad_(False)
+    else:
+        mask = torch.zeros_like(policy.std)
+        mask[RESIDUAL_DIMS] = 1.0
+        policy.std.register_hook(lambda g: g * mask)   # nominal exploration never trains
 
     trainable = [p for p in policy.parameters() if p.requires_grad]
     runner.alg.optimizer = torch.optim.Adam(trainable, lr=runner.alg.learning_rate)
@@ -187,7 +194,7 @@ def attach_frozen_nominal(runner, ckpt_path: str, init_std: float,
     print(f"[L1-RL] nominal frozen ({n_nom} params, {actor.n_nominal_obs} obs, rollout std "
           f"{policy.std[0].item():.3g}) + residual trunk ({n_res} params, {n_obs} obs, "
           f"{'init from ' + init_from if init_from else 'zero-init'}) | critic warm-started, "
-          f"residual std {init_std}, scale {scale} m, fresh Adam")
+          f"residual std {init_std}{' FIXED' if fixed_std else ' (learnable)'}, scale {scale} m, fresh Adam")
 
 
 def attach_from_checkpoint(policy, sd: dict) -> None:
