@@ -12,6 +12,17 @@ type: index
 
 ---
 
+## 현재 상태 (2026-09-14)
+
+### ⭐⭐ 오늘의 결론 — 수제 특징은 GRU가 대체하고, 시변 바람의 병목은 라벨이다
+
+- **exp_034**: 원 관측 26채널 위의 GRU(64)가 수제 누적 12채널 없이 정상 바람 CEP50 **0.204**(gi 0.209, L0 0.305). 손 설계 특징은 학습된 필터가 스스로 찾는다.
+- ⛔ OU 데이터를 섞어 배우면(모델 무관) τ ≤ 3에서 **더 진다**. 라벨(릴리즈 순간 바람 고정 적분)이 순간 추종을 가르치고 그것은 오라클이 지는 방식이다 → **Rule 45**. 처방: 실현 착지 드리프트 라벨(exp_035).
+- 두 RL 팔(exp_032·033) 음성 → Rule 44 확정. main claim = 결과 공간 잔차 지도학습.
+- 노트: [[research/l1_sl_pipeline]] (파이프라인 개요) · [[research/residual_rl_exploration_collapse]]
+
+---
+
 ## 현재 상태 (2026-09-13)
 
 ### ⭐ 오늘의 결론 — L1-RL을 L1-SL과 "학습 신호만 다른" 팔로 만들었다
@@ -488,7 +499,7 @@ type: index
 - [[research/curriculum_phase_convergence]] — **(07-12 baseline §7 + 07-13 이어학습 §8)** warm-start 무손실 실증, reward 우상향 ≠ 임무 능력, P2/P3 릴리스 명중은 500 iter로 미형성 — **+2000 iter 연장도 0.8m 미돌파(P2 정체, P3 회귀)**. 해법=exp_018 종단구조 (Rule 20e/f).
 
 ### 실험 (experiments/)
-- [[experiments/exp_034_learned_temporal_filter]] — 🔄 **(09-14 진행 중) 수제 누적 → GRU 시간 필터. 정상 바람 동등(0.217 vs 0.225, seed 3000), OU 혼합 학습판 평가 중**
+- [[experiments/exp_034_learned_temporal_filter]] — ✅⛔ **(09-14) 수제 누적 → GRU 시간 필터: 정상 바람 대체 성립(0.204 vs 0.209, n=600). 시변 바람은 라벨이 병목 — 순간 바람 라벨로 OU 데이터를 배우면 더 나빠짐 (Rule 45) → 실현 라벨(exp_035)**
 - [[experiments/exp_033_tog7jqs5_l1rl_fixed_std_pilot]] — ⛔ **(09-14) L1-RL 파일럿 2(std 고정) 음성 — 110 iter 중단, 잔차가 반대 방향으로 자라 CEP50 +18.2%. Rule 44 확정**
 - [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] — ⛔ **(09-13) L1-RL 파일럿(0 초기화) 음성 결과 — 308 iter 중단, CEP50 −1.9% (SL −31.6%). 탐험 std 소멸이 원인 (Rule 44)**
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리
