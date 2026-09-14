@@ -488,6 +488,7 @@ type: index
 - [[research/curriculum_phase_convergence]] — **(07-12 baseline §7 + 07-13 이어학습 §8)** warm-start 무손실 실증, reward 우상향 ≠ 임무 능력, P2/P3 릴리스 명중은 500 iter로 미형성 — **+2000 iter 연장도 0.8m 미돌파(P2 정체, P3 회귀)**. 해법=exp_018 종단구조 (Rule 20e/f).
 
 ### 실험 (experiments/)
+- [[experiments/exp_034_learned_temporal_filter]] — 🔄 **(09-14 진행 중) 수제 누적 → GRU 시간 필터. 정상 바람 동등(0.217 vs 0.225, seed 3000), OU 혼합 학습판 평가 중**
 - [[experiments/exp_033_tog7jqs5_l1rl_fixed_std_pilot]] — ⛔ **(09-14) L1-RL 파일럿 2(std 고정) 음성 — 110 iter 중단, 잔차가 반대 방향으로 자라 CEP50 +18.2%. Rule 44 확정**
 - [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] — ⛔ **(09-13) L1-RL 파일럿(0 초기화) 음성 결과 — 308 iter 중단, CEP50 −1.9% (SL −31.6%). 탐험 std 소멸이 원인 (Rule 44)**
 - [[experiments/training_history]] — 전체 WandB 학습 히스토리

@@ -426,9 +426,14 @@ from drone_bombard.math_utils import tilt_channels as _tilt_channels  # noqa: E4
 class _SLResidual:
     def __init__(self, path, u):
         self.m = torch.jit.load(path, map_location=u.device).eval()
+        # _fit_sl_seq.py exports a STATEFUL filter: forward(x, h) -> (d, h). It
+        # keeps its own window over the raw observation, so no accumulators.
+        self.rec = bool(getattr(self.m, "recurrent", False))
         n_in = int(self.m.mu.numel())
         n_extra = n_in - u.cfg.observation_space
-        self.use_tilt = n_extra > 0
+        self.use_tilt = (not self.rec) and n_extra > 0
+        if self.rec:
+            self.h = torch.zeros(u.num_envs, int(self.m.hidden_size), device=u.device)
         # 12 extra channels = tilt accumulator + the two gain-invariant ones
         # (prefix-mean acceleration). Keep this in lock-step with
         # _fit_sl_residual.tilt_features(); they diverged once already.
@@ -439,7 +444,7 @@ class _SLResidual:
         self.prev = torch.zeros(u.num_envs, device=u.device)
         self.alpha = float(args_cli.sl_ema)
         self.ema = torch.zeros(u.num_envs, 2, device=u.device)
-        print(f"[sl_residual] {path}  in={n_in}  tilt_accum={self.use_tilt}  "
+        print(f"[sl_residual] {path}  in={n_in}  recurrent={self.rec}  tilt_accum={self.use_tilt}  "
               f"gain_invariant={self.use_gi}  ema_alpha={self.alpha}")
 
     def __call__(self, obs, u):
@@ -449,17 +454,22 @@ class _SLResidual:
         elb = u.episode_length_buf.float()
         new = elb <= self.prev
         self.prev = elb
-        self.acc[new] = 0.0
-        self.cnt[new] = 0.0
-        self.v0[new] = o[new][:, 6:8]
-        self.acc += _tilt_channels(o)
-        self.cnt += 1.0
-        extra = self.acc / self.cnt
-        if self.use_gi:
-            extra = torch.cat([extra, (o[:, 6:8] - self.v0) / self.cnt], dim=-1)
-        x = torch.cat([o, extra], dim=-1) if self.use_tilt else o
-        with torch.no_grad():
-            d = self.m(x)             # metres
+        if self.rec:
+            self.h[new] = 0.0                       # fresh episode: fresh state
+            with torch.no_grad():
+                d, self.h = self.m(o, self.h)       # metres
+        else:
+            self.acc[new] = 0.0
+            self.cnt[new] = 0.0
+            self.v0[new] = o[new][:, 6:8]
+            self.acc += _tilt_channels(o)
+            self.cnt += 1.0
+            extra = self.acc / self.cnt
+            if self.use_gi:
+                extra = torch.cat([extra, (o[:, 6:8] - self.v0) / self.cnt], dim=-1)
+            x = torch.cat([o, extra], dim=-1) if self.use_tilt else o
+            with torch.no_grad():
+                d = self.m(x)             # metres
         if self.alpha >= 1.0:
             return d
         self.ema = torch.where(new.unsqueeze(-1), d,
