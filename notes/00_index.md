@@ -550,7 +550,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
-- [[daily/daily_2026-09-14]] — exp_032 사후 분석 + exp_033(std 고정) 착수 + main claim 검토
+- [[daily/daily_2026-09-14]] — exp_032 사후 분석 · exp_033(std 고정) 음성 → Rule 44 확정 · main claim 결정 · L1-SL 파이프라인 노트 · exp_034 GRU 필터(수제 누적 대체 ✅, OU 라벨 병목 → Rule 45)
 - [[daily/daily_2026-09-13]] — L1-RL 사전점검(코드 감사, 수정 없음)
 - [[daily/daily_2026-08-27]] — **T3 오라클 재정의**(즉시 엔트레인먼트 → 플랜트 동일 적분) · 페이로드 항력 프레임 버그 · **DR_SCALE 스윕 사전 검증에서 결정론적 오차 바닥 발견**(0.44 → 0.015 m) · 환경 재구축 계획 승인 · Rule 31 신설
 - [[daily/daily_2026-08-23]] — **CCIP $v_z$ 누락 발견·수정**(모델오차의 ~70%) · 아키텍처 문서 v3 전면 개정(전제 1개 거짓 + 버그 4개 + 성립불가 DR 3개) · 기존 학습 산출물 폐기 결정 · Rule 30 신설
@@ -579,6 +579,7 @@ type: index
 - [[daily/daily_2026-04-14]] — Guacamole HTTPS + Obsidian 설치 + wikilink 정비
 
 ### 세션 (sessions/)
+- [[sessions/session_2026-09-14]] — 09-13 15:00 ~ 09-14 04:00: L1-RL 두 팔 음성 → main claim 확정 → GRU 시간 필터
 - [[sessions/session_2026-04-16]] — RTF dry-run, docker commit, airframe 수정
 - [[sessions/session_2026-04-14]] — Obsidian 시스템 초기화 + 파일 간소화
 
