@@ -155,28 +155,6 @@ class Filter(nn.Module):
 
 
 net = Filter(Xtr.shape[-1], a.hidden).to(dev)
-opt = torch.optim.Adam(net.parameters(), lr=a.lr, weight_decay=1e-4)
-sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.epochs)
-B = 256
-for ep in range(a.epochs):
-    order = np.random.permutation(len(train))
-    tot, cnt = 0.0, 0
-    for i in range(0, len(order), B):
-        X, Y, M = batchify([train[j] for j in order[i:i + B]])
-        opt.zero_grad()
-        err = ((net(X) - Y) ** 2).sum(-1)
-        loss = (err * M).sum() / M.sum()
-        loss.backward()
-        nn.utils.clip_grad_norm_(net.parameters(), 1.0)
-        opt.step()
-        tot += loss.item() * M.sum().item(); cnt += M.sum().item()
-    sch.step()
-    if ep % 25 == 0 or ep == a.epochs - 1:
-        print(f"epoch {ep:4d}  train mse {tot / cnt:.4f}", flush=True)
-    if (ep + 1) % a.report_every == 0 or ep == a.epochs - 1:
-        report(ep + 1)
-net.eval()
-
 
 def r2(pred, y):
     return 1 - ((pred - y) ** 2).sum() / ((y - y.mean(0)) ** 2).sum()
@@ -205,6 +183,30 @@ def report(ep):
             line += f" | {t.replace('dr1.5_', '').replace('.npz', '')} {r2(P[sel].cpu().numpy(), Yte[sel].cpu().numpy()):.3f}"
     print(line, flush=True)
     net.train()
+
+opt = torch.optim.Adam(net.parameters(), lr=a.lr, weight_decay=1e-4)
+sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.epochs)
+B = 256
+for ep in range(a.epochs):
+    order = np.random.permutation(len(train))
+    tot, cnt = 0.0, 0
+    for i in range(0, len(order), B):
+        X, Y, M = batchify([train[j] for j in order[i:i + B]])
+        opt.zero_grad()
+        err = ((net(X) - Y) ** 2).sum(-1)
+        loss = (err * M).sum() / M.sum()
+        loss.backward()
+        nn.utils.clip_grad_norm_(net.parameters(), 1.0)
+        opt.step()
+        tot += loss.item() * M.sum().item(); cnt += M.sum().item()
+    sch.step()
+    if ep % 25 == 0 or ep == a.epochs - 1:
+        print(f"epoch {ep:4d}  train mse {tot / cnt:.4f}", flush=True)
+    if (ep + 1) % a.report_every == 0 or ep == a.epochs - 1:
+        report(ep + 1)
+net.eval()
+
+
 
 
 class Exported(nn.Module):
