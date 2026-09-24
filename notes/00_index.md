@@ -12,6 +12,17 @@ type: index
 
 ---
 
+## 현재 상태 (2026-09-24)
+
+### ⭐ 오늘의 결론 — 실현 라벨은 옳은 방향이고 τ=10을 열었다; τ ≤ 3은 불확실성 헤드가 필요하다
+
+- **exp_035**: 라벨을 "낙하 중 실제 바람 적분"으로 바꾼 GRU-R이 같은 데이터·모델의 순간 라벨 팔보다 전 τ에서 좋다.
+  정상 CEP50 **0.202**(최고), τ=10 **0.242 (−11.0%)**, CEP90·succ@0.5도 τ=10에서 전 팔 최고. τ=3 +7.0%, τ=1 +17.3%는 여전히 L0보다 나쁨.
+- 이유: 회귀기가 τ를 관측하지 못해 혼합 평균 수축률을 쓴다. 다음 = 평균+분산 예측(가우시안 NLL) → 분산 반비례 수축.
+- 코드: `integrate_payload_impact(wind_seq=…)`, 덤프 v2(원 상태·상수), `_fit_sl_seq.py --label realised --report_every`.
+
+---
+
 ## 현재 상태 (2026-09-14)
 
 ### ⭐⭐ 오늘의 결론 — 수제 특징은 GRU가 대체하고, 시변 바람의 병목은 라벨이다
@@ -499,6 +510,7 @@ type: index
 - [[research/curriculum_phase_convergence]] — **(07-12 baseline §7 + 07-13 이어학습 §8)** warm-start 무손실 실증, reward 우상향 ≠ 임무 능력, P2/P3 릴리스 명중은 500 iter로 미형성 — **+2000 iter 연장도 0.8m 미돌파(P2 정체, P3 회귀)**. 해법=exp_018 종단구조 (Rule 20e/f).
 
 ### 실험 (experiments/)
+- [[experiments/exp_035_realised_label]] — ✅⛔ **(09-24) 실현 라벨: 라벨 효과 분리 성공, τ=10 −11.0%(오라클 −14.1%), 정상 0.202 유지. τ ≤ 3은 여전히 손해 → 분산 헤드 필요**
 - [[experiments/exp_034_learned_temporal_filter]] — ✅⛔ **(09-14) 수제 누적 → GRU 시간 필터: 정상 바람 대체 성립(0.204 vs 0.209, n=600). 시변 바람은 라벨이 병목 — 순간 바람 라벨로 OU 데이터를 배우면 더 나빠짐 (Rule 45) → 실현 라벨(exp_035)**
 - [[experiments/exp_033_tog7jqs5_l1rl_fixed_std_pilot]] — ⛔ **(09-14) L1-RL 파일럿 2(std 고정) 음성 — 110 iter 중단, 잔차가 반대 방향으로 자라 CEP50 +18.2%. Rule 44 확정**
 - [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]] — ⛔ **(09-13) L1-RL 파일럿(0 초기화) 음성 결과 — 308 iter 중단, CEP50 −1.9% (SL −31.6%). 탐험 std 소멸이 원인 (Rule 44)**
@@ -550,6 +562,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-09-24]] — exp_035 실현 라벨: 라벨 효과 분리, τ=10 −11%, τ ≤ 3은 분산 헤드 필요
 - [[daily/daily_2026-09-14]] — exp_032 사후 분석 · exp_033(std 고정) 음성 → Rule 44 확정 · main claim 결정 · L1-SL 파이프라인 노트 · exp_034 GRU 필터(수제 누적 대체 ✅, OU 라벨 병목 → Rule 45)
 - [[daily/daily_2026-09-13]] — L1-RL 사전점검(코드 감사, 수정 없음)
 - [[daily/daily_2026-08-27]] — **T3 오라클 재정의**(즉시 엔트레인먼트 → 플랜트 동일 적분) · 페이로드 항력 프레임 버그 · **DR_SCALE 스윕 사전 검증에서 결정론적 오차 바닥 발견**(0.44 → 0.015 m) · 환경 재구축 계획 승인 · Rule 31 신설
