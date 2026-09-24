@@ -38,6 +38,13 @@ p.add_argument("--label", default="instant", choices=["instant", "realised"],
                     "the quantity the landing depends on, and what a real drop would reveal. "
                     "Identical under constant wind; differs by the wind's change during the fall.")
 p.add_argument("--report_every", type=int, default=100)
+p.add_argument("--nll", action="store_true",
+               help="Uncertainty head: predict mean AND log-variance of the drift, trained with the "
+                    "Gaussian negative log-likelihood. The export shrinks the correction by "
+                    "sigma0^2 / (sigma0^2 + sigma^2), so a state whose label is unpredictable (fast "
+                    "wind) backs off toward zero correction (= L0) on its own.")
+p.add_argument("--sigma0", type=float, default=0.3,
+               help="--nll: shrinkage scale in metres (~ std of the true drift).")
 a = p.parse_args()
 torch.manual_seed(a.seed)
 np.random.seed(a.seed)
@@ -144,17 +151,31 @@ def batchify(eps):
 
 
 class Filter(nn.Module):
-    def __init__(self, n_in, h):
+    def __init__(self, n_in, h, n_out=2):
         super().__init__()
         self.gru = nn.GRU(n_in, h, batch_first=True)
-        self.head = nn.Linear(h, 2)
+        self.head = nn.Linear(h, n_out)
 
     def forward(self, x):
         y, _ = self.gru(x)
         return self.head(y)
 
 
-net = Filter(Xtr.shape[-1], a.hidden).to(dev)
+def split(out):
+    """(mu, logvar) for the NLL head; logvar clamped so early training cannot blow up."""
+    return out[..., :2], out[..., 2:].clamp(-6.0, 4.0)
+
+
+def loss_fn(out, Y, M):
+    if a.nll:
+        mu_, lv = split(out)
+        err = ((Y - mu_) ** 2 / lv.exp() + lv).sum(-1)
+    else:
+        err = ((out - Y) ** 2).sum(-1)
+    return (err * M).sum() / M.sum()
+
+
+net = Filter(Xtr.shape[-1], a.hidden, 4 if a.nll else 2).to(dev)
 
 def r2(pred, y):
     return 1 - ((pred - y) ** 2).sum() / ((y - y.mean(0)) ** 2).sum()
@@ -171,6 +192,10 @@ def report(ep):
     net.eval()
     with torch.no_grad():
         P = net(Xte)
+    SIG = None
+    if a.nll:
+        P, lv = split(P)
+        SIG = (0.5 * lv).exp().mean(-1)          # per-frame sigma (metres), averaged over x,y
     line = f"[report] epoch {ep:4d}"
     for name, mask in (("carried", Mte), ("release", LAST)):
         pr, yy = P[mask].cpu().numpy(), Yte[mask].cpu().numpy()
@@ -180,7 +205,9 @@ def report(ep):
     if TAGS is not None and len(set(tag)) > 1:
         for t in sorted(set(tag)):
             sel = torch.as_tensor(TAGS == t, device=dev).unsqueeze(-1) & Mte
-            line += f" | {t.replace('dr1.5_', '').replace('.npz', '')} {r2(P[sel].cpu().numpy(), Yte[sel].cpu().numpy()):.3f}"
+            line += f" | {t.replace('dr1.5_', '').replace('.npz', '').replace('v2_', '')} {r2(P[sel].cpu().numpy(), Yte[sel].cpu().numpy()):.3f}"
+            if SIG is not None:
+                line += f" (sig {SIG[sel].mean().item():.3f})"
     print(line, flush=True)
     net.train()
 
@@ -193,8 +220,7 @@ for ep in range(a.epochs):
     for i in range(0, len(order), B):
         X, Y, M = batchify([train[j] for j in order[i:i + B]])
         opt.zero_grad()
-        err = ((net(X) - Y) ** 2).sum(-1)
-        loss = (err * M).sum() / M.sum()
+        loss = loss_fn(net(X), Y, M)
         loss.backward()
         nn.utils.clip_grad_norm_(net.parameters(), 1.0)
         opt.step()
@@ -214,6 +240,8 @@ class Exported(nn.Module):
 
     recurrent: bool
     hidden_size: int
+    nll: bool
+    s0sq: float
 
     def __init__(self, gru, head, mu, sd):
         super().__init__()
@@ -228,10 +256,17 @@ class Exported(nn.Module):
         self.register_buffer("sd", torch.as_tensor(sd))
         self.recurrent = True
         self.hidden_size = int(gru.hidden_size)
+        self.nll = bool(a.nll)
+        self.s0sq = float(a.sigma0) ** 2
 
     def forward(self, x, h):
         h = self.cell((x - self.mu) / self.sd, h)
-        return self.head(h), h
+        out = self.head(h)
+        if self.nll:
+            mu_, lv = out[:, :2], out[:, 2:].clamp(-6.0, 4.0)
+            var = lv.exp().mean(-1, keepdim=True)
+            return mu_ * (self.s0sq / (self.s0sq + var)), h
+        return out, h
 
 
 if a.export:
@@ -240,6 +275,8 @@ if a.export:
     o, _, _ = test[0]
     with torch.no_grad():
         seq = net.cpu()(torch.as_tensor((o - mu) / sd).unsqueeze(0))[0]
+        if a.nll:
+            m_, lv = split(seq); seq = m_ * (mod.s0sq / (mod.s0sq + lv.exp().mean(-1, keepdim=True)))
         h = torch.zeros(1, mod.hidden_size)
         step = []
         for t in range(len(o)):
@@ -247,4 +284,4 @@ if a.export:
             step.append(d)
         assert torch.allclose(torch.cat(step), seq, atol=1e-4), "GRUCell export diverged from nn.GRU"
     torch.jit.script(mod).save(a.export)
-    print(f"[export] {a.export}  in={Xtr.shape[-1]}  hidden={mod.hidden_size}  out=2 (metres)  recurrent=True")
+    print(f"[export] {a.export}  in={Xtr.shape[-1]}  hidden={mod.hidden_size}  out=2 (metres)  recurrent=True  nll={a.nll} sigma0={a.sigma0}")
