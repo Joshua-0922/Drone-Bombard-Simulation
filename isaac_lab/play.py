@@ -50,6 +50,11 @@ parser.add_argument("--wind_tau", type=float, default=None, metavar="SEC",
                          "held constant. >0 makes the wind time-varying with the SAME "
                          "stationary distribution, so the ablation isolates time "
                          "variation rather than wind strength.")
+parser.add_argument("--wind_gust", type=float, default=None, metavar="FRAC",
+                    help="Realistic wind: keep the per-episode mean wind and add an OU gust of "
+                         "FRAC x the wind std with correlation time --wind_tau (Dryden-like; "
+                         "low-altitude intensity ~0.2). Without it --wind_tau replaces the whole "
+                         "wind by a zero-mean OU (gust-only stress test).")
 parser.add_argument("--dr_scale", type=float, default=None,
                     help="A-GROUP domain-randomization strength at EVALUATION time (wind, payload ballistic "
                          "coefficient, release-latency spread). Set it ABOVE the training value for the "
@@ -797,6 +802,8 @@ def main():
         env_cfg.model_err.scale = args_cli.dr_scale
     if args_cli.wind_tau is not None:
         env_cfg.model_err.wind_tau_s = args_cli.wind_tau
+    if args_cli.wind_gust is not None:
+        env_cfg.model_err.wind_gust_frac = args_cli.wind_gust
     if hasattr(env_cfg, "model_err") and args_cli.observe_wind:
         env_cfg.model_err.observe_wind = True
     if hasattr(env_cfg, "residual") and args_cli.no_residual:

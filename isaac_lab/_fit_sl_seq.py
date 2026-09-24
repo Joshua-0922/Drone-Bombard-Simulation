@@ -45,6 +45,13 @@ p.add_argument("--nll", action="store_true",
                     "wind) backs off toward zero correction (= L0) on its own.")
 p.add_argument("--sigma0", type=float, default=0.3,
                help="--nll: shrinkage scale in metres (~ std of the true drift).")
+p.add_argument("--shrink", default="absolute", choices=["absolute", "relative"],
+               help="--nll: absolute = sigma0^2/(sigma0^2+sigma^2) (shrinks even in steady wind). "
+                    "relative = min(1, (sigma_ref/sigma)^p) with sigma_ref = the held-out sigma of "
+                    "the STEADY-wind files -- no loss in steady wind, backs off only when the state "
+                    "is more uncertain than that.")
+p.add_argument("--shrink_p", type=float, default=4.0)
+p.add_argument("--steady_tag", default="s1", help="substring of the steady-wind dump names")
 a = p.parse_args()
 torch.manual_seed(a.seed)
 np.random.seed(a.seed)
@@ -242,6 +249,9 @@ class Exported(nn.Module):
     hidden_size: int
     nll: bool
     s0sq: float
+    relative: bool
+    p: float
+    ref_var: float
 
     def __init__(self, gru, head, mu, sd):
         super().__init__()
@@ -258,6 +268,9 @@ class Exported(nn.Module):
         self.hidden_size = int(gru.hidden_size)
         self.nll = bool(a.nll)
         self.s0sq = float(a.sigma0) ** 2
+        self.relative = a.shrink == "relative"
+        self.p = float(a.shrink_p)
+        self.ref_var = float(REF_SIGMA) ** 2
 
     def forward(self, x, h):
         h = self.cell((x - self.mu) / self.sd, h)
@@ -265,9 +278,22 @@ class Exported(nn.Module):
         if self.nll:
             mu_, lv = out[:, :2], out[:, 2:].clamp(-6.0, 4.0)
             var = lv.exp().mean(-1, keepdim=True)
-            return mu_ * (self.s0sq / (self.s0sq + var)), h
+            if self.relative:
+                gain = torch.clamp((self.ref_var / var) ** (0.5 * self.p), max=1.0)
+            else:
+                gain = self.s0sq / (self.s0sq + var)
+            return mu_ * gain, h
         return out, h
 
+
+REF_SIGMA = float(a.sigma0)
+if a.nll and TAGS is not None:
+    net.eval()
+    with torch.no_grad():
+        _, lv = split(net(Xte))
+        steady = torch.as_tensor(np.array([a.steady_tag in t for t in tag]), device=dev).unsqueeze(-1) & Mte
+        REF_SIGMA = (0.5 * lv).exp().mean(-1)[steady].mean().item()
+    print(f"[shrink] steady-wind held-out sigma_ref = {REF_SIGMA:.3f} m  (mode {a.shrink}, p {a.shrink_p})")
 
 if a.export:
     mod = Exported(net.gru.cpu(), net.head.cpu(), mu, sd).eval()
@@ -276,7 +302,9 @@ if a.export:
     with torch.no_grad():
         seq = net.cpu()(torch.as_tensor((o - mu) / sd).unsqueeze(0))[0]
         if a.nll:
-            m_, lv = split(seq); seq = m_ * (mod.s0sq / (mod.s0sq + lv.exp().mean(-1, keepdim=True)))
+            m_, lv = split(seq); var = lv.exp().mean(-1, keepdim=True)
+            seq = m_ * (torch.clamp((mod.ref_var / var) ** (0.5 * mod.p), max=1.0) if mod.relative
+                        else mod.s0sq / (mod.s0sq + var))
         h = torch.zeros(1, mod.hidden_size)
         step = []
         for t in range(len(o)):

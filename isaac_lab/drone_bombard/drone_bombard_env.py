@@ -320,6 +320,15 @@ class DroneBombardModelErrorCfg:
     """Magnitude cap on the sampled wind vector, also scaled. Prevents the
     Gaussian tail from producing drifts the residual cannot physically cover."""
 
+    wind_gust_frac: float = 0.0
+    """Realistic-wind mode (2026-09-24): keep the per-episode MEAN wind and add an
+    OU gust of standard deviation ``wind_gust_frac * wind_std * scale`` with
+    correlation time ``wind_tau_s`` -- the Dryden longitudinal-gust structure
+    (mean + first-order coloured gust). 0 (default) keeps the original
+    behaviour: ``wind_tau_s > 0`` then replaces the whole wind by a zero-mean OU
+    of the full stationary std (a harsher, gust-only test). Low-altitude Dryden
+    intensity is ~0.1-0.2 of the mean wind."""
+
     wind_tau_s: float = 0.0
     """Ornstein-Uhlenbeck correlation time of the wind, in SECONDS.
 
@@ -790,6 +799,8 @@ class DroneBombardEnv(DirectRLEnv):
         self._payload_attached = torch.ones(N, dtype=torch.bool, device=device)
         self._drag_coef = torch.zeros(N, device=device)
         self._wind_xy = torch.zeros(N, 2, device=device)
+        self._wind_mean = torch.zeros(N, 2, device=device)   # wind_gust_frac > 0: per-episode mean
+        self._wind_gust = torch.zeros(N, 2, device=device)
 
         # Payload-release state (Phase 2+). ``_released`` latches True once the
         # drop is triggered; ``_release_impact_err`` holds the real (DR-physics)
@@ -1168,7 +1179,13 @@ class DroneBombardEnv(DirectRLEnv):
             return
         sigma = me.wind_std * me.scale
         a = math.exp(-self.cfg.sim.dt / tau)
-        w = self._wind_xy * a + sigma * math.sqrt(max(0.0, 1.0 - a * a)) * torch.randn_like(self._wind_xy)
+        if me.wind_gust_frac > 0.0:
+            g = (self._wind_gust * a + me.wind_gust_frac * sigma
+                 * math.sqrt(max(0.0, 1.0 - a * a)) * torch.randn_like(self._wind_gust))
+            self._wind_gust = g
+            w = self._wind_mean + g
+        else:
+            w = self._wind_xy * a + sigma * math.sqrt(max(0.0, 1.0 - a * a)) * torch.randn_like(self._wind_xy)
         cap = me.wind_max * me.scale
         mag = torch.linalg.norm(w, dim=-1, keepdim=True)
         self._wind_xy = w * torch.clamp(cap / mag.clamp(min=1e-6), max=1.0)
@@ -2124,6 +2141,8 @@ class DroneBombardEnv(DirectRLEnv):
         me_on = me.scale > 0.0
         self._wind_xy[env_ids] = sample_wind_capped(
             n, device, me.wind_std * me.scale, me.wind_max * me.scale, me_on)
+        self._wind_mean[env_ids] = self._wind_xy[env_ids]
+        self._wind_gust[env_ids] = 0.0
         self._payload_bc_scale[env_ids] = sample_scale(n, device, me.payload_bc_rel * me.scale, me_on)
         # Release latency: the MEAN is modelled by the predictor (so it is not
         # itself an error), the deviation is not. Clamped at 0 -- a negative
