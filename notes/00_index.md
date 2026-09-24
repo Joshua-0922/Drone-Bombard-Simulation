@@ -467,6 +467,7 @@ type: index
 ## 노트 인덱스
 
 ### 연구 (research/)
+- [[research/final_tables_v6]] — 📊 **(09-24) 최종 표 5개 + 그림 3장 (본 방법 = L0 + GRU 잔차): Table 1 · DR 스윕 · 바람 조건 · 미지 사거리 · ablation**
 - [[research/paper_outline_v6]] — 📄 **(09-24) 논문 개요 v6 — 두 번째 프레임(바람 속 투하: 비행 RL + 착탄점 잔차 지도학습, 단일 방법 GRU-U), 쉬운 용어, 절별 표·ablation·한계·미포함 항목**
 - [[research/l1_sl_pipeline]] — 📘 **(09-14) L1-SL 파이프라인 개요 — 5단계(수집·특징 38·MLP 학습·내보내기·주입), 정확도 사다리와 성능, 무엇을 바꾸면 무엇이 달라지나, 제어기 의존성**
 - [[research/residual_rl_exploration_collapse]] — ⛔ **(09-13) 결과 공간 잔차의 PPO 탐험은 스스로 소멸한다 — 첫 교차 게이트가 잡음을 벌하므로 std → 0, 평균 정지. RL의 자리는 드리프트 예측 위의 미세조정 (Rule 44, 잠정)**
