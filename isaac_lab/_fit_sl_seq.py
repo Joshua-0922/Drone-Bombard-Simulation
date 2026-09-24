@@ -31,10 +31,57 @@ p.add_argument("--epochs", type=int, default=150)
 p.add_argument("--lr", type=float, default=1e-3)
 p.add_argument("--seed", type=int, default=0)
 p.add_argument("--export", default=None, metavar="PT")
+p.add_argument("--label", default="instant", choices=["instant", "realised"],
+               help="instant = the dump's oracle drift (wind at that instant, held for the fall). "
+                    "realised = re-integrate the fall from the frame's raw state with the wind that "
+                    "ACTUALLY followed (the dump's recorded stream, nominal latency/coefficient) -- "
+                    "the quantity the landing depends on, and what a real drop would reveal. "
+                    "Identical under constant wind; differs by the wind's change during the fall.")
+p.add_argument("--report_every", type=int, default=100)
 a = p.parse_args()
 torch.manual_seed(a.seed)
 np.random.seed(a.seed)
 dev = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location("mu", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                        "drone_bombard", "math_utils.py"))
+_mu = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_mu)
+FUT = 15   # policy steps of future wind carried per frame (1.5 s > latency 0.22 + fall ~0.9)
+
+
+def realised_drift(d, new):
+    """Counterfactual REALISED drift per frame: integrate the fall from frame t's
+    raw state with the recorded wind from t onward (zero-order hold, latency
+    offset), minus the same integration under the constant wind w_t. Adding
+    that difference to the dump's instant drift cancels the nominal exactly, so
+    predictor and label stay on one integrator (Rule 31)."""
+    if "state" not in d:
+        raise SystemExit("this dump has no raw state; re-collect with the current play.py --dump_sl")
+    tau_s, mount_z, ground_z, bc, g, dt = [float(x) for x in d["consts"]]
+    st, wind, drift = d["state"], d["wind"], d["drift"]
+    T, N = new.shape
+    # future wind stream per frame, held at the last sample inside the episode
+    fut = np.empty((T, N, FUT, 2), np.float32)
+    end = np.full(N, T)                                  # exclusive end of the current episode
+    for t in range(T - 1, -1, -1):
+        if t + 1 < T:
+            end = np.where(new[t + 1], t + 1, end)
+        idx = np.minimum(t + np.arange(FUT)[:, None], end[None, :] - 1)   # (FUT, N)
+        fut[t] = np.transpose(wind[idx, np.arange(N)[None, :]], (1, 0, 2))
+    F = T * N
+    pos = torch.as_tensor(st[..., 0:2].reshape(F, 2)); vel = torch.as_tensor(st[..., 2:4].reshape(F, 2))
+    alt = torch.as_tensor(st[..., 4].reshape(F)); vz = torch.as_tensor(st[..., 5].reshape(F))
+    w0 = torch.as_tensor(wind.reshape(F, 2)); ws = torch.as_tensor(fut.reshape(F, FUT, 2))
+    tau = torch.full((F,), tau_s)
+    pos_rel, alt_rel = pos + vel * tau.unsqueeze(-1), alt + vz * tau + mount_z
+    bcv = torch.full((F,), bc)
+    real_const = _mu.integrate_payload_impact(pos_rel, vel, vz, alt_rel, w0, bcv, g, ground_z=ground_z, dt=dt)
+    real_seq = _mu.integrate_payload_impact(pos_rel, vel, vz, alt_rel, w0, bcv, g, ground_z=ground_z, dt=dt,
+                                            wind_seq=ws, wind_hold=int(round(0.1 / dt)),
+                                            wind_offset=int(round(tau_s / dt)))
+    return drift + (real_seq - real_const).numpy().reshape(T, N, 2)
 
 
 def episodes(f):
@@ -44,6 +91,10 @@ def episodes(f):
     T, N = ep_len.shape
     new = np.ones((T, N), bool)
     new[1:] = ep_len[1:] <= ep_len[:-1]
+    if a.label == "realised":
+        drift = realised_drift(d, new)
+        gap = np.linalg.norm(drift - d["drift"], axis=-1)[att > 0.5]
+        print(f"  {os.path.basename(f)}: realised vs instant label |diff| mean {gap.mean():.3f} m  p90 {np.percentile(gap, 90):.3f} m")
     out = []
     for n in range(N):
         starts = np.flatnonzero(new[:, n]).tolist() + [T]
@@ -121,32 +172,39 @@ for ep in range(a.epochs):
         tot += loss.item() * M.sum().item(); cnt += M.sum().item()
     sch.step()
     if ep % 25 == 0 or ep == a.epochs - 1:
-        print(f"epoch {ep:4d}  train mse {tot / cnt:.4f}")
+        print(f"epoch {ep:4d}  train mse {tot / cnt:.4f}", flush=True)
+    if (ep + 1) % a.report_every == 0 or ep == a.epochs - 1:
+        report(ep + 1)
+net.eval()
 
 
 def r2(pred, y):
     return 1 - ((pred - y) ** 2).sum() / ((y - y.mean(0)) ** 2).sum()
 
 
-net.eval()
-with torch.no_grad():
-    X, Y, M = batchify(test)
-    P = net(X)
-    # frames the payload is carried, and the last 10 carried frames (the gate's frames)
-    last = torch.zeros_like(M)
-    for i, (_, _, m) in enumerate(test):
-        idx = np.flatnonzero(m)
-        last[i, idx[-10:]] = True
-    for name, mask in (("carried", M), ("release(last10)", last)):
-        pr, yy = P[mask].cpu().numpy(), Y[mask].cpu().numpy()
-        jit = np.abs(np.diff(P.cpu().numpy(), axis=1)).sum(-1)[M[:, 1:].cpu().numpy()].mean()
-        print(f"held-out R2 {name:16s} {r2(pr, yy):.3f}   |drift| {np.linalg.norm(yy, axis=1).mean():.3f} m   "
-              f"pred step change {jit:.3f} m/step")
-    tags = np.array(tag) if tag else None
-    if tags is not None and len(set(tag)) > 1:
+Xte, Yte, Mte = batchify(test)
+LAST = torch.zeros_like(Mte)
+for i, (_, _, m) in enumerate(test):
+    LAST[i, np.flatnonzero(m)[-10:]] = True
+TAGS = np.array(tag) if tag else None
+
+
+def report(ep):
+    net.eval()
+    with torch.no_grad():
+        P = net(Xte)
+    line = f"[report] epoch {ep:4d}"
+    for name, mask in (("carried", Mte), ("release", LAST)):
+        pr, yy = P[mask].cpu().numpy(), Yte[mask].cpu().numpy()
+        line += f" | R2 {name} {r2(pr, yy):.3f}"
+    jit = np.abs(np.diff(P.cpu().numpy(), axis=1)).sum(-1)[Mte[:, 1:].cpu().numpy()].mean()
+    line += f" | step change {jit:.3f} m/step"
+    if TAGS is not None and len(set(tag)) > 1:
         for t in sorted(set(tag)):
-            sel = torch.as_tensor(tags == t, device=dev).unsqueeze(-1) & M
-            print(f"  per file {t:22s} R2 carried {r2(P[sel].cpu().numpy(), Y[sel].cpu().numpy()):.3f}")
+            sel = torch.as_tensor(TAGS == t, device=dev).unsqueeze(-1) & Mte
+            line += f" | {t.replace('dr1.5_', '').replace('.npz', '')} {r2(P[sel].cpu().numpy(), Yte[sel].cpu().numpy()):.3f}"
+    print(line, flush=True)
+    net.train()
 
 
 class Exported(nn.Module):

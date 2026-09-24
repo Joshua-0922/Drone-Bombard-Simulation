@@ -522,18 +522,29 @@ def _sl_row(obs, u):
         o, drift, u._wind_xy, ep,
         u._payload_attached.float().unsqueeze(-1),
         u._detected.float().unsqueeze(-1),
+        # raw state, so a label can be re-integrated OFFLINE with the wind that
+        # actually followed (the realised drift, exp_035). Not a model input.
+        pos[:, :2], vel[:, :2], pos[:, 2:3], vel[:, 2:3],
     ], dim=-1).float().cpu()
 
 
 def _sl_save(dump, path, u):
     import numpy as np
-    a = torch.stack(dump).numpy()                     # (T, num_envs, n_obs + 7)
-    n_obs = a.shape[-1] - 7
+    a = torch.stack(dump).numpy()                     # (T, num_envs, n_obs + 13)
+    n_obs = a.shape[-1] - 13
+    c = u.cfg
     np.savez_compressed(
         path,
         obs=a[..., :n_obs], drift=a[..., n_obs:n_obs + 2],
         wind=a[..., n_obs + 2:n_obs + 4], ep_len=a[..., n_obs + 4],
         attached=a[..., n_obs + 5], detected=a[..., n_obs + 6],
+        state=a[..., n_obs + 7:n_obs + 13],           # pos_xy, vel_xy, alt, vz
+        # what oracle_impact_residual(wind_only=True) used: nominal latency,
+        # payload mount/ground planes, nominal k/m, gravity, physics dt
+        consts=np.array([c.model_err.release_delay_mean, c.payload_mount_z,
+                         c.payload_ground_z + c.payload_land_eps,
+                         c.payload_phys_drag_k / c.payload_phys_mass,
+                         c.drop.gravity, c.sim.dt], np.float64),
         dr_scale=np.float32(u.cfg.model_err.scale),
         seed=np.int32(args_cli.seed),
     )

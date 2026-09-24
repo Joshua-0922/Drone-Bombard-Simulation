@@ -175,9 +175,20 @@ def integrate_payload_impact(
     ground_z: float = 0.0,
     dt: float = 0.01,
     max_steps: int = 1000,
+    wind_seq: torch.Tensor | None = None,
+    wind_hold: int = 10,
+    wind_offset: int = 0,
 ) -> torch.Tensor:
     """Numerically integrate the released payload's ACTUAL trajectory and return
     where it lands. This is the ground-truth impact point, not a prediction.
+
+    ``wind_seq`` ([N, K, 2], optional) replaces the constant ``wind_xy`` with a
+    TIME-VARYING wind: integration step ``s`` uses sample
+    ``wind_seq[:, min((s + wind_offset) // wind_hold, K-1)]`` -- a zero-order
+    hold of ``wind_hold`` physics steps per sample (10 = one policy step at
+    100 Hz / 10 Hz), starting ``wind_offset`` steps into the sequence (the
+    release latency). This is how the REALISED drift label is built offline
+    from a dump's recorded wind stream (exp_035): same ODE, future wind.
 
     WHY THIS EXISTS (2026-08-26). ``ballistic_impact``'s wind term is
     ``(vel_xy + wind_xy) * t_fall``: it asserts the payload adopts the full wind
@@ -222,7 +233,10 @@ def integrate_payload_impact(
     landed = z <= ground_z
     impact = p.clone()
 
+    K = 0 if wind_seq is None else wind_seq.shape[1]
     for step in range(max_steps):
+        if wind_seq is not None:
+            wind_xy = wind_seq[:, min((step + wind_offset) // wind_hold, K - 1)]
         # Relative airflow, exactly as _step_payload_physics builds it: the wind
         # is horizontal-only, so the vertical component is pure -v_z.
         v_air = torch.cat([wind_xy - v, -vz.unsqueeze(-1)], dim=-1)  # [N,3]
