@@ -38,7 +38,7 @@ t_fall = torch.sqrt(torch.clamp(2.0 * altitude / gravity, min=0.0))   # t = sqrt
 상속받아 낙하하기 시작. v19가 `release_max_vz=3.0`을 허용하며 $v_z\neq0$ 릴리즈가
 정상 경로가 됨. 예측기는 갱신되지 않음.
 
-이미 [[experiments/exp_019_physical_payload]] 후속 #3, [[research/ccip_release_decoupling]] §4에
+이미 [[experiments/legacy/exp_019_physical_payload]] 후속 #3, [[research/legacy/ccip_release_decoupling]] §4에
 **해야 할 일로 기록되어 있었으나 이행되지 않았다.**
 
 ## 크기

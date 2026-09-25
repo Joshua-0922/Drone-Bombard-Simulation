@@ -8,7 +8,7 @@ type: error
 # 물리 페이로드 착지 래치가 "정지한 페이로드"를 영원히 놓친다
 
 > 발견 경로: P0-2 페어드 평가 하네스가 `released=True · landed=False`로 30 s 타임아웃까지 간
-> 에피소드를 세면서 드러남. 관련: [[experiments/exp_022_p0_handoff_dyn_dr]] · [[research/physical_payload_attach]]
+> 에피소드를 세면서 드러남. 관련: [[experiments/legacy/exp_022_p0_handoff_dyn_dr]] · [[research/physical_payload_attach]]
 
 ## 증상
 
@@ -54,7 +54,7 @@ v16/v19 land-terminal 경로를 작성하면서 0.0으로 회귀했던 것을 �
 |---|---|---|
 | v19 정책 @ v19 (200-ep, 시드 고정) | success **91.0%**, timeout 17 | success **100.00%**, timeout 0 |
 
-- **[[experiments/exp_022_p0_handoff_dyn_dr]] §6의 "동일 ckpt가 91% vs 준상 100%" 불일치는
+- **[[experiments/legacy/exp_022_p0_handoff_dyn_dr]] §6의 "동일 ckpt가 91% vs 준상 100%" 불일치는
   선택 편향이 아니라 이 버그였다.** 페어드 하네스 + 수정 후 정확히 100.00%로 재현된다.
 - 영향 범위: **v16/v19/v20의 land-terminal 성공률은 일관되게 과소 집계**되어 있었고, 그만큼
   `timeout`이 과대 집계되었다. 학습 보상에도 영향(착지 종단 보상을 못 받은 에피소드가 존재).

@@ -7,8 +7,8 @@ type: research
 
 # 고정 초기조건은 성능이 아니라 *표현*을 암기시킨다 (P0 발견)
 
-> 근거 실험: [[experiments/exp_022_p0_handoff_dyn_dr]] (deterministic 200-ep, seed 42, 동일 체크포인트)
-> 허브: [[research/rl_rules]] (Rule 27) · [[research/paper_research_plan]] · [[00_index]]
+> 근거 실험: [[experiments/legacy/exp_022_p0_handoff_dyn_dr]] (deterministic 200-ep, seed 42, 동일 체크포인트)
+> 허브: [[research/rl_rules]] (Rule 27) · [[research/legacy/paper_research_plan]] · [[00_index]]
 
 ## 1. 관측된 사실
 
@@ -57,7 +57,7 @@ v19의 최고 정책(`precise/model_best.pt`)을 조건만 바꿔 같은 표본�
 
 ## 4. 논문에서의 위치
 
-[[research/paper_research_plan]]:
+[[research/legacy/paper_research_plan]]:
 - §2c-7(핸드오프 고정 → 일반화 주장 불가)의 **해소 근거**이자, 그 약점이 실재했다는 **정량 증거**.
 - §4 Table 5(충실도/민감도 사다리)와 같은 형식: *train/test 분포 불일치로 어떤 축이 얼마나 위험한지 랭킹*.
   여기서 얻은 랭킹은 **방위 ≫ 속도/고도/자세 ≫ 플랜트·센서 노이즈**.
@@ -66,6 +66,6 @@ v19의 최고 정책(`precise/model_best.pt`)을 조건만 바꿔 같은 표본�
 
 ## 관련
 
-- [[experiments/exp_022_p0_handoff_dyn_dr]] — 원 실험·게이트·코드 변경
+- [[experiments/legacy/exp_022_p0_handoff_dyn_dr]] — 원 실험·게이트·코드 변경
 - [[research/rl_rules]] Rule 19(런타임 물리 오버라이드 금지) · Rule 20(warm-start는 아키텍처 고정)
-- [[research/isaac_lab_architecture]] · [[research/moving_target_models]]
+- [[research/isaac_lab_architecture]] · [[research/legacy/moving_target_models]]

@@ -15,7 +15,7 @@ type: research
 > 기하학이다.
 
 관련: [[research/related_work_survey]] · [[experiments/exp_026_release_rate_100hz]] · [[research/research_architecture]] §10 ·
-[[research/isaac_velocity_controller]] · [[research/control_smoothness_wobble]]
+[[research/isaac_velocity_controller]] · [[research/legacy/control_smoothness_wobble]]
 
 ---
 

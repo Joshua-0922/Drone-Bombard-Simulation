@@ -12,7 +12,7 @@ type: research
 > 아직 PX4 SITL 실측 스텝응답과 대조 검정되지 않았다. 검정 전까지 v15-vs-Isaac
 > 행동 비교는 이 한계를 감안해야 한다.
 
-관련: [[experiments/exp_012_isaac_migration_phase2]] · [[research/control_smoothness_wobble]] (Rule 15)
+관련: [[experiments/legacy/exp_012_isaac_migration_phase2]] · [[research/legacy/control_smoothness_wobble]] (Rule 15)
 
 ---
 

@@ -79,9 +79,9 @@ owner: junsang
 
 ## 관련 노트
 
-- [[research/sac_bounded_action_target_entropy_junsang]] — 오늘 규명한 근본 원인 정리 (메커니즘 + 처방)
-- [[research/sac_reward_density_junsang]] — SAC 발산 관련 (per-step density 관점)
+- [[research/legacy/sac_bounded_action_target_entropy_junsang]] — 오늘 규명한 근본 원인 정리 (메커니즘 + 처방)
+- [[research/legacy/sac_reward_density_junsang]] — SAC 발산 관련 (per-step density 관점)
 - [[research/rl_rules]] — Rule 8/9
 - [[experiments/training_history]]
-- [[00_index_junsang]]
+- [[research/legacy/00_index_junsang]]
 - local: `meeting_notes/meeting_notes_2026-06-03`, `design/model_history`, `issues/issue_019_sac_entropy_divergence`

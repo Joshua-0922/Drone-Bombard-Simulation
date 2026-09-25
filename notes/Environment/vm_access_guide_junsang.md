@@ -172,4 +172,4 @@ gcloud compute instances describe $VM --zone=$ZONE --format="value(status)"
 ---
 
 ## 관련
-- [[Environment/README]] (VM 복구 가이드) · [[sessions/commands]] · [[research/isaac_model_intro_junsang]] · [[00_index]]
+- [[Environment/README]] (VM 복구 가이드) · [[sessions/commands]] · [[research/legacy/isaac_model_intro_junsang]] · [[00_index]]

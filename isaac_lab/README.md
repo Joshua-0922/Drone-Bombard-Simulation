@@ -1,27 +1,21 @@
-# isaac_lab/ — Isaac Lab port of the drone-bombard RL task
+# isaac_lab/ — Isaac Lab drone payload-drop task (RL flight + supervised impact residual)
 
-Phase 2 of the Gazebo+PX4+ROS2 -> Isaac Lab migration (Phase 1 = the Docker
-image in `drone_drop_system/docker/`, Isaac Sim 5.1.0 + Isaac Lab v2.3.2 +
-rsl_rl). This directory replicates the terminal visual-servoing task learned
-by SAC on Gazebo (`ros2_ws/src/rl_navigation/rl_navigation/drone_drop_env.py`,
-v13/v15 baseline) as one GPU-vectorized Isaac Lab environment, trained with
-PPO (rsl_rl) instead of SAC.
+**Current state (2026-09-25).** One GPU-vectorized Isaac Lab `DirectRLEnv`
+(`Isaac-DroneBombard-Task-v0`) trains the flight policy L0 with PPO (rsl_rl,
+2048 envs, 1000 iters, model-error scale 1.5). A small GRU (obs 26 -> 64 -> 2)
+is then fitted offline on frozen-L0 flight logs to predict the impact-point
+drift and injected at evaluation with an EMA (alpha 0.3). No wind sensor.
+Method + numbers: `notes/research/l1_sl_pipeline.md`, `notes/research/final_tables_v6.md`.
+Where things are: `notes/research/code_map.md`, `notes/research/isaac_lab_architecture.md`.
+Commands: `notes/sessions/commands.md`.
 
-See `notes/experiments/exp_012_isaac_migration_phase2.md` for the full
-parity table (every v13 constant -> Isaac cfg field) and design rationale,
-and `notes/research/isaac_velocity_controller.md` for the velocity
-controller's PX4-gain mapping and calibration status.
+Runs inside container `isaac-verify` at `/tmp/rebuild` (copy of this dir):
+`docker cp isaac_lab/. isaac-verify:/tmp/rebuild/` after editing; python is
+`/workspace/isaaclab/isaaclab.sh -p`. Artifacts live in the container's `/tmp`.
 
-**Repo cleanup is deferred, on purpose**: `ros2_ws/`, `gazebo_models/`, and
-the rest of the PX4/ROS2/Gazebo workspace are still present in this branch
-(this worktree only — the `jekyun` branch's live SAC training is a separate
-checkout and is never touched by this migration). They stay until (1) the
-Isaac env passes its first L4 VM smoke test and (2) the PX4 velocity
-step-response capture session (needed to calibrate the controller in
-`drone_bombard_env.py`) has been run — deleting the Gazebo/PX4 stack first
-would make that capture impossible to redo. See
-`notes/experiments/exp_012_isaac_migration_phase2.md` §8 for the tracked
-follow-up.
+Historical: this directory started (2026-07) as the port of the Gazebo/PX4/ROS2
+SAC task; that migration record is `notes/experiments/legacy/exp_012_isaac_migration_phase2.md`.
+`ros2_ws/` and `gazebo_models/` at the repo root are the old stack, unreferenced.
 
 ## Layout
 

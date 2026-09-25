@@ -13,7 +13,7 @@ type: research
 > 틀리게 만든다")을 거짓으로 만든다.
 
 관련: [[research/research_architecture]] · [[errors/err_20260823_ccip_vz_omission]] ·
-[[research/ccip_release_decoupling]] · [[experiments/exp_019_physical_payload]] ·
+[[research/legacy/ccip_release_decoupling]] · [[experiments/legacy/exp_019_physical_payload]] ·
 [[research/rl_rules]] (Rule 30)
 
 ---
@@ -44,7 +44,7 @@ $v_z\approx0$이 참이었다.
 | — | 예측기는 그대로 $v_z=0$ 가정 | **체계적 오차 발생** |
 
 exp_019 노트는 이를 **후속작업 #3 "CCIP vz 항 복원"**으로 이미 기록했고,
-[[research/ccip_release_decoupling]] §4도
+[[research/legacy/ccip_release_decoupling]] §4도
 *"vz 미반영은 예측·실측 양쪽에 동일 적용되어 상호 일관 — **실 페이로드 바디 도입 시
 full-vz 공식으로**"* 라고 조건부 유효성을 명시했다.
 **물리 페이로드는 도입되었고, 공식은 고쳐지지 않았다.**

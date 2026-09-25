@@ -102,8 +102,8 @@ status: active
 
 ## 관련 노트
 
-- [[experiments/exp_011_wobble_lpf_reward_damping]] — 오늘 진단이 확장하는 원 실험 노트
-- [[research/control_smoothness_wobble]] — wobble 진단 방법론
+- [[experiments/legacy/exp_011_wobble_lpf_reward_damping]] — 오늘 진단이 확장하는 원 실험 노트
+- [[research/legacy/control_smoothness_wobble]] — wobble 진단 방법론
 - [[research/rl_rules]] Rule 15(wobble) / Rule 25(오늘 추가 — 종단 반경 내 보상 shaping 리스크)
-- [[research/terminal_overshoot_trap]] / [[experiments/exp_010_byxyaf4d_v14_195k_eval]] — v14 final-approach stagnation 원 진단
+- [[research/legacy/terminal_overshoot_trap]] / [[experiments/legacy/exp_010_byxyaf4d_v14_195k_eval]] — v14 final-approach stagnation 원 진단
 - [[experiments/training_history]] · [[00_index]]

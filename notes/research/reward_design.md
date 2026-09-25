@@ -219,7 +219,7 @@ L0 기준 에피소드 약 58 스텝, 표적 약 20 m, 착지 오차 중앙값 0
 - [[research/reward_operating_point]] — 무차별점 보정의 원 계산, 정속 패스
 - [[errors/err_20260827_free_exit_termination]] — 무료 탈출구 · 닭-달걀 · 고도 계측
 - [[errors/err_20260830_aim_reward_residual_inclusive]] — 조준 항 결함 (L1-RL 전 수정)
-- [[research/isaac_lab_reward_tuning]] — ⚠️ §2는 base env 구 보상. 액션 스케일·종료 조건 표는 유효
+- [[research/legacy/isaac_lab_reward_tuning]] — ⚠️ §2는 base env 구 보상. 액션 스케일·종료 조건 표는 유효
 - [[research/research_architecture]] §5 관측·행동 · §8 보상 설계 원칙
 - [[daily/daily_2026-08-27]] · [[daily/daily_2026-08-30]] — 보상 재보정의 원 기록
 
@@ -324,5 +324,5 @@ $$R_{trunc} = -50 \quad \text{if step = 500 and not dropped}$$
 
 ### 관련 링크
 
-- [[experiments/exp_001_8otphxy8_linear_reward]] — 선형 보상 첫 적용 run
-- [[experiments/exp_002_reward_shaping_patches]] — anti-milking + truncation penalty
+- [[experiments/legacy/exp_001_8otphxy8_linear_reward]] — 선형 보상 첫 적용 run
+- [[experiments/legacy/exp_002_reward_shaping_patches]] — anti-milking + truncation penalty

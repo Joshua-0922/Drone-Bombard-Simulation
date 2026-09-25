@@ -51,7 +51,7 @@ graphify 그래프는 기계가 조회하는 **구조 인덱스**(무엇이 무�
 
 그래프는 코드 심볼과 노트를 이미 교차 연결함 — 예: reset 관련 질의 하나로
 `DroneDropEnv._try_soft_reset()` (drone_drop_env.py:1592)와
-`notes/research/reset_throughput_bottleneck.md`가 같이 나옴.
+`notes/research/legacy/reset_throughput_bottleneck.md`가 같이 나옴.
 따라서 **"이 repo는 그래프화되어 있다"는 안내용 노트를 vault에 따로 만들지 않음** (내용 없는 포인터 노드 = 관리 부채).
 
 ---
@@ -125,25 +125,26 @@ wikilink는 상대경로 사용: `[[research/reward_design]]`
 
 ---
 
-## Development Environment
+## Development Environment (Isaac Lab, 2026-09 기준)
 
-개발은 **Docker 컨테이너 내부**에서만. 호스트 VM은 git 작업 전용.
+- 코드는 repo `isaac_lab/`에서 편집하고, **실행은 컨테이너 `isaac-verify`의 `/tmp/rebuild`** 에서 한다. 편집 후 반드시 `docker cp isaac_lab/. isaac-verify:/tmp/rebuild/`.
+- 파이썬은 `/workspace/isaaclab/isaaclab.sh -p <script>`. 호스트 python3에는 numpy/torch가 없다.
+- 학습 체크포인트·덤프·평가 JSON은 전부 컨테이너 `/tmp` (컨테이너 stop에는 살아남고, 삭제에는 안 남는다).
+- wandb 키는 호스트 `/opt/drone-bombard/.wandb.env` → `docker exec --env-file`.
 
-상세 명령: `[[sessions/commands]]`
+상세 명령: `[[sessions/commands]]` · 파일 역할: `[[research/isaac_lab_architecture]]` · 코드 위치: `[[research/code_map]]`
 
 ---
 
-## RL Training (Method A)
+## RL Training & Residual SL
 
-> **⚠️ source 순서 필수:** `/root/ros2_ws/install/setup.bash` → `/workspace/ros2_ws/install/setup.bash`
-> 순서 틀리면 `px4_msgs` import 에러로 에피소드 노드 silent crash.
+**본 방법 = L0(PPO 비행 정책, 동결) + GRU-S 잔차(지도학습) + EMA α=0.3.** 파이프라인: `[[research/l1_sl_pipeline]]`.
 
 **핵심 규칙 (상세: `[[research/rl_rules]]`):**
-- 코드 변경 후 dry-run(2–3 에피소드) 먼저, 성공 확인 후 full training
-- **보상 공식 변경 → 반드시 Fresh Start** (replay buffer 재사용 금지)
-- 첫 롤아웃 후 `env/mean_rew_dist ≠ 0` 확인
-
-상세 명령: `[[sessions/commands]]`
+- 코드 변경 후 단위테스트(`tests/`) → dry-run(소수 iteration·에피소드) → 본 실행
+- L0 평가에는 `--no_residual` 필수(기본값이 잔차 활성) — 없으면 92.7%가 37.5%로 보인다
+- 팔 비교는 항상 paired eval, seed {3000,4000,5000} × 200, `_agg_table1.py`의 시드셋 assert 통과
+- 실험 하나 = 노트 하나(`experiments/exp_NNN`), 허브 3곳 갱신, 결과 JSON 경로 기록
 
 ---
 

@@ -85,10 +85,10 @@ owner: junsang
 
 ## 관련 노트
 
-- [[research/sac_bounded_action_target_entropy_junsang]] — Round 7 v3 critic 안정화(Huber+target_q_clip) 포함 발산 처방 정리
+- [[research/legacy/sac_bounded_action_target_entropy_junsang]] — Round 7 v3 critic 안정화(Huber+target_q_clip) 포함 발산 처방 정리
 - [[experiments/training_history]]
 - [[research/rl_rules]]
-- [[00_index_junsang]]
+- [[research/legacy/00_index_junsang]]
 - [[daily/daily_2026-06-03_junsang]]
 - local: `meeting_notes/meeting_notes_2026-06-05`, `design/model_history`, `design/phase2_plan`, `issues/master`
 - local: `backups/phase1_final_round7_v3/` (Phase 1 endpoint)

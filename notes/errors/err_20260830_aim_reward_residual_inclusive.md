@@ -12,7 +12,7 @@ type: error
 > 조준 포텐셜과 `_d_impact_prev`가 그것만 읽는다. 게이트·교차 판정·관측 채널은 잔차 포함 그대로.
 > L2(direct 모드)는 공칭 예측이 없으므로 종전과 동일하게 자기 출력을 쓴다. → [[research/l1_rl_preflight]] §1.1
 
-관련: [[research/residual_ceiling]] · [[experiments/exp_018_release_terminal]] ·
+관련: [[research/residual_ceiling]] · [[experiments/legacy/exp_018_release_terminal]] ·
 [[research/rl_rules]]
 
 ---

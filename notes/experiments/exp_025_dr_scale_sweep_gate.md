@@ -21,7 +21,7 @@ wandb_run: "none (무학습 스크립트 베이스라인 + deterministic paired 
 > **둘 사이의 간격이 단조 증가**한다. 그 간격이 학습된 잔차가 회복할 수 있는 최대치다.
 
 관련: [[research/t3_oracle_entrainment]] · [[research/research_architecture]] §7.4 ·
-[[experiments/exp_023_table1_baselines]] (무효화된 이전 측정) · [[research/rl_rules]] Rule 31
+[[experiments/legacy/exp_023_table1_baselines]] (무효화된 이전 측정) · [[research/rl_rules]] Rule 31
 
 ---
 

@@ -26,7 +26,7 @@ status: complete
 
 ## 주요 결정 & 발견
 
-- **cruise 핸드오프 = 컨트롤러 seed 필요** (신규 규칙): 움직이는 상태로 spawn 시 reset에서 `_v_filt`/`_prev_action`을 cruise 속도로 seed 안 하면 첫 스텝 자세 폭주(bad_attitude) 즉사. → `[[research/rl_rules]]` Rule 10, `[[research/isaac_cruise_handoff_junsang]]`.
+- **cruise 핸드오프 = 컨트롤러 seed 필요** (신규 규칙): 움직이는 상태로 spawn 시 reset에서 `_v_filt`/`_prev_action`을 cruise 속도로 seed 안 하면 첫 스텝 자세 폭주(bad_attitude) 즉사. → `[[research/rl_rules]]` Rule 10, `[[research/legacy/isaac_cruise_handoff_junsang]]`.
 - **확장은 "삭제 없이 토글"** — `marker_random`, `reveal_radius` 등 cfg 플래그로 v11 무손상 확장(v12/v13는 cfg/서브클래스만).
 - **랜덤 스폰 방식**: 부채꼴 아님. (20,0) 중심 **반경 5m 원** 면적균일(`r=R√U`). v13 reveal 반경 7m = disk 5m + 여유 2m.
 - **v13 부분관측 핵심**: 미탐지 시 marker 의존 보상 전부 0(게이팅) → **보상이 숨은 위치를 누출하지 않게** 해야 "진짜 blind". 미탐지 페널티로 재진입 강제.
@@ -73,8 +73,8 @@ status: complete
 
 ## 관련 노트
 
-- [[experiments/exp_006_v11_dryrun_junsang]] — v11 완화 dry-run
-- [[experiments/exp_007_v12_random_marker_junsang]] — v12 랜덤 marker
-- [[experiments/exp_008_v13_partial_obs_junsang]] — v13 부분관측
-- [[research/isaac_cruise_handoff_junsang]] — cruise 핸드오프 seed (Rule 10)
+- [[experiments/legacy/exp_006_v11_dryrun_junsang]] — v11 완화 dry-run
+- [[experiments/legacy/exp_007_v12_random_marker_junsang]] — v12 랜덤 marker
+- [[experiments/legacy/exp_008_v13_partial_obs_junsang]] — v13 부분관측
+- [[research/legacy/isaac_cruise_handoff_junsang]] — cruise 핸드오프 seed (Rule 10)
 - [[experiments/training_history]] · [[research/rl_rules]] · [[00_index]]

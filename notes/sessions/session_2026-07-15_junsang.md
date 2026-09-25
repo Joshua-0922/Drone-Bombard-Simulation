@@ -27,8 +27,8 @@ status: complete
 ## 이 세션 산출물
 
 - **코드** (`origin/Issac_JS` push 완료, HEAD `795be85`): v11/v12/v13 env·cfg·태스크·train 플래그·play chase 카메라·release_gate.
-- **실험 노트**: [[experiments/exp_006_v11_dryrun_junsang]] · [[experiments/exp_007_v12_random_marker_junsang]] · [[experiments/exp_008_v13_partial_obs_junsang]]
-- **규칙/발견**: [[research/isaac_cruise_handoff_junsang]] (Rule 10), [[research/isaac_v11_v13_design_guide_junsang]] (기존 migration 대비 변경점 가이드)
+- **실험 노트**: [[experiments/legacy/exp_006_v11_dryrun_junsang]] · [[experiments/legacy/exp_007_v12_random_marker_junsang]] · [[experiments/legacy/exp_008_v13_partial_obs_junsang]]
+- **규칙/발견**: [[research/legacy/isaac_cruise_handoff_junsang]] (Rule 10), [[research/legacy/isaac_v11_v13_design_guide_junsang]] (기존 migration 대비 변경점 가이드)
 - **체크포인트**: `model_final*.pt` — VM 디스크(js-v11 컨테이너)에만 보존.
 
 ## 다음 세션 시작점

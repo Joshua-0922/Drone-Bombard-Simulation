@@ -106,7 +106,7 @@ if 'd_xy' in info:
 
 ## Rule 7 — RTF(Real-Time Factor) 선택
 
-> **상세 분석:** [[research/rtf_fps_analysis]]
+> **상세 분석:** [[research/legacy/rtf_fps_analysis]]
 
 **결론: RTF=2 고정.** RTF=4 이상은 Python RL 루프 병목으로 FPS가 오히려 감소한다.
 
@@ -129,7 +129,7 @@ if 'd_xy' in info:
 
 ## Rule 8 — Arming 게이팅 & Stuck-Takeoff Early-Bail (Throughput)
 
-> **상세 분석:** [[research/cruise_timeout_arming]] / [[errors/err_20260615_cruise-timeout-arming]]
+> **상세 분석:** [[research/legacy/cruise_timeout_arming]] / [[errors/err_20260615_cruise-timeout-arming]]
 
 CRUISE 타임아웃은 "느린 비행"이 아니라 **arming-rejection** 문제. teleport
 (`gz_reset_poses`) 직후 stale EKF → `pre_flight_checks_pass=False` → PX4 arm 거부.
@@ -157,7 +157,7 @@ CRUISE 타임아웃은 "느린 비행"이 아니라 **arming-rejection** 문제.
 
 ## Rule 10 — 핸드오프 거리와 종단 보상 트랩 (Overshoot Moat)
 
-> **상세 분석:** [[research/terminal_overshoot_trap]]
+> **상세 분석:** [[research/legacy/terminal_overshoot_trap]]
 
 RL 에피소드는 **CRUISE→TRACKING 핸드오프 위치**에서 시작한다 (`reset()` L584-587).
 카메라 방향이 이 핸드오프 거리를 결정한다 — **정하방 카메라는 마커를 ~1m 머리 위에서만 탐지** →
@@ -180,7 +180,7 @@ RL 에피소드는 **CRUISE→TRACKING 핸드오프 위치**에서 시작한다 
 
 ## Rule 11 — 인프라 타임아웃은 "복구 곡선"을 계측한 뒤 정하라
 
-> **상세 분석:** [[research/cruise_timeout_arming]] · [[experiments/exp_006_xgzum51v_armdiag_dryrun]]
+> **상세 분석:** [[research/legacy/cruise_timeout_arming]] · [[experiments/legacy/exp_006_xgzum51v_armdiag_dryrun]]
 
 Rule 8의 `arm_bail_timeout=10s`는 *추정값*이었고, 그게 v13의 지배적 throughput 싱크였다.
 teleport 후 `pre_flight_checks_pass` 재수렴 시간을 계측하니 **bimodal**: **0.0s (warm, 7/12)** 또는
@@ -201,7 +201,7 @@ teleport 후 `pre_flight_checks_pass` 재수렴 시간을 계측하니 **bimodal
 
 ## Rule 12 — 평가는 시작 상태를 게이트하라 + harness 지표를 env와 정합시켜라
 
-> **상세:** [[research/eval_terminal_env_metrics]] · [[experiments/exp_007_iyhfy5ps_v13_eval]]
+> **상세:** [[research/legacy/eval_terminal_env_metrics]] · [[experiments/legacy/exp_007_iyhfy5ps_v13_eval]]
 
 v13 deterministic eval(20-ep 요청)에서 ep 1–3은 0.8m 성공(reward ~124)했으나 ep 4–13은 **전부 step 1에서
 EKF 위치 발산(`d_xy≈11.9m`=home→target) → −15 truncation**. 연속 full-infra restart가 EKF를 ~21s 안에
@@ -229,7 +229,7 @@ YOLO 누수 fix(fresh-kill에 `xmarker_detector` 추가) 후 dry-run 3/3 SUCCESS
 
 ## Rule 13 — "늦은 탐지/짧은 윈도우"는 탐지 게이트로 풀어라 (고도 아님)
 
-> **상세:** [[research/detection_gate_vs_altitude]] · [[experiments/exp_008_dryrun_alt10_handoff_window]]
+> **상세:** [[research/legacy/detection_gate_vs_altitude]] · [[experiments/legacy/exp_008_dryrun_alt10_handoff_window]]
 
 핸드오프(CRUISE→TRACKING)가 "거의 머리 위"(d_xy ~3.5 m)에서 일어나 RL 윈도우가 짧은 문제를
 **순항 고도↑(5→10 m)로 풀려 했으나 실패.** 고도는 레버가 아니다:
@@ -252,7 +252,7 @@ YOLO 누수 fix(fresh-kill에 `xmarker_detector` 추가) 후 dry-run 3/3 SUCCESS
 
 ## Rule 14 — 리셋 처리량은 "EKF를 교란 안 하는 리셋"으로 풀어라 (param 아님)
 
-> **상세:** [[research/reset_throughput_bottleneck]] · [[experiments/exp_009_softreset_throughput]]
+> **상세:** [[research/legacy/reset_throughput_bottleneck]] · [[experiments/legacy/exp_009_softreset_throughput]]
 
 에피소드 리셋의 지배적 비용(v14 fps≈2, ETA ~2.5일)은 `gz_reset_poses`(teleport)+disarm 후 PX4
 **EKF 추정기 재수렴** 대기다. `ctrl_0.log`: `Delaying arm — pre_flight_checks_pass=False (EKF not yet
@@ -271,7 +271,7 @@ throughput ~3.9×, 32연속 soft reset에서 EKF d_xy 안정(4.5–5.8m, 발산 
 - **teleport/disarm는 EKF 재수렴을 강제하고, 그 대기는 param으로 못 줄인다.** 연속 비행 복귀로 비용을 0으로.
 - **항상 fallback.** 전복/저고도/EKF발산/비유한 종료는 soft reset 불가 → 기존 teleport+restart. 최악도 baseline(그 이하 아님).
 
-**✅ Production 검증완료 (2026-06-23, byxyaf4d 0→196.5K):** 3096 soft resets에서 soft 성공 ~91%(fallback ~9%만 teleport), 학습 내내 EKF health gate(10m) 안쪽 유지(발산 루프 0). 학습된 정책에서도 fallback율·EKF drift 모두 bounded. → [[experiments/exp_010_byxyaf4d_v14_195k_eval]]
+**✅ Production 검증완료 (2026-06-23, byxyaf4d 0→196.5K):** 3096 soft resets에서 soft 성공 ~91%(fallback ~9%만 teleport), 학습 내내 EKF health gate(10m) 안쪽 유지(발산 루프 0). 학습된 정책에서도 fallback율·EKF drift 모두 bounded. → [[experiments/legacy/exp_010_byxyaf4d_v14_195k_eval]]
 - **drift guard = self-correct.** soft reset로 EKF가 느리게 누적돼도 handoff d_xy > start_drift_max면 그 에피소드만
   teleport fallback → 누적 리셋. soft reset + drift guard = 빠르되 안전.
 - **음성 결과도 규칙이다.** "param 만지면 빨라질 것"은 COM_ARM_WO_GPS 맥락에선 틀림 — 재시도 금지.
@@ -294,7 +294,7 @@ throughput ~3.9×, 32연속 soft reset에서 EKF d_xy 안정(4.5–5.8m, 발산 
   "너무 느리게 하지 마라" 제약을 이렇게 만족(cruise-out 자유). + **smoothness 가중↑**(C).
 - **레버 우선순위:** 보상 shaping → (부족 시) 액션 스케일↓ → (구조적) 이전 액션을 obs에 추가.
 
-→ [[research/control_smoothness_wobble]] / [[experiments/exp_011_wobble_lpf_reward_damping]]
+→ [[research/legacy/control_smoothness_wobble]] / [[experiments/legacy/exp_011_wobble_lpf_reward_damping]]
 
 ---
 
@@ -316,13 +316,13 @@ Gazebo→Isaac Lab처럼 다른 시뮬레이터로 보상/제어 로직을 이�
    미검정"으로 문서화 — 조용히 초기값을 최종값처럼 취급하면 이후 행동 비교가 이 미검정
    컴포넌트의 오차인지 실제 정책/보상 차이인지 구분 불가능해진다.
 
-→ [[experiments/exp_012_isaac_migration_phase2]] / [[research/isaac_velocity_controller]]
+→ [[experiments/legacy/exp_012_isaac_migration_phase2]] / [[research/isaac_velocity_controller]]
 
 ---
 
 ## Rule 17 — 관측/보상용 센서 근사 모델은 "실패 특성"까지 이식하라 (성공 특성만 이식 금지)
 
-> **상세:** [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] §4a · [[research/isaac_ppo_tuning_recommendations]]
+> **상세:** [[experiments/legacy/exp_013_wcjklw7a_isaac_ppo_first_training]] §4a · [[research/legacy/isaac_ppo_tuning_recommendations]]
 
 analytic vision(핀홀 투영 + conf 0.73-0.95)은 YOLO의 **성공 특성**(탐지 시 픽셀/conf 분포)만
 이식하고 **실패 특성**(apparent size ∝ 1/거리 → 원거리 conf 붕괴, Rule 13)을 누락했다.
@@ -330,7 +330,7 @@ analytic vision(핀홀 투영 + conf 0.73-0.95)은 YOLO의 **성공 특성**(탐
 보상 지형이 생긴다 — 상승 farming은 실제 YOLO 환경에선 존재할 수 없는 정책이다.
 (07-04 forensics로 귀속 확정 수순: 경합 가설이던 리셋 속도킥은 프로세스당 1회로 실증되어
 기각 — max_alt 27-43%는 **iter ~200에서 창발**한 학습된 행동이고 같은 구간 rew_vision이
-고유지, 이 attractor가 1차 가설. 인과 확증 실험 설계: [[research/exp014_ablation_protocol]].)
+고유지, 이 attractor가 1차 가설. 인과 확증 실험 설계: [[research/legacy/exp014_ablation_protocol]].)
 
 **필수 규칙:**
 - 센서를 근사로 대체하면 그 센서가 **언제 못 보는지**(거리·각도·조명 감쇠)를 같이 모델링하라.
@@ -345,7 +345,7 @@ analytic vision(핀홀 투영 + conf 0.73-0.95)은 YOLO의 **성공 특성**(탐
 
 ## Rule 18 — 종단 보상은 shaping 스트림을 지배해야 한다 + PPO noise_std는 감시 대상
 
-> **상세:** [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] §4b/4c
+> **상세:** [[experiments/legacy/exp_013_wcjklw7a_isaac_ppo_first_training]] §4b/4c
 
 **(a) Farmer-vs-finisher 수지 검산.** 보상 설계/변경 시 반드시 계산: "성공 반경 직전에서
 per-step shaping(비전+근접)을 에피소드 끝까지 farming한 리턴" vs "즉시 완주 리턴".
@@ -372,7 +372,7 @@ PPO는 체계적 착취로 나타난다. 종단 보상은 farming 스트림 총�
 
 ## Rule 19 — 런타임 물리 프로퍼티 오버라이드 금지: 컨트롤러가 읽는 값 == solver 값을 계측으로 증명하라
 
-> **상세:** [[research/isaac_inertia_ctrl_mismatch]] (2026-07-05 `_diag_inertia.py` 계측)
+> **상세:** [[research/legacy/isaac_inertia_ctrl_mismatch]] (2026-07-05 `_diag_inertia.py` 계측)
 
 **(a) 물리 프로퍼티(질량·관성·COM)는 스폰타임 USD authoring으로만 설정.** 런타임 뷰 API
 (`set_masses`/`set_inertias`)는 두 종류의 불일치를 만든다: ① **1-substep 지연 소비** —
@@ -394,7 +394,7 @@ solver가 새 값을 첫 sim step까지 안 받아 stale 값에 wrench가 적분
 
 ## Rule 20 — 커리큘럼 warm-start는 아키텍처 고정으로, 페이즈 전환은 태스크 재정의로 취급하라
 
-> **상세:** [[research/phased_curriculum]] / [[experiments/exp_015_phased_curriculum]] (2026-07-05)
+> **상세:** [[research/legacy/phased_curriculum]] / [[experiments/legacy/exp_015_phased_curriculum]] (2026-07-05)
 
 **(a) 페이즈 간 weight 인계를 하려면 네트워크 아키텍처를 고정하라.** rsl_rl `OnPolicyRunner`는
 env action/obs space에서 MLP를 만들므로, 페이즈마다 차원이 바뀌면 `runner.load()`가 shape
@@ -414,7 +414,7 @@ surgery보다 견고. obs 확장도 동일 — index 0-13 불변 + append만(exp
 **(d) 순차 학습은 서브프로세스로.** Isaac Sim은 프로세스당 1 sim만 안전 → 한 프로세스에서
 env를 만들고 부수고 다시 만들지 말고, 페이즈마다 새 프로세스(`--resume`으로 체인).
 
-**(e) 실학습 corroboration (2026-07-12, exp_015 baseline 완주, [[research/curriculum_phase_convergence]]).**
+**(e) 실학습 corroboration (2026-07-12, exp_015 baseline 완주, [[research/legacy/curriculum_phase_convergence]]).**
 2048 envs·600/500/500 iters로 1→2→3 완주(ORCH_EXIT=0, ~65 min): **Phase 1만 완전 수렴**
 (success 0.48→1.00, reward→107 — exp_014 100% 재현). 페이즈 경계에서 **reward 딥→빠른 회복**
 (P2 −0.8→94.7 @~150 iter, P3 시작 57)이 (a)의 warm-start 무손실 + (b)의 보상 재정의를 그대로
@@ -431,13 +431,13 @@ baseline의 P2/P3는 reward가 아니라 `release_rate`+릴리스 `drop_impact_e
 2.91→2.87 m(**정체**, best_min 0.008 m는 스파이크), release_rate 0.33→**0.01** 급락(근접 최적화가
 릴리스 억제 — exp_017 단조 하락과 동형). P3 drop 3.20→**5.31 m 회귀**, reward 101.7→74.5.
 **베이스라인 커리큘럼에서 iter 예산만 늘려서는 P2/P3 릴리스-종단 명중을 기대하지 말 것** —
-구조 개입(exp_018) 없이는 P2 ~3 m plateau, P3 불안정/회귀. 상세: [[research/curriculum_phase_convergence]] §2(e).
+구조 개입(exp_018) 없이는 P2 ~3 m plateau, P3 불안정/회귀. 상세: [[research/legacy/curriculum_phase_convergence]] §2(e).
 
 ---
 
 ## Rule 21 — 이벤트 조건부 지표는 그 이벤트를 명시적으로 시뮬레이트한 순간에 측정하라
 
-> **상세:** [[research/ccip_release_decoupling]] / [[experiments/exp_016_ccip_release_reeval]] (2026-07-05)
+> **상세:** [[research/legacy/ccip_release_decoupling]] / [[experiments/legacy/exp_016_ccip_release_reeval]] (2026-07-05)
 
 **(a) "종단 스냅샷에서 계산한 임무 지표"는 종단 조건과 독립인지 먼저 검증하라.** exp_014의
 `drop_impact_error_m` 4.59 m는 투하 오차가 아니라 **d_xy-성공 종단 순간의 잔여속도 탄도 캐리**
@@ -462,7 +462,7 @@ CCIP 오차 최솟값)을 같이 로깅하면 "트리거가 못 발화한 이유
 
 ## Rule 22 — 이벤트 능력은 dense 사이드 보상이 아니라 종단 구조로 학습시켜라
 
-> **상세:** [[research/ccip_aim_reward_stageA]] / [[experiments/exp_017_stageA_aim_reward]] (2026-07-06)
+> **상세:** [[research/legacy/ccip_aim_reward_stageA]] / [[experiments/legacy/exp_017_stageA_aim_reward]] (2026-07-06)
 
 **(a) γ-할인 완주 보너스 + 조기 성공 종단 구조에서는 dense 사이드 보상이 진다.** 릴리스
 능력을 겨냥한 밀집 CCIP 조준 보상($w(1-\tanh(e/s))$, w=1→2, knee 0.5→1.0 m, 총 1,000
@@ -492,7 +492,7 @@ knee를 넓히면 소득은 늘지만 **행동 불변의 수동 소득**이 될 
 
 ## Rule 23 — 임무 이벤트는 종단 이벤트로 만들라; 자동 발화 referee가 노이즈를 발견 메커니즘으로 바꾼다
 
-> **상세:** [[research/release_terminal_stageB]] / [[experiments/exp_018_release_terminal]] (2026-07-06)
+> **상세:** [[research/legacy/release_terminal_stageB]] / [[experiments/legacy/exp_018_release_terminal]] (2026-07-06)
 
 **(a) Rule 22a의 인과 확정.** 동일 보상·동일 warm-start에서 **종단만** 근접(d_xy≤0.8)에서
 릴리스-발화로 교체 → det release_rate 5.5%→**100%**, 학습 내 추세 단조 하락(12→3.7%)이
@@ -522,7 +522,7 @@ self._just_released`(alias) → `_reset_idx`의 in-place clear가 step() 반환 
 
 ## Rule 24 — per-env 동적 결합/분리는 조인트가 아니라 kinematic weld로; 물리↔해석 parity를 계측으로 증명 후 전환하라
 
-> **상세:** [[research/physical_payload_attach]] / [[experiments/exp_019_physical_payload]] (2026-07-21)
+> **상세:** [[research/physical_payload_attach]] / [[experiments/legacy/exp_019_physical_payload]] (2026-07-21)
 
 **(a)** GPU-복제 PhysX는 per-env 조인트 생성/제거(토폴로지 변경) 불가 — "부착했다 분리"는
 fixed joint가 아니라 **kinematic weld**(부착 env만 매 physics step pose+velocity write,
@@ -540,13 +540,13 @@ fixed joint가 아니라 **kinematic weld**(부착 env만 매 physics step pose+
 
 ---
 
-> **Phase 1 전체 계획:** [[research/phase1_plan]] — CCIP 기반 자율 접근, 8주, 14개 실험
+> **Phase 1 전체 계획:** [[research/legacy/phase1_plan]] — CCIP 기반 자율 접근, 8주, 14개 실험
 
 ---
 
 ## Rule 25 — smoothness/속도 댐핑 반경이 종단 실패 반경을 덮으면 회귀 유발
 
-**상세:** [[daily/daily_2026-07-05_gazebo_v15_regression]] · [[experiments/exp_011_wobble_lpf_reward_damping]] · [[experiments/exp_010_byxyaf4d_v14_195k_eval]]
+**상세:** [[daily/daily_2026-07-05_gazebo_v15_regression]] · [[experiments/legacy/exp_011_wobble_lpf_reward_damping]] · [[experiments/legacy/exp_010_byxyaf4d_v14_195k_eval]]
 
 > Gazebo/SAC 트랙(jekyun/Isaac-JS 브랜치, isaac_jk 분기 이전 07-01~07-05 구간)에서 나온 규칙. Isaac Lab 트랙과는 별개 시뮬레이터/보상 코드다.
 
@@ -606,7 +606,7 @@ Gazebo/SAC 트랙(`drone-bombard-harmonic` 컨테이너, NVML/CUDA userspace lib
 
 ## Rule 27 — 고정 초기조건은 성능이 아니라 표현을 암기시킨다; 랜덤화 축은 "표현을 바꾸는 축"과 "강건성만 요구하는 축"으로 나눠라
 
-**상세:** [[research/handoff_generalization_p0]] / [[experiments/exp_022_p0_handoff_dyn_dr]]
+**상세:** [[research/handoff_generalization_p0]] / [[experiments/legacy/exp_022_p0_handoff_dyn_dr]]
 
 **근거(동일 ckpt, 동일 표본 200-ep, seed 42):** 고정 핸드오프 91.0% → +동역학/센싱 DR 91.5%
 → +속도/고도/오프셋/자세 77.1% → +**월드프레임 방위 ±180°** **7.5%**(out_of_range 54%,
@@ -630,7 +630,7 @@ d_xy_min med 1.06 → 16.78 m). 발화 시 착탄오차는 네 조건 모두 0.3
 
 ## Rule 28 — 종단 이벤트 판정은 "정지 상태의 기하"를 포함해야 한다; 래치 실패는 타임아웃으로 위장한다
 
-**상세:** [[errors/err_20260803_payload_landing_latch]] / [[experiments/exp_023_table1_baselines]]
+**상세:** [[errors/err_20260803_payload_landing_latch]] / [[experiments/legacy/exp_023_table1_baselines]]
 
 **근거:** 물리 페이로드 착지 판정이 `z_local <= payload_ground_z(=0.0)`였는데 페이로드는 높이
 0.06 m 실린더 → 지면에 **정지하면 중심 z = 0.03 m**, 솔버가 관통을 막으므로 조건이 영원히 거짓.
@@ -653,7 +653,7 @@ v19 정책 @ v19 성공률 **91.0% → 100.00%** 정정.
 
 ## Rule 29 — 보상이 오르는데 과제 지표가 평탄하면 "페널티 회피 수렴"이다; σ 폭주 + 액션 포화가 그 동반 서명
 
-**상세:** [[experiments/exp_024_v20_warmstart_failure]]
+**상세:** [[experiments/legacy/exp_024_v20_warmstart_failure]]
 
 **근거(exp_024, v20 방위 랜덤 분포 warm-start 1000 iter):** reward −44.8 → **+10.8**로 확실히 상승했는데
 `d_xy_min` 14.74 → 14.41 m · `aim_err_min` 10.63 → 10.46 m · `release_rate` 0.127 → 0.127로 **과제 지표 3종이
@@ -690,7 +690,7 @@ release, matching the Gazebo referee which triggers at/near success)"*. Gazebo �
 
 결과: 릴리즈 엔벨로프에서 모델 오차의 **약 70%가 이 누락**($v_z$ 0.547 m vs 바람 0.197 m vs 항력 0.120 m,
 p50). $v_z=-3$ m/s·$H=8$ m·수평 6 m/s에서 **1.62 m overshoot**. 잔차 RL이 이를 조용히 흡수하며 수렴했고,
-**에러 하나 나지 않았다**. 심지어 exp_019 후속 #3과 [[research/ccip_release_decoupling]] §4에
+**에러 하나 나지 않았다**. 심지어 exp_019 후속 #3과 [[research/legacy/ccip_release_decoupling]] §4에
 **해야 할 일로 이미 기록되어 있었으나 이행되지 않았다.**
 
 **교훈:**
@@ -1126,16 +1126,16 @@ RL만 떠안는다. ③ 학습 잔차 권한 1.0 m vs SL 평가 2.0 m로 클램�
 
 | 증상 | 원인 | 해결 |
 |------|------|------|
-| **eval ep 연속 step1 `d_xy≈11.9m` −15 truncation** (정책 정상인데 못 빠져나옴) | **(06-21 규명) 누적 leaked YOLO `xmarker_detector`(restart마다 spawn, kill 안 함 → 3개) 충돌 탐지 → spurious TRACKING + EKF↔camera 불일치.** clean slate에선 정상(handoff 0.9m). | ① fresh-start kill에 `xmarker_detector` 추가, ② 에피소드 시작 health gate(불일치 retry), ③ 장기 run 후 clean teardown 후 평가 → [[research/eval_terminal_env_metrics]] (Rule 12) |
-| **eval miss-distance/CEP 전부 NaN** | `evaluate.py`가 env 미emit 키 `info['drop_error_actual_m']` 의존; v13 env는 0.8m 종료(탄도 투하 없음) | success_rate/step-to-reach로 지표 교체 → [[research/eval_terminal_env_metrics]] (Rule 12) |
+| **eval ep 연속 step1 `d_xy≈11.9m` −15 truncation** (정책 정상인데 못 빠져나옴) | **(06-21 규명) 누적 leaked YOLO `xmarker_detector`(restart마다 spawn, kill 안 함 → 3개) 충돌 탐지 → spurious TRACKING + EKF↔camera 불일치.** clean slate에선 정상(handoff 0.9m). | ① fresh-start kill에 `xmarker_detector` 추가, ② 에피소드 시작 health gate(불일치 retry), ③ 장기 run 후 clean teardown 후 평가 → [[research/legacy/eval_terminal_env_metrics]] (Rule 12) |
+| **eval miss-distance/CEP 전부 NaN** | `evaluate.py`가 env 미emit 키 `info['drop_error_actual_m']` 의존; v13 env는 0.8m 종료(탄도 투하 없음) | success_rate/step-to-reach로 지표 교체 → [[research/legacy/eval_terminal_env_metrics]] (Rule 12) |
 | `mean_rew_dist = 0` | 지수 포텐셜 포화 (k1 너무 큼) | 선형 보상 사용; $e^{-k_1 d_{max}} > 10^{-6}$ 확인 |
 | `mean_d_xy` → 1e11 | Gazebo ODE 물리 폭발 | 3중 방어 레이어 → [[errors/err_20260320_physics_explosion]] |
-| CRUISE 타임아웃 (~42% late-arm) | teleport 후 EKF 재수렴이 bimodal (0s 또는 13–16s). `pre_flight_checks_pass`가 늦게 True. **v12의 10s 컷이 복구 직전 단두대질** → full restart 강제 (진짜 throughput 싱크) | pre_flight_checks_pass 게이팅 + `arm_bail_timeout` **10s→20s** (복구 곡선 계측 후) → [[research/cruise_timeout_arming]] (Rule 8, **Rule 11**) |
+| CRUISE 타임아웃 (~42% late-arm) | teleport 후 EKF 재수렴이 bimodal (0s 또는 13–16s). `pre_flight_checks_pass`가 늦게 True. **v12의 10s 컷이 복구 직전 단두대질** → full restart 강제 (진짜 throughput 싱크) | pre_flight_checks_pass 게이팅 + `arm_bail_timeout` **10s→20s** (복구 곡선 계측 후) → [[research/legacy/cruise_timeout_arming]] (Rule 8, **Rule 11**) |
 | `ep_rew_mean` 나선형 하락 | (1) CRUISE 타임아웃 버퍼 오염 **또는** (2) ep_len 붕괴 착시 (도달 빨라짐) | 근본 원인 수정; per-episode `env/ep_reward`로 진짜 신호 판정 (Rule 9) |
-| **ep_len 감소 + ep_rew 음수 고정 + success 0** (d_xy는 잘 도달) ⚠️ v12 | 정하방 카메라 → 핸드오프 ~1m → overshoot 가드(threshold 1.5)가 step 1부터 무장 + 8 m/s 액추에이터가 0.5m 성공원 지나침 → 매 에피소드 -20 | overshoot 무장 거리 < 핸드오프, success_radius 도달가능하게, 액션 스케일 ↓ → [[research/terminal_overshoot_trap]] (Rule 10), `hyperparams_v13.yaml` |
-| **YOLO `target_lost_rate` ~29% bimodal (악화 중)** ⚠️ OPEN | per-step YOLO 트리거가 에피소드별 전부-탐지(rate=0, 70.7%) 또는 전무-탐지(rate=1, 29.3%)로 분리; partial 0%. 추세 0.24→0.35 | **미해결.** ~29% step에서 obs[9-11] zeroed + `-10` 페널티. 별도 처리 필요 → [[experiments/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]] |
+| **ep_len 감소 + ep_rew 음수 고정 + success 0** (d_xy는 잘 도달) ⚠️ v12 | 정하방 카메라 → 핸드오프 ~1m → overshoot 가드(threshold 1.5)가 step 1부터 무장 + 8 m/s 액추에이터가 0.5m 성공원 지나침 → 매 에피소드 -20 | overshoot 무장 거리 < 핸드오프, success_radius 도달가능하게, 액션 스케일 ↓ → [[research/legacy/terminal_overshoot_trap]] (Rule 10), `hyperparams_v13.yaml` |
+| **YOLO `target_lost_rate` ~29% bimodal (악화 중)** ⚠️ OPEN | per-step YOLO 트리거가 에피소드별 전부-탐지(rate=0, 70.7%) 또는 전무-탐지(rate=1, 29.3%)로 분리; partial 0%. 추세 0.24→0.35 | **미해결.** ~29% step에서 obs[9-11] zeroed + `-10` 페널티. 별도 처리 필요 → [[experiments/legacy/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]] |
 | fps 급감 | CRUISE 타임아웃 (65 s 대기) 또는 ODE 크래시 | 로그에서 "Timed out waiting for CRUISE" 확인 |
-| **드론이 마커 거울상으로 비행** (East 부호 반전) | East 타겟이 -11(거울)로 설정됨. PX4 East = +Gazebo_East (반전 없음)인데 반전 가정함 | `target_ned_y=+11`, `cruise_speed_y=-1`, `target_enu_x=+11`. ⚠️ d_xy 로그는 거울상 자기일치로 속임 → `gz model -p` ground-truth 검증 필수. 상세: [[coordinate-frames]] / [[research/ekf_east_reversal]] (06-12 진단 RETRACTED) |
+| **드론이 마커 거울상으로 비행** (East 부호 반전) | East 타겟이 -11(거울)로 설정됨. PX4 East = +Gazebo_East (반전 없음)인데 반전 가정함 | `target_ned_y=+11`, `cruise_speed_y=-1`, `target_enu_x=+11`. ⚠️ d_xy 로그는 거울상 자기일치로 속임 → `gz model -p` ground-truth 검증 필수. 상세: [[coordinate-frames]] / [[research/legacy/ekf_east_reversal]] (06-12 진단 RETRACTED) |
 | YOLO 탐지 무효 (silent) | ultralytics Boxes boolean 인덱싱 silent fail | `detections[:0]` 정수 슬라이스로 대체 |
-| **eval success 0% (학습/wandb는 정상)** | done-flag가 `_just_released` 등 reset이 in-place 변조하는 버퍼의 **alias**로 캐시됨 — `_reset_idx`가 step() 반환 전에 지움 | 종단 플래그 캐시는 `.clone()` (Rule 23d) → [[research/release_terminal_stageB]] |
+| **eval success 0% (학습/wandb는 정상)** | done-flag가 `_just_released` 등 reset이 in-place 변조하는 버퍼의 **alias**로 캐시됨 — `_reset_idx`가 step() 반환 전에 지움 | 종단 플래그 캐시는 `.clone()` (Rule 23d) → [[research/legacy/release_terminal_stageB]] |
 | 이중 YOLO 노드 실행 | 수동 기동 + env 기동 중복 | env가 YOLO를 `_infra_procs`로 관리; 추가 수동 기동 금지 |

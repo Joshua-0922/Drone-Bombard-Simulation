@@ -1,14 +1,30 @@
 ---
 date: 2026-08-23
-updated: 2026-09-07
+updated: 2026-09-25
 tags: [research, architecture, ccip, residual, paper, fresh-start, supervised-residual]
 status: active
 type: research
 ---
 
-# 드론 정밀 투하 연구 — 최종 아키텍처 v5
+# 드론 정밀 투하 연구 — 최종 아키텍처 v6
 
 *2026-08-23 작성 · 08-27 v3(코드 대조 전면 개정) · 08-27 v4(주장 확정 + 실험/ablation/프로세스 확정) · **09-07 v5(측정이 v4 설계를 세 군데 뒤집음)** · 대상: **KCI 학술지 또는 워크숍**, 시뮬레이션 전용*
+
+> ## ⭐ v6 — 현행 요약 (2026-09-25) — 여기만 읽어도 된다
+>
+> **v5는 "측정이 설계를 어디서 뒤집었나"였다. v6는 "무엇으로 확정됐고 무엇을 버렸나"다.** 아래 표 밖의 본문(§1~§11)은 v4·v5 당시의 설계 기록이며, 충돌하면 이 표가 우선한다.
+>
+> | 항목 | 확정 | 근거 |
+> |---|---|---|
+> | **논문 프레임** | 외란(바람) 속 투하: 비행은 강화학습(L0), 조준 보정은 **착탄점 공간의 지도 잔차**. 이득은 외란 크기·상관 시간에 비례하고 그 밖에서는 물러선다 | [[research/paper_outline_v6]] |
+> | **본 방법 (단일)** | **L0 + GRU-S + EMA α=0.3**: 관측 26 → GRU 64 → 드리프트 2, MSE, 정상 바람 데이터 3,411 ep, 주입 시 EMA | [[research/l1_sl_pipeline]] · [[experiments/exp_034_learned_temporal_filter]] |
+> | **비교 팔** | T0 정지 투하 · T2 규칙 릴리즈(투하 고도 튜닝) · L0 · 본 방법 · 오라클(참 바람). 실패한 학습 팔은 비교에서 제외 | [[research/final_tables_v6]] |
+> | **주 결과** | 정상 CEP50 0.204 / CEP90 0.403 / succ@0.5 90.8% (L0 0.305 / 0.596 / 78.8, 오라클 0.188). 현실 돌풍 A/B −33% / −28%. DR 0 → 2.5: +8.8% → −39.4% | Table 1~5 |
+> | **바람 모델** | 정상 = 비행마다 일정한 평균풍(학습·주 표). 현실 = 평균풍 + OU 돌풍(Dryden 종방향, 20~30%, τ 10·3 s). 돌풍만의 τ 사다리는 스트레스 시험 | [[research/code_map]] §1 · Rule 46 |
+> | **버린 것** | 잔차 RL(Rule 44) · OU 데이터 학습(Rule 45) · 실현 라벨 · 분산 헤드/수축 · 시간 일관성 손실 · 게이트 손실 (전부 동률 또는 열세, 단일 방법 원칙) | [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]]~[[experiments/exp_040_consistency_final]] |
+> | **EMA α** | 0.3 = 민감도 스윕 평탄 구간 [0.1, 0.4]의 최단 지연. 무필터는 CEP50 +17%, CEP90 +92% | [[experiments/exp_041_ema_alpha_sweep]] |
+> | **Ablation** | 본 방법의 부품만: 잔차 전체 · 학습 필터(vs 수제 특징) · EMA · 정답 수 | 개요 v6 §5.4 |
+> | **다음** | 비전 절(YOLO 마커 보정, 픽셀 양자화 팔) → 하드웨어 플랫폼 결정 → 본문 집필 → sim2real(시뮬레이션 모델 그대로 onboard, T0/T2/L0/본 방법 실기 비교) | [[research/sim2real_gap]] |
 
 > ## ⭐ v4에서 확정된 것 — 여기부터 읽을 것
 >
@@ -50,7 +66,7 @@ type: research
 > **전제 1개가 거짓**, **코드 버그 4개**, **물리적으로 성립하지 않는 DR 축 3개**,
 > **이미 측정된 결과와 충돌하는 설계 4개**가 발견되어 전면 개정.
 > 검증 기록: [[research/ccip_vz_omission]] · [[errors/err_20260823_ccip_vz_omission]]
-> 상위 계획: [[research/paper_research_plan]] · 규칙: [[research/rl_rules]]
+> 상위 계획: [[research/legacy/paper_research_plan]] · 규칙: [[research/rl_rules]]
 
 ---
 
@@ -77,7 +93,7 @@ type: research
 > v20은 DR을 켰고(handoff + dyn_dr) **실패**했다(exp_024). 원인은 DR 부족이 아니라
 > ① 관측이 world-frame이라 방위각이 "강건성"이 아니라 **새로운 과제**였던 것(Rule 27)
 > ② 틀린 prior의 warm-start(Rule 29). **①은 fresh start만으로 풀리지 않는다** —
-> §5 관측 프레임 변경이 필수. → [[experiments/exp_024_v20_warmstart_failure]]
+> §5 관측 프레임 변경이 필수. → [[experiments/legacy/exp_024_v20_warmstart_failure]]
 
 ---
 
@@ -195,8 +211,8 @@ $$t = \frac{v_z + \sqrt{v_z^2 + 2gH}}{g}, \qquad v_z = \text{ENU UP-positive}$$
 $v_z=-3$ m/s(하강), $H=8$ m, 수평 6 m/s → **1.62 m**, 방향은 **overshoot**
 (하강 중이면 낙하시간이 짧아지므로 구 공식이 착탄점을 실제보다 멀리 예측).
 
-> 이미 알려진 미이행 후속작업이었음 — [[research/ccip_release_decoupling]] §4,
-> [[experiments/exp_019_physical_payload]] 후속 #3. 상세: [[research/ccip_vz_omission]]
+> 이미 알려진 미이행 후속작업이었음 — [[research/legacy/ccip_release_decoupling]] §4,
+> [[experiments/legacy/exp_019_physical_payload]] 후속 #3. 상세: [[research/ccip_vz_omission]]
 
 **논문 영향 (반드시 의도적으로 선택):**
 - 공식을 고쳤으므로 잔차가 배울 오차는 p50 **0.24 m**로 축소 → 기여가 얇아짐
@@ -1372,10 +1388,10 @@ VI.  Limitations & Conclusion
 
 - [[research/ccip_vz_omission]] — B1 상세 분석
 - [[errors/err_20260823_ccip_vz_omission]] — 수정 기록
-- [[research/ccip_release_decoupling]] — $v_z$ 후속작업의 원 출처
-- [[experiments/exp_019_physical_payload]] — 물리 페이로드 도입, 후속 #3
-- [[experiments/exp_023_table1_baselines]] — T0~T3 실측
-- [[experiments/exp_024_v20_warmstart_failure]] — 방위각 실패, Rule 29
+- [[research/legacy/ccip_release_decoupling]] — $v_z$ 후속작업의 원 출처
+- [[experiments/legacy/exp_019_physical_payload]] — 물리 페이로드 도입, 후속 #3
+- [[experiments/legacy/exp_023_table1_baselines]] — T0~T3 실측
+- [[experiments/legacy/exp_024_v20_warmstart_failure]] — 방위각 실패, Rule 29
 - [[research/related_work_survey]] — ⭐ **v4 주장 확정의 근거** (Scaramuzza 2026, AeroThrow RA-L 2025)
 - [[experiments/exp_025_dr_scale_sweep_gate]] — DR_SCALE 스윕 게이트 (표는 exp_026이 대체)
 - [[experiments/exp_026_release_rate_100hz]] — ⭐ 판정 100 Hz + 반경 0.5 m + 스윕 재측정
@@ -1393,5 +1409,5 @@ VI.  Limitations & Conclusion
 - [[research/paper_metrics]] — ⭐ 헤드라인 지표 확정 (§7.2의 근거)
 - [[research/training_seed_protocol]] — 학습 seed vs 평가 seed의 두 층위
 - [[research/rl_rules]] — Rule 16~40
-- [[research/paper_research_plan]] — 상위 연구 계획
+- [[research/legacy/paper_research_plan]] — 상위 연구 계획
 - [[00_index]]

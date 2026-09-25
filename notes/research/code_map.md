@@ -8,7 +8,7 @@ type: reference
 # 코드 지도 — 바람 모델 · 강화학습(비행) · 지도학습(잔차) · 평가가 어느 파일에 있나
 
 > 파이프라인 설명은 [[research/l1_sl_pipeline]], 표·그림은 [[research/final_tables_v6]], 개요는 [[research/paper_outline_v6]].
-> 이 문서는 "그 코드가 어디 있나"만 답한다. 줄 번호는 2026-09-25 기준.
+> 이 문서는 "그 코드가 어디 있나"만 답한다. 줄 번호는 2026-09-25 기준. 파일 단위 역할은 [[research/isaac_lab_architecture]], 실행 명령은 [[sessions/commands]].
 
 ## τ(타우)가 무엇인가
 
@@ -44,19 +44,19 @@ type: reference
 |---|---|
 | ① 데이터 수집 | `play.py --dump_sl` (`_sl_row`/`_sl_save`, L510 부근): 동결 L0 비행, 스텝마다 관측 26 + 정답 드리프트 2 + 원 상태 |
 | ① 정답 정의 | `drone_bombard_env.py` `oracle_impact_residual(wind_only=True)` L1242 → `math_utils.integrate_payload_impact` L167 (낙하 ODE 적분) |
-| ③ 학습 | `isaac_lab/_fit_sl_seq.py`: `Filter`(GRU 26→64→2) L160, `loss_fn`(MSE; `--nll`면 가우시안 NLL) L176, `realised_drift`(`--label realised`) L68, `Exported`(GRUCell 한 스텝) L245. **본 방법 명령:** `_fit_sl_seq.py v2_s1a.npz v2_s1b.npz --export res_gru_S.pt` (정상 데이터, MSE, 분산 없음) |
+| ③ 학습 | `isaac_lab/_fit_sl_seq.py`: `Filter`(GRU 26→64→2), `loss_fn`(MSE), `Exported`(GRUCell 한 스텝). **본 방법 명령:** `_fit_sl_seq.py v2_s1a.npz v2_s1b.npz --export res_gru_S.pt` (정상 데이터, MSE, 150 epoch). 같은 파일의 `--label realised`·`--nll --shrink`는 논문 미포함 변형(exp_035·036) |
 | ③ (구 방법, ablation) | `_fit_sl_residual.py`: 수제 누적 특징 + MLP 38→128→128→2 |
-| ⑤ 주입 | `play.py` `_SLResidual` L431 (recurrent 모듈이면 env별 hidden 유지, EMA `--sl_ema 0.3`) → 행동 채널 5:7 → `task_env._ccip` L695 (예측 착탄점 = 공식 + 2 m × 채널) |
-| 회귀기 파일 | 컨테이너 `/tmp/sl/res_gru_S.pt`(본 방법) · `res_gru_{R,I,U,Urel2,Urel4}.pt`(변형) · `res_gi.pt`(수제 MLP) |
+| ⑤ 주입 | `play.py` `_SLResidual` L431 (recurrent 모듈이면 env별 hidden 유지) → `_ResidualEMA` L485 (`--sl_ema 0.3`, α 근거 exp_041) → 행동 채널 5:7 → `task_env._ccip` L695 (예측 착탄점 = 공식 + 2 m × 채널) |
+| 회귀기 파일 | 컨테이너 `/tmp/sl/res_gru_S.pt`(**본 방법**) · `res_gi.pt`(수제 MLP, ablation) · `res_gru_{R,I,U,Urel2,Urel4,C}.pt`(논문 미포함 변형) |
 
 ## 4. 평가·표·그림
 
 | 무엇 | 위치 |
 |---|---|
-| 팔 평가 (paired, 3 seed) | `play.py --paired_eval --episodes 200 --num_envs 200 --seed {3000,4000,5000}`; 스크립트 `_gru_eval.sh`(τ 사다리), `_gust_eval.sh`(현실 A·B), `_grus_final.sh`(DR 스윕·미지 사거리), `_gi_headline.sh`·`_t_reseed.sh`(기존 팔) |
+| 팔 평가 (paired, 3 seed) | `play.py --paired_eval --episodes 200 --num_envs 200 --seed {3000,4000,5000}`; 스크립트 `_gru_eval.sh`(τ 사다리), `_gust_eval.sh`(현실 A·B), `_grus_final.sh`(DR 스윕·미지 사거리), `_ema_sweep.sh`(EMA α 민감도), `_gi_headline.sh`·`_t_reseed.sh`(기존 팔) |
 | 규칙 팔 T0/T2 | `baseline_drop.py` (`--arm hover/argmin`, 투하 고도 3.5 m) |
 | 표 | `_agg_table1.py "라벨=글롭"…` (시드셋 assert) → [[research/final_tables_v6]] |
 | 그림 | `_fig_final.py --out /tmp/figs` → `notes/figures/fig{1,2,3}.png` |
-| 결과 JSON | 컨테이너 `/tmp/sl_GI`(정상), `/tmp/gru`(τ 사다리), `/tmp/gust`(현실 바람), `/tmp/dr_axis`(DR 스윕), `/tmp/sl_R`(미지 사거리), `/tmp/ou`(L0·오라클 τ 사다리) |
+| 결과 JSON | 컨테이너 `/tmp/sl_GI`(정상), `/tmp/gru`(τ 사다리), `/tmp/gust`(현실 바람), `/tmp/dr_axis`(DR 스윕), `/tmp/sl_R`(미지 사거리), `/tmp/ou`(L0·오라클 τ 사다리), `/tmp/ema`(α 스윕) |
 
 > 실제 실행 사본은 컨테이너 `isaac-verify:/tmp/rebuild`이며, repo `isaac_lab/`을 수정하면 `docker cp isaac_lab/. isaac-verify:/tmp/rebuild/`로 동기화해야 한다.

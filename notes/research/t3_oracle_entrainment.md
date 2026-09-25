@@ -20,7 +20,7 @@ type: research
 > 그만큼 상풍으로 날아가 투하했고, 그 결과 **상한선이 무보정 베이스라인 아래로 내려갔다.**
 
 관련: [[research/research_architecture]] §2 B3 · [[errors/err_20260827_payload_drag_body_frame]] ·
-[[research/ccip_vz_omission]] · [[experiments/exp_023_table1_baselines]] ·
+[[research/ccip_vz_omission]] · [[experiments/legacy/exp_023_table1_baselines]] ·
 [[research/rl_rules]] (Rule 31)
 
 ---

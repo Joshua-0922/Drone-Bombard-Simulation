@@ -37,5 +37,5 @@ docker exec -u root --env-file /opt/drone-bombard/.wandb.env -e PYTHONUNBUFFERED
 
 ## 관련
 
-- [[experiments/exp_020_o5jn9xzk_payload_training]]
+- [[experiments/legacy/exp_020_o5jn9xzk_payload_training]]
 - [[research/rl_rules]] — isaaclab.sh exit-0 삼킴 감시 규칙

@@ -68,6 +68,6 @@ world pos + local target) — 동일 수정.
 
 ## 관련
 
-- [[experiments/exp_013_wcjklw7a_isaac_ppo_first_training]] — 이 버그를 발견한 학습 run
-- [[research/isaac_lab_wandb_guide]] §3 — rew_vision 해석
+- [[experiments/legacy/exp_013_wcjklw7a_isaac_ppo_first_training]] — 이 버그를 발견한 학습 run
+- [[research/legacy/isaac_lab_wandb_guide]] §3 — rew_vision 해석
 - [[research/rl_rules]] Rule 16 — 이식 시 parity 검증 (이 버그는 그 연장: **벡터화 시 프레임 계약도 검증 대상**)

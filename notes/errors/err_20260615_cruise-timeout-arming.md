@@ -7,8 +7,8 @@ type: error
 
 # Err — CRUISE 타임아웃 (Teleport 후 PX4 Arm 거부)
 
-> **발견/수정 run:** [[experiments/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]]
-> **근본 원인 분석:** [[research/cruise_timeout_arming]]
+> **발견/수정 run:** [[experiments/legacy/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]]
+> **근본 원인 분석:** [[research/legacy/cruise_timeout_arming]]
 
 ---
 
@@ -72,6 +72,6 @@ bridge가 `/fmu/out/vehicle_status` 구독(`arming_state` 추적).
 
 ## 관련 노트
 
-- [[research/cruise_timeout_arming]]
-- [[experiments/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]]
+- [[research/legacy/cruise_timeout_arming]]
+- [[experiments/legacy/exp_005_rl_yolo_v12_arm_fix_arming-throughput-fix]]
 - [[research/rl_rules]] — Rule 8

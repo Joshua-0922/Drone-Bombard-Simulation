@@ -7,7 +7,7 @@ type: research
 
 # 물리 페이로드 부착/분리 — kinematic weld 패턴
 
-> **출처 실험:** [[experiments/exp_019_physical_payload]] (2026-07-21, 검증 4/4 PASS)
+> **출처 실험:** [[experiments/legacy/exp_019_physical_payload]] (2026-07-21, 검증 4/4 PASS)
 
 ## 문제
 
@@ -51,7 +51,7 @@ hover-drop parity(exp_019)에 이어 **학습 스케일 확증**: B0 warm-start 
 `physical_payload=True`가 유일한 델타인 400-iter 학습 → det 200-ep **success/release
 100.00%, drop err 0.169 m** — release_rate 첫 롤아웃부터 100% 고정(재학습 과도기 없음).
 **kinematic weld는 학습에도 무비용**(설계 예측대로 드론 동역학 무접촉). 처리량 ~3.1 s/iter
-(2048 envs, 100 Hz follow-write 포함). → [[experiments/exp_020_o5jn9xzk_payload_training]]
+(2048 envs, 100 Hz follow-write 포함). → [[experiments/legacy/exp_020_o5jn9xzk_payload_training]]
 
 ## 적용 규칙
 

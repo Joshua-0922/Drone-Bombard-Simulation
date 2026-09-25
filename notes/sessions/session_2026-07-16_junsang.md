@@ -22,7 +22,7 @@ status: complete
 ## 이 세션 산출물
 
 - **코드** (`origin/Issac_JS`): v14/v15/v16 env·cfg·train 플래그, `--wind-test`/`--drop-test` 검증도구. 태그 `week1-v15-analytic`.
-- **실험 노트**: [[experiments/exp_009_v14_ccip_residual_junsang]] · [[experiments/exp_010_v15_airframe_wind_junsang]] · [[experiments/exp_011_v16_physical_drop_junsang]]
+- **실험 노트**: [[experiments/legacy/exp_009_v14_ccip_residual_junsang]] · [[experiments/legacy/exp_010_v15_airframe_wind_junsang]] · [[experiments/legacy/exp_011_v16_physical_drop_junsang]]
 - **규칙**: [[research/rl_rules]] Rule 11 (residual 포화).
 
 ## 다음 세션 시작점
@@ -35,4 +35,4 @@ status: complete
 
 ## 관련 노트
 
-- [[daily/daily_2026-07-16_junsang]] · [[research/isaac_expansion_roadmap_junsang]] · [[experiments/training_history]] · [[00_index]]
+- [[daily/daily_2026-07-16_junsang]] · [[research/legacy/isaac_expansion_roadmap_junsang]] · [[experiments/training_history]] · [[00_index]]

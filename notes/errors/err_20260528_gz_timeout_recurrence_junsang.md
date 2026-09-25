@@ -99,9 +99,9 @@ drop 없이 fast-path reset이 N회(default 100) 연속되면 **강제 full rest
 
 ## 관련 노트
 
-- [[research/sac_bounded_action_target_entropy_junsang]] — 같은 라운드들에서 동시 발생한 SAC 발산 (#019)
+- [[research/legacy/sac_bounded_action_target_entropy_junsang]] — 같은 라운드들에서 동시 발생한 SAC 발산 (#019)
 - [[errors/err_20260520_spin_thread_recursive_reset]] — 같은 reset/infra 계열 에러
 - [[daily/daily_2026-06-03_junsang]] — #021 처방 결정 당일
 - [[daily/daily_2026-06-05_junsang]] — Phase 1 마감 시 처방 검증
-- [[00_index_junsang]]
+- [[research/legacy/00_index_junsang]]
 - local: `issues/issue_021_gz_timeout_recurrence`

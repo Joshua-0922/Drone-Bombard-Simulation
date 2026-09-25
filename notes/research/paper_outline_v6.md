@@ -52,7 +52,7 @@ type: research
 | 바람 하 드론 제어 | 바람 인지 잔차 RL 제어 | **제어 공간**에서 잔차 | 우리는 **착탄점 공간**(지도 가능·진단 가능) |
 | 잔차 물리 학습 | TossingBot(속도 파라미터 잔차) | 결과로부터 학습 | 주입 지점이 다름(착탄점), 이동 중 투하 |
 
-→ [[research/paper_research_plan]] · 검색 기록 [[daily/daily_2026-09-24]]
+→ [[research/legacy/paper_research_plan]] · 검색 기록 [[daily/daily_2026-09-24]]
 
 ## 3. 문제 설정 — 무엇을 어떻게 시뮬레이션했나
 

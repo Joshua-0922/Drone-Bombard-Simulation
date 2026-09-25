@@ -8,7 +8,7 @@ type: errors
 # 인시던트 — armdiag dry-run이 v13 30K 체크포인트를 파괴 (YAML 중복 키 + fresh-start 삭제)
 
 > **영향:** `rl_yolo_v13_terminal_reward`(46y4xtiw)의 ~30K 체크포인트 + 리플레이 **영구 소실**. 30K 재개 불가 → fresh 재시작(iyhfy5ps)으로 복구.
-> **관련:** [[experiments/exp_006_xgzum51v_armdiag_dryrun]] / [[research/cruise_timeout_arming]]
+> **관련:** [[experiments/legacy/exp_006_xgzum51v_armdiag_dryrun]] / [[research/legacy/cruise_timeout_arming]]
 
 ---
 

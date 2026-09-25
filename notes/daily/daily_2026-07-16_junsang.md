@@ -65,5 +65,5 @@ status: complete
 
 ## 관련 노트
 
-- [[experiments/exp_009_v14_ccip_residual_junsang]] · [[experiments/exp_010_v15_airframe_wind_junsang]] · [[experiments/exp_011_v16_physical_drop_junsang]]
-- [[research/isaac_expansion_roadmap_junsang]] · [[research/rl_rules]] · [[daily/daily_2026-07-15_junsang]] · [[00_index]]
+- [[experiments/legacy/exp_009_v14_ccip_residual_junsang]] · [[experiments/legacy/exp_010_v15_airframe_wind_junsang]] · [[experiments/legacy/exp_011_v16_physical_drop_junsang]]
+- [[research/legacy/isaac_expansion_roadmap_junsang]] · [[research/rl_rules]] · [[daily/daily_2026-07-15_junsang]] · [[00_index]]

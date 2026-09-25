@@ -32,7 +32,7 @@ type: daily
 - **`--target_kf`**: Singer(Gauss-Markov 가속) Kalman 필터 트래커 — YOLO 검출 픽셀을
   지면에 역투영해 필터링, 정책 관측에 추정 타겟 위치/속도/가속 추가 (**obs 14 → 21**)
 - 검증: 단위테스트 57/57 PASS + isaac-verify 스모크 4종 PASS (KF 추적오차 0.09–0.12 m)
-- 상세 설계/파라미터: [[research/moving_target_models]]
+- 상세 설계/파라미터: [[research/legacy/moving_target_models]]
 
 ---
 
@@ -94,5 +94,5 @@ type: daily
 
 ## 4. 관련 노트
 - [[daily/daily_2026-07-28]] — 상세 작업 로그
-- [[research/moving_target_models]] — 이동타겟/KF 설계·파라미터·주의사항
+- [[research/legacy/moving_target_models]] — 이동타겟/KF 설계·파라미터·주의사항
 - [[research/rl_rules]] / [[experiments/training_history]]
