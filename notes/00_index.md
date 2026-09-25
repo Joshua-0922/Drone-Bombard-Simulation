@@ -14,11 +14,11 @@ type: index
 
 ## 현재 상태 (2026-09-25)
 
-### ⭐ 오늘의 결론 — 방법 수준 기여 = "시간 일관성 손실이 사후 EMA를 대체한다"; 게이트 자체를 손실에 넣는 것은 무익
+### ⭐ 오늘의 결론 — 게이트 인지 학습은 기존 방법과 동률. **본 방법 = GRU-S + EMA 유지**, 평활 항은 ablation
 
 - exp_038: 평활 항 λ ≥ 20이면 EMA 없이 현재 방법과 동률(정상 0.207, 현실 A 0.204, B 0.215). 손으로 고른 α 제거.
 - exp_039: soft 첫 교차 게이트 손실은 예측을 왜곡해 악화(릴리즈 R² −0.148), 게이트 가중 MSE는 유의차 없음 → 기록 위에서는 정확+매끄러움이 게이트 최적해.
-- **본 방법 최종 구성**: GRU(26→64→2) + MSE + λ=20 시간 일관성, 정상 바람 데이터, EMA 없음. 다음 = 표·그림 재생성 → sim2real.
+- exp_040: λ=20으로 1000 epoch 재학습한 GRU-C를 논문 표 12조건 전부에서 비교 → 12/12 동률(paired CI 0 포함). 극적 개선 없음 → 사전 기준대로 **GRU-S + EMA 유지**, 표·그림 변경 없음. 평활 항(Whittaker/EMA 등가)은 §5 ablation 한 문장. 다음 = sim2real.
 
 ---
 
@@ -524,6 +524,7 @@ type: index
 - [[research/curriculum_phase_convergence]] — **(07-12 baseline §7 + 07-13 이어학습 §8)** warm-start 무손실 실증, reward 우상향 ≠ 임무 능력, P2/P3 릴리스 명중은 500 iter로 미형성 — **+2000 iter 연장도 0.8m 미돌파(P2 정체, P3 회귀)**. 해법=exp_018 종단구조 (Rule 20e/f).
 
 ### 실험 (experiments/)
+- [[experiments/exp_040_consistency_final]] — 🟰 **(09-25) GRU-C 최종 재학습, 12조건 전부 동률 → 본 방법 = GRU-S + EMA 유지, 평활 항은 ablation**
 - [[experiments/exp_039_gate_aware_stage23]] — ⛔ **(09-25) 게이트를 손실에 결합해도 평활 항 이상 없음(3단계는 악화) → 본 방법 최종 = GRU + 시간 일관성 손실, EMA 없음**
 - [[experiments/exp_038_gate_aware_stage1]] — ✅ **(09-25) 게이트 인지 1단계: 평활 항이 EMA를 대체 — EMA 없이 현재 방법 동률(λ ≥ 20)**
 - [[experiments/exp_037_relative_shrink_realistic_wind]] — ⭐⭐ **(09-24) 현실 바람(평균풍+20~30% 돌풍, τ 10·3)에서 모든 학습 팔이 이득 유지 — GRU-S −33%/−28%. τ 사다리 손해는 스트레스 시험. 상대 수축 불채택. 본 방법 = GRU-S**
