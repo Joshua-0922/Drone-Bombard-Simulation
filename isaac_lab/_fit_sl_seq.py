@@ -38,17 +38,6 @@ p.add_argument("--label", default="instant", choices=["instant", "realised"],
                     "the quantity the landing depends on, and what a real drop would reveal. "
                     "Identical under constant wind; differs by the wind's change during the fall.")
 p.add_argument("--report_every", type=int, default=100)
-p.add_argument("--gate", type=float, default=0.0,
-               help="Gate-aware stage 3: add GAMMA * the landing error the release gate would produce. The gate "
-                    "fires where the CORRECTED prediction (nominal error e_t + d_t) is closest to the target; that "
-                    "instant is picked with a softmin of temperature --gate_beta over the detected+carried frames of "
-                    "each episode, and the loss is the REAL landing error at that instant |e_t + drift_t|^2. "
-                    "Gradient reaches the residual through where the gate fires, not through the label.")
-p.add_argument("--gate_beta", type=float, default=8.0, help="softmin sharpness, 1/m")
-p.add_argument("--gate_weight", type=float, default=0.0,
-               help="Gate-aware stage 2 (continuous): add W * softmin-weighted MSE where the weights come from the "
-                    "TRUE corrected trajectory |e_t + drift_t| (detached) -- accuracy is emphasised on the frames "
-                    "where the ideal gate would fire, without differentiating through the gate.")
 p.add_argument("--smooth", type=float, default=0.0,
                help="Gate-aware stage 1: add LAMBDA * mean ||d_t - d_{t-1}||^2 over consecutive carried frames. "
                     "The first-crossing gate samples the extreme of step-to-step jitter (Rule 38); training the "
@@ -134,8 +123,6 @@ def episodes(f):
             out.append((obs[s:e, n].astype(np.float32), drift[s:e, n].astype(np.float32), m))
     return out
 
-I_CCIP, I_DET = slice(2, 4), 25   # obs layout: ccip_err x,y (/10, zero before detection), detected flag
-
 
 train, test, tag = [], [], []
 for f in a.npz:
@@ -161,21 +148,17 @@ Xtr = np.concatenate([e[0][e[2]] for e in train])
 mu, sd = Xtr.mean(0), Xtr.std(0) + 1e-6
 
 
-def batchify(eps, extra=False):
+def batchify(eps):
     L = max(len(e[0]) for e in eps)
     X = np.zeros((len(eps), L, eps[0][0].shape[-1]), np.float32)
     Y = np.zeros((len(eps), L, 2), np.float32)
     M = np.zeros((len(eps), L), bool)
-    E = np.zeros((len(eps), L, 2), np.float32)
-    G = np.zeros((len(eps), L), bool)
     for i, (o, y, m) in enumerate(eps):
         X[i, :len(o)] = (o - mu) / sd
         Y[i, :len(o)] = y
         M[i, :len(o)] = m
-        E[i, :len(o)] = o[:, I_CCIP] * 10.0                # nominal impact - target, metres
-        G[i, :len(o)] = m & (o[:, I_DET] > 0.5)           # frames the gate can act on
-    t = lambda z: torch.as_tensor(z, device=dev)
-    return (t(X), t(Y), t(M), t(E), t(G)) if extra else (t(X), t(Y), t(M))
+    return (torch.as_tensor(X, device=dev), torch.as_tensor(Y, device=dev),
+            torch.as_tensor(M, device=dev))
 
 
 class Filter(nn.Module):
@@ -194,19 +177,7 @@ def split(out):
     return out[..., :2], out[..., 2:].clamp(-6.0, 4.0)
 
 
-def gate_loss(pred, Y, E, G):
-    """Soft first-crossing gate. The corrected prediction c_t = e_t + pred_t; the gate fires where
-    |c_t| is minimal over eligible frames (softmin, beta). Landing error if released at t is
-    |e_t + drift_t| (nominal error + realised drift). Expected landing error under the soft gate."""
-    c = torch.linalg.norm(E + pred, dim=-1)                                 # (B, L)
-    logits = torch.where(G, -a.gate_beta * c, torch.full_like(c, -1e9))
-    w = torch.softmax(logits, dim=1)
-    land = ((E + Y) ** 2).sum(-1)                                           # real landing error^2 per frame
-    ok = G.any(dim=1)
-    return ((w * land).sum(1)[ok]).mean()
-
-
-def loss_fn(out, Y, M, E=None, G=None):
+def loss_fn(out, Y, M):
     if a.nll:
         mu_, lv = split(out)
         err = ((Y - mu_) ** 2 / lv.exp() + lv).sum(-1)
@@ -219,14 +190,6 @@ def loss_fn(out, Y, M, E=None, G=None):
         pm = M[:, 1:] & M[:, :-1]                       # consecutive carried frames of one episode
         jit = ((pred[:, 1:] - pred[:, :-1]) ** 2).sum(-1)
         loss = loss + a.smooth * (jit * pm).sum() / pm.sum().clamp(min=1)
-    if a.gate > 0.0:
-        loss = loss + a.gate * gate_loss(pred, Y, E, G)
-    if a.gate_weight > 0.0:
-        with torch.no_grad():
-            c = torch.linalg.norm(E + Y, dim=-1)
-            w = torch.softmax(torch.where(G, -a.gate_beta * c, torch.full_like(c, -1e9)), dim=1)
-            ok = G.any(dim=1)
-        loss = loss + a.gate_weight * ((w * err).sum(1)[ok]).mean()
     return loss
 
 
@@ -236,7 +199,7 @@ def r2(pred, y):
     return 1 - ((pred - y) ** 2).sum() / ((y - y.mean(0)) ** 2).sum()
 
 
-Xte, Yte, Mte, Ete, Gte = batchify(test, extra=True)
+Xte, Yte, Mte = batchify(test)
 LAST = torch.zeros_like(Mte)
 for i, (_, _, m) in enumerate(test):
     LAST[i, np.flatnonzero(m)[-10:]] = True
@@ -257,11 +220,6 @@ def report(ep):
         line += f" | R2 {name} {r2(pr, yy):.3f}"
     jit = np.abs(np.diff(P.cpu().numpy(), axis=1)).sum(-1)[Mte[:, 1:].cpu().numpy()].mean()
     line += f" | step change {jit:.3f} m/step"
-    with torch.no_grad():   # offline gate: landing error at the hard first-minimum of the corrected prediction
-        c = torch.linalg.norm(Ete + P, dim=-1).masked_fill(~Gte, 1e9)
-        tstar = c.argmin(dim=1); ok = Gte.any(dim=1)
-        land = torch.linalg.norm((Ete + Yte)[torch.arange(len(tstar)), tstar], dim=-1)[ok]
-        line += f" | offline-gate landing med {land.median().item():.3f} m"
     if TAGS is not None and len(set(tag)) > 1:
         for t in sorted(set(tag)):
             sel = torch.as_tensor(TAGS == t, device=dev).unsqueeze(-1) & Mte
@@ -278,9 +236,9 @@ for ep in range(a.epochs):
     order = np.random.permutation(len(train))
     tot, cnt = 0.0, 0
     for i in range(0, len(order), B):
-        X, Y, M, E, G = batchify([train[j] for j in order[i:i + B]], extra=True)
+        X, Y, M = batchify([train[j] for j in order[i:i + B]])
         opt.zero_grad()
-        loss = loss_fn(net(X), Y, M, E, G)
+        loss = loss_fn(net(X), Y, M)
         loss.backward()
         nn.utils.clip_grad_norm_(net.parameters(), 1.0)
         opt.step()
