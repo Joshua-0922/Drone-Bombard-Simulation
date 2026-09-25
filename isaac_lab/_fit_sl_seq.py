@@ -38,6 +38,10 @@ p.add_argument("--label", default="instant", choices=["instant", "realised"],
                     "the quantity the landing depends on, and what a real drop would reveal. "
                     "Identical under constant wind; differs by the wind's change during the fall.")
 p.add_argument("--report_every", type=int, default=100)
+p.add_argument("--smooth", type=float, default=0.0,
+               help="Gate-aware stage 1: add LAMBDA * mean ||d_t - d_{t-1}||^2 over consecutive carried frames. "
+                    "The first-crossing gate samples the extreme of step-to-step jitter (Rule 38); training the "
+                    "regressor to be smooth removes the post-hoc EMA and its hand-picked alpha.")
 p.add_argument("--nll", action="store_true",
                help="Uncertainty head: predict mean AND log-variance of the drift, trained with the "
                     "Gaussian negative log-likelihood. The export shrinks the correction by "
@@ -177,9 +181,16 @@ def loss_fn(out, Y, M):
     if a.nll:
         mu_, lv = split(out)
         err = ((Y - mu_) ** 2 / lv.exp() + lv).sum(-1)
+        pred = mu_
     else:
         err = ((out - Y) ** 2).sum(-1)
-    return (err * M).sum() / M.sum()
+        pred = out
+    loss = (err * M).sum() / M.sum()
+    if a.smooth > 0.0:
+        pm = M[:, 1:] & M[:, :-1]                       # consecutive carried frames of one episode
+        jit = ((pred[:, 1:] - pred[:, :-1]) ** 2).sum(-1)
+        loss = loss + a.smooth * (jit * pm).sum() / pm.sum().clamp(min=1)
+    return loss
 
 
 net = Filter(Xtr.shape[-1], a.hidden, 4 if a.nll else 2).to(dev)
