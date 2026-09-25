@@ -41,6 +41,7 @@ type: index
 | 코드 위치 (함수·줄) | [[research/code_map]] |
 | 파일별 역할·데이터 흐름 | [[research/isaac_lab_architecture]] |
 | 실행 명령 | [[sessions/commands]] |
+| **전체 노트 목차** | [[00_toc]] |
 | 규칙 (Rule 1~46) | [[research/rl_rules]] |
 | 실험 이력 허브 | [[experiments/training_history]] |
 | 보상·MDP | [[research/reward_design]] |
@@ -51,7 +52,8 @@ type: index
 
 ```
 notes/
-├── 00_index.md            이 문서
+├── 00_index.md            이 문서 (대시보드)
+├── 00_toc.md              전체 노트 목차 (python3 notes/_make_toc.py 로 재생성)
 ├── research/              연구 노트(현행)   ├── legacy/  Gazebo·이식·커리큘럼·팀원 트랙·구 계획서
 ├── experiments/           exp_025~ (논문 단계) ├── legacy/  exp_001~024
 ├── errors/                에러 해결 기록
@@ -93,7 +95,7 @@ notes/
 - [[research/sim2real_gap]] — 시뮬레이터에 없는 것(로터 유입류·모터 지연·게인 실측)과 실기 계획의 전제
 - [[research/physical_payload_attach]] — 물리 페이로드 kinematic weld 패턴 (Rule 24)
 - [[research/isaac_velocity_controller]] — 캐스케이드 속도 제어기, PX4 게인 매핑
-- [[research/interim_report_outline]] · [[research/interim_report_isaac_1page]] · [[research/interim_report_isaac_draft]] — 중간보고서(09-07, GRU-S 확정 이전 수치)
+- [[research/interim_report_isaac]] — 중간보고서 개요·초고·요약본 통합본 (09-07 수치, GRU-S 확정 이전)
 
 ### 실험 (experiments/) — 논문 단계
 - [[experiments/training_history]] — 전체 학습·평가 히스토리 허브
@@ -115,82 +117,8 @@ notes/
 - [[experiments/exp_026_release_rate_100hz]] — 릴리즈 판정 100 Hz + 성공 반경 0.5 m (T1≡T2)
 - [[experiments/exp_025_dr_scale_sweep_gate]] — DR 스윕 유효성 게이트(무학습): 오라클 갭 단조 증가
 
-### 에러 (errors/)
-- [[errors/err_20260830_aim_reward_residual_inclusive]] — task_env의 dense aim 보상이 잔차 포함 오차를 먹고 있다
-- [[errors/err_20260827_payload_drag_body_frame]] — err_20260827 — 페이로드 항력을 월드 프레임으로 계산해놓고 링크 프레임으로 전달
-- [[errors/err_20260827_free_exit_termination]] — err_20260827 — 무료 탈출구: 벌하지 않는 종료 조건 + 탐지 뒤에 갇힌 접근 보상
-- [[errors/err_20260823_ccip_vz_omission]] — err_20260823 — CCIP `ballistic_impact`가 수직속도를 누락
-- [[errors/err_20260803_payload_landing_latch]] — 물리 페이로드 착지 래치가 "정지한 페이로드"를 영원히 놓친다
-- [[errors/err_20260723_wandb_key_empty]] — err_20260723 — 컨테이너 baked-in WANDB_API_KEY 공백 → 학습 silent 실패
-- [[errors/err_20260703_vision_env_origin_frame]] — Isaac Lab 비전 완전 사멸 — env-origin 좌표 프레임 혼용
-- [[errors/err_20260617_dryrun_clobbered_v13_checkpoints]] — 인시던트 — armdiag dry-run이 v13 30K 체크포인트를 파괴 (YAML 중복 키 + fresh-start 삭제)
-- [[errors/err_20260615_cruise-timeout-arming]] — Err — CRUISE 타임아웃 (Teleport 후 PX4 Arm 거부)
-- [[errors/err_20260528_gz_timeout_recurrence_junsang]] — err 2026-05-28 — `gz model --list` TimeoutExpired (반복 인프라 크래시, #021)
-- [[errors/err_20260520_spin_thread_recursive_reset]] — Spin Thread Death → Recursive reset() Crash
-- [[errors/err_20260320_physics_explosion]] — Err — Gazebo 물리 폭발 (d_xy = 1.98×10¹¹ m)
-- [[errors/err_20260319_ode_aabb_crash]] — Err — ODE AABB 크래시 (드론 스폰 고도)
-
-### 연구 일지 (daily/)
-- [[daily/daily_2026-09-25]] — 연구 일지 — 2026-09-25
-- [[daily/daily_2026-09-24]] — 연구 일지 — 2026-09-24
-- [[daily/daily_2026-09-14]] — 연구 일지 — 2026-09-14
-- [[daily/daily_2026-09-13]] — 연구 일지 — 2026-09-13
-- [[daily/daily_2026-09-07]] — 연구 일지 — 2026-09-07
-- [[daily/daily_2026-09-02]] — 연구 일지 — 2026-09-02
-- [[daily/daily_2026-09-01]] — 2026-09-01 — 잔차를 지도학습으로 돌려서 CEP를 31% 줄였다 (PPO 없이)
-- [[daily/daily_2026-08-30]] — 연구 일지 — 2026-08-30
-- [[daily/daily_2026-08-29]] — 연구 일지 — 2026-08-29
-- [[daily/daily_2026-08-27]] — 연구 일지 — 2026-08-27
-- [[daily/daily_2026-08-23]] — 연구 일지 — 2026-08-23
-- [[daily/daily_2026-08-03]] — 연구 일지 — 2026-08-03
-- [[daily/daily_2026-08-01]] — 연구 일지 — 2026-08-01
-- [[daily/daily_2026-07-30]] — Daily — 2026-07-30
-- [[daily/daily_2026-07-28_team_briefing]] — 팀 브리핑 — isaac_jk 브랜치 현황 (2026-07-28)
-- [[daily/daily_2026-07-28]] — Daily 2026-07-28
-- [[daily/daily_2026-07-23]] — 연구 일지 — 2026-07-23
-- [[daily/daily_2026-07-16_junsang]] — 연구 일지 — 2026-07-16
-- [[daily/daily_2026-07-15_junsang]] — 연구 일지 — 2026-07-15
-- [[daily/daily_2026-07-13]] — 연구 일지 — 2026-07-13
-- [[daily/daily_2026-07-07]] — 연구 일지 — 2026-07-07
-- [[daily/daily_2026-07-06]] — Daily — 2026-07-06
-- [[daily/daily_2026-07-05_gazebo_v15_regression]] — 연구 일지 — 2026-07-05
-- [[daily/daily_2026-07-05]] — Daily 2026-07-05
-- [[daily/daily_2026-07-04]] — 연구 일지 — 2026-07-04
-- [[daily/daily_2026-07-03]] — 연구 일지 — 2026-07-03
-- [[daily/daily_2026-07-01]] — 연구 일지 — 2026-07-01
-- [[daily/daily_2026-06-23]] — 연구 일지 — 2026-06-23
-- [[daily/daily_2026-06-22]] — 연구 일지 — 2026-06-22
-- [[daily/daily_2026-06-20]] — 연구 일지 — 2026-06-20
-- [[daily/daily_2026-06-17]] — Daily 2026-06-17 — v13 처리량 병목 진단 & arm_bail 수정
-- [[daily/daily_2026-06-16]] — 연구 일지 — 2026-06-16
-- [[daily/daily_2026-06-14]] — 연구 일지 — 2026-06-14 (06-12 이후 종합 요약)
-- [[daily/daily_2026-06-12]] — 연구 일지 — 2026-06-12
-- [[daily/daily_2026-06-09]] — 연구 일지 — 2026-06-09
-- [[daily/daily_2026-06-05_junsang]] — 연구 일지 — 2026-06-05
-- [[daily/daily_2026-06-03_junsang]] — 연구 일지 — 2026-06-03
-- [[daily/daily_2026-05-31_junsang]] — 연구 일지 — 2026-05-31
-- [[daily/daily_2026-05-30_vision-refactor]] — 연구 일지 — 2026-05-30 (Vision Refactor / junsang 브랜치)
-- [[daily/daily_2026-05-30]] — 연구 일지 — 2026-05-30
-- [[daily/daily_2026-04-23]] — 연구 일지 — 2026-04-23
-- [[daily/daily_2026-04-17]] — 연구 일지 — 2026-04-17
-- [[daily/daily_2026-04-16]] — 연구 일지 — 2026-04-16
-- [[daily/daily_2026-04-14]] — 연구 일지 — 2026-04-14
-
-### 세션 (sessions/)
-- [[sessions/session_2026-09-24]] — 세션 — 2026-09-24 (UTC 04:50 ~ 23:30)
-- [[sessions/session_2026-09-14]] — 세션 — 2026-09-13 15:00 ~ 2026-09-14 04:00 (UTC)
-- [[sessions/session_2026-08-27]] — 세션 기록 — 2026-08-27
-- [[sessions/session_2026-07-16_junsang]] — 세션 로그 — 2026-07-16
-- [[sessions/session_2026-07-15_junsang]] — 세션 로그 — 2026-07-15
-- [[sessions/session_2026-07-06]] — Session — 2026-07-06 (exp_017 Stage A + exp_018 Stage B)
-- [[sessions/session_2026-07-05]] — 세션 2026-07-05 — plant 수정 실행 + inertia 대반전 + exp_014 A2/A0′
-- [[sessions/session_2026-04-16]] — 세션 일지 — 2026-04-16
-- [[sessions/session_2026-04-14]] — 세션 2026-04-14 — Obsidian 연구 비서 시스템 초기화
-- [[sessions/commands]] — 자주 쓰는 명령어 모음 (Isaac Lab, 2026-09 기준)
-
-### 환경 설정 (Environment/)
-- [[Environment/vm_access_guide_junsang]] — L4 VM 접속 가이드 (Isaac 학습용) — 팀원용
-- [[Environment/README]] — GCP VM 완전 복구 가이드 — Drone Bombard 환경
+### 에러 · 일지 · 세션 · 환경
+전체 목록은 목차 [[00_toc]]에 있다. 최근: [[daily/daily_2026-09-25]] · [[daily/daily_2026-09-24]] · [[sessions/session_2026-09-24]] · [[errors/err_20260827_free_exit_termination]]
 
 ---
 

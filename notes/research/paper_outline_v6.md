@@ -13,7 +13,7 @@ type: research
 > 바람이 변할 때는 변화가 느릴수록 이득이 커지며 너무 빠르면 스스로 보정을 줄여 기본 성능을 지킨다.
 
 이 문서는 팀원 누구나 읽을 수 있게 쓴 논문 뼈대다. 수치의 출처는 각 절 끝의 노트 링크에 있다.
-이전 개요: [[research/research_architecture]] (v5, 방법 상세) · [[research/interim_report_outline]] (중간보고서).
+이전 개요: [[research/research_architecture]] (v5, 방법 상세) · [[research/interim_report_isaac]] (중간보고서).
 
 ---
 

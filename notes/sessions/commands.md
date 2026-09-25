@@ -81,3 +81,11 @@ git add <바꾼 파일들>          # git add . 금지 (worktree 잔여 stale �
 git commit -m "<type>(<scope>): 요약" && git push origin main
 graphify update .              # 코드 수정 후 지식 그래프 갱신 (LLM 불필요)
 ```
+
+## 7. notes 목차 재생성
+
+노트를 추가·이동하면 [[00_toc]]을 다시 만든다. 스크립트는 `notes/_make_toc.py`.
+
+```bash
+python3 notes/_make_toc.py
+```

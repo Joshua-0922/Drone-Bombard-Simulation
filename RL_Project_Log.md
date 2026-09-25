@@ -6,6 +6,8 @@
 
 # 1. Current State
 
+**2026-09-25 (마감)** — 루트 `README.md`를 현행 연구 기준으로 재작성, 전체 노트 목차 `notes/00_toc.md`(191편, `notes/_make_toc.py`로 재생성) 신설, 중간보고서 세 판본을 `interim_report_isaac.md`로 통합. 일지 [[notes/daily/daily_2026-09-25]].
+
 **2026-09-25 (갱신) — 게이트 인지 학습 종료: exp_040 GRU-C(λ=20, 1000 epoch, EMA 없음) 12조건 × 3 seed 전부 동률(paired CI 0 포함) → 본 방법 = GRU-S + EMA 유지, 표·그림 변경 없음, 평활 항은 논문·코드에서 제외(롤백 완료). 개요 v6를 GRU-S 단일 방법으로 정리(§4.4 분산 수축 삭제). exp_041 EMA α 스윕(21 run): [0.1, 0.4] 평탄, 무필터만 유의하게 나쁨 → **α=0.3 데이터 근거로 확정**, 표·그림 변경 없음. notes 정리: 구식 노트 74편을 `research/legacy/`·`experiments/legacy/`로 이동, 현행 문서(00_index·l1_sl_pipeline·research_architecture v6·code_map·isaac_lab_architecture·commands·README·CLAUDE.md) 최신화. 다음: sim2real.**
 
 **2026-09-25 — 게이트 인지 학습 결론: 방법 수준 기여 = 시간 일관성 손실(사후 EMA 대체).** exp_038: 평활 항 λ ≥ 20이면 EMA 없이 현재 방법과 동률
@@ -328,7 +330,7 @@ wandb: `sl_gen_unseenR` / `sl_gen_policy_transfer` / `sl_gen_label_count` (job_t
 | 항목 | 내용 |
 |---|---|
 | 산출 | 구성안 + 초고(본문 4,669자) + 요약본(3,074자), 둘 다 **학술 논문 문체(v2)** |
-| 노트 | `notes/research/interim_report_outline.md` · `..._isaac_draft.md` · `..._isaac_1page.md` |
+| 노트 | `notes/research/interim_report_isaac.md` · `..._isaac_draft.md` · `..._isaac_1page.md` |
 | 구성 | 2.1 제안 방법 / 2.2 실험 설정(DR 포함) / 2.3 결과 / 2.4 분석·제거 실험 / 2.5 한계 |
 | 결정 1 | 절 순서 Intro → **Gazebo** → Rewards → Isaac → Vision. Gazebo가 "왜 Isaac Lab인가"의 근거라 앞에 둔다 |
 | 결정 2 | **학습 곡선이 있는 팔은 L0 하나뿐** — T0~T3는 스크립트, L1-SL은 PPO 미사용. 결과 절을 학습 진행/Table 1/일반화 3단으로 |
