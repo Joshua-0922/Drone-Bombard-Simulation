@@ -514,6 +514,7 @@ type: index
 - [[research/curriculum_phase_convergence]] — **(07-12 baseline §7 + 07-13 이어학습 §8)** warm-start 무손실 실증, reward 우상향 ≠ 임무 능력, P2/P3 릴리스 명중은 500 iter로 미형성 — **+2000 iter 연장도 0.8m 미돌파(P2 정체, P3 회귀)**. 해법=exp_018 종단구조 (Rule 20e/f).
 
 ### 실험 (experiments/)
+- [[experiments/exp_038_gate_aware_stage1]] — ✅ **(09-25) 게이트 인지 1단계: 평활 항이 EMA를 대체 — EMA 없이 현재 방법 동률(λ ≥ 20)**
 - [[experiments/exp_037_relative_shrink_realistic_wind]] — ⭐⭐ **(09-24) 현실 바람(평균풍+20~30% 돌풍, τ 10·3)에서 모든 학습 팔이 이득 유지 — GRU-S −33%/−28%. τ 사다리 손해는 스트레스 시험. 상대 수축 불채택. 본 방법 = GRU-S**
 - [[experiments/exp_036_uncertainty_head]] — ⭐ **(09-24) 평균+분산 헤드: GRU-R을 전 τ에서 이김, τ=10 −13.1%(오라클 −14.1%), 정상 0.210 유지, τ=1 +9.0%(gi 동률). τ ≤ 3 손해는 절반으로**
 - [[experiments/exp_035_realised_label]] — ✅⛔ **(09-24) 실현 라벨: 라벨 효과 분리 성공, τ=10 −11.0%(오라클 −14.1%), 정상 0.202 유지. τ ≤ 3은 여전히 손해 → 분산 헤드 필요**
@@ -568,6 +569,7 @@ type: index
 - [[errors/err_20260319_ode_aabb_crash]] — 드론 스폰 고도 ODE AABB 크래시
 
 ### 연구 일지 (daily/)
+- [[daily/daily_2026-09-25]] — 게이트 인지 학습 1단계(평활 항 = EMA 대체) 통과, 3단계 착수
 - [[daily/daily_2026-09-24]] — exp_035·036·037(실현 라벨·분산 헤드·현실 바람) → 본 방법 = GRU-S 확정, 논문 개요 v6, 최종 표·그림
 - [[daily/daily_2026-09-14]] — exp_032 사후 분석 · exp_033(std 고정) 음성 → Rule 44 확정 · main claim 결정 · L1-SL 파이프라인 노트 · exp_034 GRU 필터(수제 누적 대체 ✅, OU 라벨 병목 → Rule 45)
 - [[daily/daily_2026-09-13]] — L1-RL 사전점검(코드 감사, 수정 없음)
