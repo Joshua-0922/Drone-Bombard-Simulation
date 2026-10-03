@@ -22,7 +22,7 @@ type: research
 > | **주 결과** | 정상 CEP50 0.204 / CEP90 0.403 / succ@0.5 90.8% (L0 0.305 / 0.596 / 78.8, 오라클 0.188). 현실 돌풍 A/B −33% / −28%. DR 0 → 2.5: +8.8% → −39.4% | Table 1~5 |
 > | **바람 모델** | 정상 = 비행마다 일정한 평균풍(학습·주 표). 현실 = 평균풍 + OU 돌풍(Dryden 종방향, 20~30%, τ 10·3 s). 돌풍만의 τ 사다리는 스트레스 시험 | [[research/code_map]] §1 · Rule 46 |
 > | **버린 것** | 잔차 RL(Rule 44) · OU 데이터 학습(Rule 45) · 실현 라벨 · 분산 헤드/수축 · 시간 일관성 손실 · 게이트 손실 (전부 동률 또는 열세, 단일 방법 원칙) | [[experiments/exp_032_icpj8p4r_l1rl_zero_pilot]]~[[experiments/exp_040_consistency_final]] |
-> | **EMA α** | 0.3 = 민감도 스윕 평탄 구간 [0.1, 0.4]의 최단 지연. 무필터는 CEP50 +17%, CEP90 +92% | [[experiments/exp_041_ema_alpha_sweep]] |
+> | **EMA α** | 0.3 = 오프라인 기준(예측 스텝 변화 ≈ 정답 변화). 닫힌 루프 [0.1, 0.4]는 정상·현실 돌풍 3조건 모두 둔감. 무필터는 CEP50 +17%, CEP90 +92% | [[experiments/exp_041_ema_alpha_sweep]] |
 > | **Ablation** | 본 방법의 부품만: 잔차 전체 · 학습 필터(vs 수제 특징) · EMA · 정답 수 | 개요 v6 §5.4 |
 > | **다음** | 비전 절(YOLO 마커 보정, 픽셀 양자화 팔) → 하드웨어 플랫폼 결정 → 본문 집필 → sim2real(시뮬레이션 모델 그대로 onboard, T0/T2/L0/본 방법 실기 비교) | [[research/sim2real_gap]] |
 

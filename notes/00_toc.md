@@ -113,7 +113,7 @@ type: index
 | [[experiments/exp_038_gate_aware_stage1]] | exp_038 — 게이트 인지 학습 1단계: 평활 항이 EMA를 대체한다 (통과) | 2026-09-25 | done |
 | [[experiments/exp_039_gate_aware_stage23]] | exp_039 — 게이트 인지 학습 2·3단계: 게이트를 손실에 결합해도 평활 항 이상은 없다 | 2026-09-25 | done |
 | [[experiments/exp_040_consistency_final]] | exp_040 — 시간 일관성 GRU(GRU-C) 최종 재학습·전 조건 비교: 동률 → 본 방법은 GRU-S + EMA 유지 | 2026-09-25 | done |
-| [[experiments/exp_041_ema_alpha_sweep]] | exp_041 — EMA α 민감도: 0.1~0.4 평탄, 0.5부터 악화, 무필터는 유의하게 나쁨 → α = 0.3 확정 | 2026-09-25 | done |
+| [[experiments/exp_041_ema_alpha_sweep]] | exp_041 — EMA α 민감도: 정상·현실 돌풍 3조건 모두 [0.1, 0.4]에서 평탄, 무필터만 유의하게 나쁨 → α = 0.3 유지 | 2026-09-25 | done |
 | [[experiments/training_history]] | 전체 학습 히스토리 (RL_Project_Log.md에서 이전) | 2026-04-14 | active |
 
 ## experiments/legacy — exp_001~024 (37)
@@ -176,10 +176,11 @@ type: index
 | [[errors/err_20260320_physics_explosion]] | Err — Gazebo 물리 폭발 (d_xy = 1.98×10¹¹ m) | 2026-03-20 | resolved |
 | [[errors/err_20260319_ode_aabb_crash]] | Err — ODE AABB 크래시 (드론 스폰 고도) | 2026-03-19 | resolved |
 
-## daily — 연구 일지 (44)
+## daily — 연구 일지 (45)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
+| [[daily/daily_2026-10-03]] | 연구 일지 — 2026-10-03 | 2026-10-03 | complete |
 | [[daily/daily_2026-09-25]] | 연구 일지 — 2026-09-25 | 2026-09-25 | complete |
 | [[daily/daily_2026-09-24]] | 연구 일지 — 2026-09-24 | 2026-09-24 | complete |
 | [[daily/daily_2026-09-14]] | 연구 일지 — 2026-09-14 | 2026-09-14 | complete |
@@ -250,4 +251,4 @@ type: index
 
 ---
 
-총 192편.
+총 193편.

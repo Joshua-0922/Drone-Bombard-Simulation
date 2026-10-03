@@ -25,10 +25,10 @@ type: index
 | DR 0 → 2.5 — 본 방법 vs L0 | | +8.8% → −39.4% | |
 
 - 표·그림 완료: [[research/final_tables_v6]] · `notes/figures/fig{1,2,3}.png`
-- EMA α는 민감도 스윕으로 확정(평탄 [0.1, 0.4], 무필터 +17%/+92%): [[experiments/exp_041_ema_alpha_sweep]]
+- EMA α=0.3: 오프라인 기준(예측 스텝 변화 ≈ 정답 변화)으로 정하고, 닫힌 루프 [0.1, 0.4]는 정상·현실 돌풍 3조건 모두 둔감(무필터만 +17%/+92%): [[experiments/exp_041_ema_alpha_sweep]] §5
 - **다음:** 비전 절(YOLO 마커 보정·픽셀 양자화 팔) → 하드웨어 플랫폼 결정 → 본문 집필(개요 v6 §1~5) → sim2real(시뮬레이션 모델 그대로 onboard, T0/T2/L0/본 방법 실기 비교)
 
-최근 일지: [[daily/daily_2026-09-25]] · [[daily/daily_2026-09-24]] · 세션: [[sessions/session_2026-09-24]]
+최근 일지: [[daily/daily_2026-10-03]] · [[daily/daily_2026-09-25]] · [[daily/daily_2026-09-24]] · 세션: [[sessions/session_2026-09-24]]
 
 ---
 
@@ -99,7 +99,7 @@ notes/
 
 ### 실험 (experiments/) — 논문 단계
 - [[experiments/training_history]] — 전체 학습·평가 히스토리 허브
-- [[experiments/exp_041_ema_alpha_sweep]] — ✅ EMA α 민감도: [0.1, 0.4] 평탄, 무필터만 유의 악화 → **α=0.3 확정**
+- [[experiments/exp_041_ema_alpha_sweep]] — ✅ EMA α 민감도(정상 + 현실 돌풍 A·B): [0.1, 0.4] 평탄, 무필터만 유의 악화 → **α=0.3 유지, 논문 당위성 §5**
 - [[experiments/exp_040_consistency_final]] — 🟰 시간 일관성 GRU 최종 비교, 12조건 전부 동률 → 본 방법 = GRU-S + EMA 유지
 - [[experiments/exp_039_gate_aware_stage23]] — ⛔ 게이트를 손실에 결합: 악화 또는 유의차 없음
 - [[experiments/exp_038_gate_aware_stage1]] — 평활 항(λ≥20)은 EMA 없이 동률 (원리상 등가)

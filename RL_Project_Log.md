@@ -6,6 +6,8 @@
 
 # 1. Current State
 
+**2026-10-03** — EMA α를 현실 돌풍 A·B에서도 스윕(18 run): 정상 포함 3조건 모두 α ∈ [0.1, 0.4]의 CEP50·CEP90 차이가 유의하지 않음. "짧은 지연이 시변 바람에 유리"라는 이전 근거는 불지지로 정정. **α=0.3 유지**, 논문 근거 = 오프라인 기준(예측 스텝 변화 0.023 ≈ 정답 0.018 m/step) + 닫힌 루프 둔감성 + 무필터 +17%/+92%. → [[notes/experiments/exp_041_ema_alpha_sweep]] §5
+
 **2026-09-25 (마감)** — 루트 `README.md`를 현행 연구 기준으로 재작성, 전체 노트 목차 `notes/00_toc.md`(191편, `notes/_make_toc.py`로 재생성) 신설, 중간보고서 세 판본을 `interim_report_isaac.md`로 통합. 일지 [[notes/daily/daily_2026-09-25]].
 
 **2026-09-25 (갱신) — 게이트 인지 학습 종료: exp_040 GRU-C(λ=20, 1000 epoch, EMA 없음) 12조건 × 3 seed 전부 동률(paired CI 0 포함) → 본 방법 = GRU-S + EMA 유지, 표·그림 변경 없음, 평활 항은 논문·코드에서 제외(롤백 완료). 개요 v6를 GRU-S 단일 방법으로 정리(§4.4 분산 수축 삭제). exp_041 EMA α 스윕(21 run): [0.1, 0.4] 평탄, 무필터만 유의하게 나쁨 → **α=0.3 데이터 근거로 확정**, 표·그림 변경 없음. notes 정리: 구식 노트 74편을 `research/legacy/`·`experiments/legacy/`로 이동, 현행 문서(00_index·l1_sl_pipeline·research_architecture v6·code_map·isaac_lab_architecture·commands·README·CLAUDE.md) 최신화. 다음: sim2real.**
