@@ -6,6 +6,8 @@
 
 # 1. Current State
 
+**2026-10-03 (저녁)** — PX4 v1.15.4 속도 PID 이식(`--controller px4`). exp_042: P로 학습한 L0는 PX4에서 강건(0.305→0.279), GRU 잔차는 붕괴(0.204→0.338, Rule 47). 결정: 학습·평가·실기를 PX4 PID로 통일하고, 재학습 유발 요인 17개를 묶어 **하드웨어 결정 후 L0를 처음부터 재학습** → GRU 적합 → 표 재평가. → [[notes/research/sim2real_retrain_audit]]
+
 **2026-10-03 (마감)** — sim2real 결정: **실외 X500 + 자연풍 기록 + 원 스케일**, 장소 서울대 대운동장(관악구 R-75 → 드론원스톱 사전 승인 필요). 효과 관문 2–4 m/s −41%, 4–6 m/s −48%, 2 m/s 미만 −4%. 구매 목록 최소안 약 430–440만 원(무게 예산 1.66–2.0 kg). YOLO 하네스 카메라 버그 3개 수정. → [[notes/research/sim2real_bom]] · [[notes/daily/daily_2026-10-03]]
 
 **2026-10-03 (sim2real 전략)** — 트랙 A 확정: X500 V2급 + PX4 v1.15 offboard 속도 + RPi 5, 실외 자연풍·원 스케일, 실측 SysID → Isaac 재설정·L0 미세조정·GRU 재적합 → Gazebo SITL(같은 ROS 2 노드) → 실기 무풍 → 바람 블록 실험. 선결: 법규(비행 중 투하, 최대이륙중량) 서면 회신, 풍속 구간별 이득 계산. YOLO는 트랙 B 병렬. → [[notes/research/sim2real_strategy]]
@@ -522,6 +524,8 @@ SL은 정책 변경 시 몇 분짜리 재적합, RL은 애초에 전체 재학�
 ---
 
 # 4. Training History
+
+- **2026-10-03:** exp_042 PX4 PID 재학습 없는 평가 24 run + 진단 8 run — L0 강건, GRU 붕괴(Rule 47).
 
 - **2026-10-03:** exp_041 확장(EMA α × 현실 돌풍 A·B, 18 run) — α=0.3 유지. YOLO 캘리브레이션 점검 6 run. 풍속 구간별 이득 분석(기존 평가 재집계).
 
