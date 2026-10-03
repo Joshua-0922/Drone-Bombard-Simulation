@@ -17,7 +17,7 @@ type: index
 |---|---|---|---|
 | [[00_index]] | 드론 정밀 투하 연구 — Obsidian 대시보드 | 2026-04-14 | active |
 
-## research — 현행 연구 노트 (40)
+## research — 현행 연구 노트 (41)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -56,6 +56,7 @@ type: index
 | [[research/sim2real_indoor_legal_scale]] | sim2real 보완 — 투하 법규, 실내 축소 실증, 재학습 범위 | 2026-10-03 | active |
 | [[research/sim2real_indoor_vs_outdoor]] | sim2real — 실내(축소) 대 실외(X500), 바람 주 변수 대 투하 성능 주 변수 | 2026-10-03 | active |
 | [[research/sim2real_prior_hw_experiments]] | sim2real (2) 선행연구의 하드웨어 실험 구조 — 기체·펌웨어·sim2real 기법·반복 횟수·바람 생성 | 2026-10-03 | active |
+| [[research/sim2real_retrain_audit]] | 재학습 유발 요인 전수 점검 — 한 번에 묶어 다시 학습하기 위해 | 2026-10-03 | active |
 | [[research/sim2real_scale_wind_retrain]] | sim2real (3) 바람·스케일·재학습 판단 | 2026-10-03 | active |
 | [[research/sim2real_strategy]] | sim2real 전략 (트랙 A) — 최종본: 기체·제어기·측위·바람·재학습·단계별 로드맵·실험 프로토콜 | 2026-10-03 | active |
 | [[research/sim2real_strategy_review]] | sim2real 전략 초안 비판 검토 (반영 완료) | 2026-10-03 | archived |
@@ -265,4 +266,4 @@ type: index
 
 ---
 
-총 207편.
+총 208편.
