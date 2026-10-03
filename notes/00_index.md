@@ -119,7 +119,7 @@ notes/
 - [[experiments/exp_025_dr_scale_sweep_gate]] — DR 스윕 유효성 게이트(무학습): 오라클 갭 단조 증가
 
 ### 에러 · 일지 · 세션 · 환경
-전체 목록은 목차 [[00_toc]]에 있다. 최근: [[daily/daily_2026-09-25]] · [[daily/daily_2026-09-24]] · [[sessions/session_2026-09-24]] · [[errors/err_20260827_free_exit_termination]]
+전체 목록은 목차 [[00_toc]]에 있다. 최근: [[errors/err_20261003_yolo_eval_camera]] · [[daily/daily_2026-09-25]] · [[daily/daily_2026-09-24]] · [[sessions/session_2026-09-24]] · [[errors/err_20260827_free_exit_termination]]
 
 ---
 

@@ -159,10 +159,11 @@ type: index
 | [[experiments/legacy/exp_023_table1_baselines]] | exp_023 — Table 1 1차: 규칙 기반 릴리스 베이스라인 vs 학습 정책 | 2026-08-03 | done |
 | [[experiments/legacy/exp_024_v20_warmstart_failure]] | exp_024 — (a) 안 검증: v20(방위 랜덤) warm-start 학습은 과제가 아니라 페널티 회피로 수렴한다 | 2026-08-03 | done |
 
-## errors — 에러 해결 기록 (13)
+## errors — 에러 해결 기록 (14)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
+| [[errors/err_20261003_yolo_eval_camera]] | yolo_eval.py 카메라가 표적을 한 번도 보지 못하고 있었다 — 3개 버그 | 2026-10-03 | resolved |
 | [[errors/err_20260830_aim_reward_residual_inclusive]] | task_env의 dense aim 보상이 잔차 포함 오차를 먹고 있다 | 2026-08-30 | resolved |
 | [[errors/err_20260827_payload_drag_body_frame]] | err_20260827 — 페이로드 항력을 월드 프레임으로 계산해놓고 링크 프레임으로 전달 | 2026-08-27 | resolved |
 | [[errors/err_20260827_free_exit_termination]] | err_20260827 — 무료 탈출구: 벌하지 않는 종료 조건 + 탐지 뒤에 갇힌 접근 보상 | 2026-08-27 | resolved |
@@ -252,4 +253,4 @@ type: index
 
 ---
 
-총 194편.
+총 195편.

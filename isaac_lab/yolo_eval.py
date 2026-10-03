@@ -25,7 +25,7 @@ import argparse
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description="YOLO-in-the-loop eval / vision calibration.")
-parser.add_argument("--task", type=str, default="Isaac-DroneBombard-Direct-v0")
+parser.add_argument("--task", type=str, default="Isaac-DroneBombard-Task-v0")
 parser.add_argument("--num_envs", type=int, default=8)
 parser.add_argument("--calibrate", action="store_true")
 parser.add_argument("--eval", action="store_true")
@@ -39,6 +39,8 @@ parser.add_argument("--range-max", type=float, default=15.0,
                     help="slant range sweep maximum (m); 27 covers the full "
                          "climb-attractor envelope up to the 25 m altitude ceiling")
 parser.add_argument("--angle-bins", type=int, default=5, help="off-nadir 0-40deg sweep bins")
+parser.add_argument("--save-frames", type=str, default=None, metavar="DIR",
+                    help="--calibrate: save env-0 RGB frame + YOLO box for every (range, angle) bin")
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -69,8 +71,13 @@ def _build_camera_cfg(vc):
     import math as _math
     focal = 20.955 / (2.0 * _math.tan(vc.h_fov / 2.0))
     return TiledCameraCfg(
-        prim_path="/World/envs/env_.*/Robot/down_camera",
-        offset=TiledCameraCfg.OffsetCfg(pos=(0.0, 0.0, -0.02), rot=(0.7071, 0.0, 0.7071, 0.0), convention="ros"),
+        # attach to the moving rigid body: the "Robot" root Xform stays at spawn while the
+        # articulation body moves (10-03: camera sat at z 0.39 m for every bin).
+        prim_path="/World/envs/env_.*/Robot/body/down_camera",
+# ros convention (x right, y down, z optical). Must match math_utils.project_target_pinhole (Gazebo layout):
+        # image x = body +Y, image y = body +X, optical z = body -Z  -> 180 deg about (x+y)/sqrt2 = (0, .7071, .7071, 0).
+        # Old (0.7071, 0, 0.7071, 0) = 90 deg about y looked FORWARD at the horizon (10-03 smoke test).
+        offset=TiledCameraCfg.OffsetCfg(pos=(0.0, 0.0, -0.02), rot=(0.0, 0.7071, 0.7071, 0.0), convention="ros"),
         data_types=["rgb"],
         width=vc.img_w,
         height=vc.img_h,
@@ -164,7 +171,17 @@ def _run_yolo(model, rgb_batch):
     return u, v, conf, detected
 
 
-def run_calibrate(env, model, marker_ops, out_csv, range_bins, range_max, angle_bins):
+def _save_frame(rgb, u, v, conf, det, path):
+    """env-0 frame with the YOLO box centre marked, for eyeballing what the camera sees."""
+    import cv2
+    img = cv2.cvtColor(rgb.cpu().numpy(), cv2.COLOR_RGB2BGR).copy()
+    if det:
+        cv2.circle(img, (int(u), int(v)), 8, (0, 0, 255), 2)
+        cv2.putText(img, f"conf {conf:.2f}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+    cv2.imwrite(path, img)
+
+
+def run_calibrate(env, model, marker_ops, out_csv, range_bins, range_max, angle_bins, frames_dir=None):
     vc = env.unwrapped.cfg.vision
     rows = []
     ranges = torch.linspace(3.0, range_max, range_bins)
@@ -196,11 +213,18 @@ def run_calibrate(env, model, marker_ops, out_csv, range_bins, range_max, angle_
             for _ in range(5):
                 env.unwrapped._robot.write_root_pose_to_sim(root[:, :7])
                 env.unwrapped._robot.write_root_velocity_to_sim(zero_vel)
-                env.step(torch.zeros(n, action_dim, device=device))
+                _, _, term, trunc, _ = env.step(torch.zeros(n, action_dim, device=device))
+                if (term | trunc).any():   # a reset mid-bin moves the drone and resamples the target
+                    f = env.unwrapped._done_flags
+                    print(f"[calibrate] RESET mid-bin r={r:.1f} a={math.degrees(a):.0f}: "
+                          + ", ".join(k for k, v in f.items() if v.dtype == torch.bool and bool(v[(term | trunc)].any())))
 
             camera: TiledCamera = env.unwrapped.scene["down_camera"]
             rgb = camera.data.output["rgb"]
             u_yolo, v_yolo, conf_yolo, detected = _run_yolo(model, rgb)
+            if frames_dir:
+                _save_frame(rgb[0], u_yolo[0], v_yolo[0], conf_yolo[0], bool(detected[0]),
+                            f"{frames_dir}/r{r:04.1f}_a{math.degrees(a):04.1f}.png")
 
             # env-LOCAL frame: _target_xy is per-env-origin relative, so the
             # drone position must be too (same fix as DroneBombardEnv._update_vision).
@@ -213,11 +237,12 @@ def run_calibrate(env, model, marker_ops, out_csv, range_bins, range_max, angle_
             for i in range(n):
                 du = (u_yolo[i] - u_geo[i].cpu()).item() if detected[i] else float("nan")
                 dv = (v_yolo[i] - v_geo[i].cpu()).item() if detected[i] else float("nan")
-                rows.append([r, math.degrees(a), bool(detected[i]), float(conf_yolo[i]), du, dv])
+                rows.append([r, math.degrees(a), bool(visible[i]), bool(detected[i]), float(conf_yolo[i]), du, dv])
 
     with open(out_csv, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["slant_range_m", "off_nadir_deg", "detected", "conf", "du_px", "dv_px"])
+        # target_in_frame=False & detected=True is a false positive (grid crossings and edge marker slivers fire it)
+        writer.writerow(["slant_range_m", "off_nadir_deg", "target_in_frame", "detected", "conf", "du_px", "dv_px"])
         writer.writerows(rows)
     print(f"[calibrate] wrote {len(rows)} rows to {out_csv}")
 
@@ -291,18 +316,33 @@ def main():
         env_cfg.termination.min_altitude = 0.0
         env_cfg.termination.ground_contact_altitude = 0.0
         env_cfg.termination.max_altitude = 1000.0
-        env_cfg.reward.success_radius = -1.0
+        # the drone is held by force, so attitude/speed/range guards fire spuriously (10-03: bad_attitude reset most bins)
+        for k in ("limit_ang_vel", "limit_inverted_tilt", "v_max_safety", "max_distance"):
+            if hasattr(env_cfg.termination, k):
+                setattr(env_cfg.termination, k, 1e9)
+        if hasattr(env_cfg, "release"):   # Task-v0 auto-releases when hovering over the target -> episode ends mid-bin
+            env_cfg.release.radius = -1.0
+        for grp in ("reward", "task_reward"):   # Direct-v0 judges success in reward, Task-v0 in task_reward
+            if hasattr(getattr(env_cfg, grp, None), "success_radius"):
+                getattr(env_cfg, grp).success_radius = -1.0
 
     env = gym.make(args_cli.task, cfg=env_cfg)
     model = YOLO(args_cli.yolo_weights)
     marker_ops = _spawn_target_markers(env, args_cli.marker_texture)
 
     if args_cli.calibrate:
+        if args_cli.save_frames:
+            import os
+            os.makedirs(args_cli.save_frames, exist_ok=True)
         run_calibrate(env, model, marker_ops, args_cli.out_csv,
-                      args_cli.range_bins, args_cli.range_max, args_cli.angle_bins)
+                      args_cli.range_bins, args_cli.range_max, args_cli.angle_bins, args_cli.save_frames)
     elif args_cli.eval:
         if not args_cli.policy:
             raise SystemExit("--eval requires --policy CKPT")
+        # ponytail: --eval overwrites the Direct-v0 obs[9:12] (pixel u, v, conf). Task-v0 observes the
+        # target as metres (ccip/target channels), so YOLO must go through back-projection first — not ported yet.
+        if "Task" in args_cli.task:
+            raise SystemExit("--eval is not ported to Task-v0 yet (needs YOLO -> back-projection -> target obs)")
         run_eval(env, model, marker_ops, args_cli.policy)
     else:
         print("Specify --calibrate or --eval --policy CKPT")

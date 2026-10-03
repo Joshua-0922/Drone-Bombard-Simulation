@@ -54,3 +54,20 @@ type: research
 - AeroThrow: https://arxiv.org/abs/2507.13903 (§V)
 - Swift: https://www.nature.com/articles/s41586-023-06419-4 (Methods: residual models, fine-tuning)
 - Bootstrapping RL with Imitation: https://arxiv.org/abs/2403.12203
+
+## 4. 1단계 점검 결과 (2026-10-03) — YOLO 버전과 카메라 수신
+
+| 항목 | 결과 |
+|---|---|
+| 가중치 | `drone_bombard_best.pt` = **YOLOv8n**, 클래스 1개(`x_marker`), imgsz 640, 100 epoch, ultralytics 8.3.246으로 2026-01-03 학습 |
+| 학습 데이터 | Roboflow `drone-bombard-simulation` v1, 2,220장(마커 1,458 · 배경 483 소스 × 증강 3배). **Gazebo 렌더 영상**(자갈 지면 위 빨간 X), 회전 ±15°·밝기 ±25%·블러·소금후추 잡음 증강. **실제 카메라 영상은 없음** |
+| 컨테이너 환경 | ultralytics 8.4.87, torch 2.7.0+cu128, numpy 1.26.4(정상), cv2 5.0.0. 가중치 로드·추론 정상 |
+| 추론 속도 | L4 GPU 9.3 ms/장, CPU 84 ms/장 (640×480) |
+| 시뮬레이션 카메라 수신 | ✅ 3개 버그 수정 후 정상([[errors/err_20261003_yolo_eval_camera]]). 연직 하방 7·15 m에서 YOLO와 투영 공식 차이 1~2 px |
+| 짧은 점검(4 env × 4 거리 × 3 각도) | 거리 3~15 m·0~20°에서 대체로 검출. 15 m·20°부터 검출률 하락. 40°는 표적이 화면 밖 — 그때의 검출은 오검출 |
+
+**실기 적용 시 시사점.**
+- 현재 가중치는 Gazebo 렌더로만 학습했다. 실제 카메라에서는 **실영상으로 재학습 또는 미세조정이 필요**할 가능성이 높다(조명, 질감, 렌즈 왜곡, 모션 블러).
+- 실기 카메라의 해상도·화각이 시뮬레이션(640×480, 수평 60°)과 다르면 캘리브레이션과 투영 공식의 내부 파라미터도 바꿔야 한다.
+- 추론 속도는 GPU에서 충분하다. 탑재 컴퓨터(예: Jetson)에서는 별도 측정이 필요하다.
+- `--eval`(YOLO를 루프에 넣은 닫힌 루프 평가)은 아직 현행 환경으로 옮기지 않았다. 픽셀 → 표적 위치 역투영이 필요하다.
