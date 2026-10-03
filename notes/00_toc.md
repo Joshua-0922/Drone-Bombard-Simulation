@@ -17,7 +17,7 @@ type: index
 |---|---|---|---|
 | [[00_index]] | 드론 정밀 투하 연구 — Obsidian 대시보드 | 2026-04-14 | active |
 
-## research — 현행 연구 노트 (30)
+## research — 현행 연구 노트 (36)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -48,7 +48,13 @@ type: index
 | [[research/reward_design]] | 보상 함수와 MDP 정의 — 현재 (Isaac Lab task env) | 2026-03-22 | active |
 | [[research/reward_operating_point]] | 보상이 정하는 운용점 — w_time이 속도-정확도 트레이드오프의 어디에 앉을지를 결정한다 | 2026-08-27 | open |
 | [[research/rl_rules]] | RL 실험 & 디버깅 규칙 | 2026-04-14 | active |
+| [[research/sim2real_firmware_stack]] | (4) 펌웨어와 배포 스택 분석: 트랙 A, 표적 좌표는 참값 사용 (교차 검토 반영본) | 2026-10-03 | active |
 | [[research/sim2real_gap]] | sim2real 대비 — 지금 시뮬레이터에 없는 것 | 2026-08-27 | open |
+| [[research/sim2real_hardware_spec]] | (1) 하드웨어 사양 조사, 교차 검토 반영본: 트랙 A(표적 참값) 실기 구성 | 2026-10-03 | active |
+| [[research/sim2real_prior_hw_experiments]] | (2) 선행연구의 하드웨어 실험 구조 조사 (교차 검토 반영본) | 2026-10-03 | active |
+| [[research/sim2real_scale_wind_retrain]] | (3) 바람·스케일·재학습 판단 | 2026-10-03 | active |
+| [[research/sim2real_strategy]] | (5) sim2real 전략 종합 최종본: 트랙 A (표적 위치는 참값으로 줌) | 2026-10-03 | active |
+| [[research/sim2real_strategy_review]] | sim2real 전략 초안 비판적 검토 | 2026-10-03 | archived |
 | [[research/t3_oracle_entrainment]] | T3 오라클이 상한선이 아니었다 — 즉시 엔트레인먼트 가정 | 2026-08-27 | resolved |
 | [[research/training_seed_protocol]] | 학습 시드 vs 평가 시드 — 무엇을 몇 개나 돌려야 하나 | 2026-08-30 | active |
 
@@ -253,4 +259,4 @@ type: index
 
 ---
 
-총 195편.
+총 201편.

@@ -6,6 +6,8 @@
 
 # 1. Current State
 
+**2026-10-03 (sim2real 전략)** — 트랙 A 확정: X500 V2급 + PX4 v1.15 offboard 속도 + RPi 5, 실외 자연풍·원 스케일, 실측 SysID → Isaac 재설정·L0 미세조정·GRU 재적합 → Gazebo SITL(같은 ROS 2 노드) → 실기 무풍 → 바람 블록 실험. 선결: 법규(비행 중 투하, 최대이륙중량) 서면 회신, 풍속 구간별 이득 계산. YOLO는 트랙 B 병렬. → [[notes/research/sim2real_strategy]]
+
 **2026-10-03** — EMA α를 현실 돌풍 A·B에서도 스윕(18 run): 정상 포함 3조건 모두 α ∈ [0.1, 0.4]의 CEP50·CEP90 차이가 유의하지 않음. "짧은 지연이 시변 바람에 유리"라는 이전 근거는 불지지로 정정. **α=0.3 유지**, 논문 근거 = 오프라인 기준(예측 스텝 변화 0.023 ≈ 정답 0.018 m/step) + 닫힌 루프 둔감성 + 무필터 +17%/+92%. → [[notes/experiments/exp_041_ema_alpha_sweep]] §5
 
 **2026-09-25 (마감)** — 루트 `README.md`를 현행 연구 기준으로 재작성, 전체 노트 목차 `notes/00_toc.md`(191편, `notes/_make_toc.py`로 재생성) 신설, 중간보고서 세 판본을 `interim_report_isaac.md`로 통합. 일지 [[notes/daily/daily_2026-09-25]].

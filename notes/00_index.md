@@ -26,7 +26,7 @@ type: index
 
 - 표·그림 완료: [[research/final_tables_v6]] · `notes/figures/fig{1,2,3}.png`
 - EMA α=0.3: 오프라인 기준(예측 스텝 변화 ≈ 정답 변화)으로 정하고, 닫힌 루프 [0.1, 0.4]는 정상·현실 돌풍 3조건 모두 둔감(무필터만 +17%/+92%): [[experiments/exp_041_ema_alpha_sweep]] §5
-- **다음:** 비전 절(YOLO 마커 보정·픽셀 양자화 팔) → 하드웨어 플랫폼 결정 → 본문 집필(개요 v6 §1~5) → sim2real(시뮬레이션 모델 그대로 onboard, T0/T2/L0/본 방법 실기 비교)
+- **다음 (10-03 확정):** 트랙 A sim2real — [[research/sim2real_strategy]]. −1단계(법규 서면 질의, 풍속 구간별 이득 계산, 후보지 풍황) → 구매 → SysID → 재학습 → SITL → 실기. YOLO는 트랙 B(다른 담당)로 병렬
 
 최근 일지: [[daily/daily_2026-10-03]] · [[daily/daily_2026-09-25]] · [[daily/daily_2026-09-24]] · 세션: [[sessions/session_2026-09-24]]
 
@@ -91,6 +91,8 @@ notes/
 - [[research/reward_operating_point]] — `w_time`이 정하는 운용점(정지 투하 vs 통과 투하 무차별점)
 - [[research/handoff_generalization_p0]] — 고정 초기조건은 표현을 암기시킨다, 랜덤화 축 분류 (Rule 27)
 - [[research/agility_ceiling]] — 급기동 천장 4중 구조(인지 기하가 순항 속도를 못박음)
+- [[research/sim2real_strategy]] — 🛫 **(10-03) sim2real 전략(트랙 A) 최종본** — X500 V2(약 1.4 kg) + PX4 v1.15 offboard 속도 + RPi 5, 실외 자연풍 원 스케일, 실측 SysID → Isaac 재설정 → L0 미세조정·GRU 재적합 → Gazebo SITL → 실기. 법규·효과 관문 먼저
+  - 근거: [[research/sim2real_hardware_spec]] · [[research/sim2real_prior_hw_experiments]] · [[research/sim2real_scale_wind_retrain]] · [[research/sim2real_firmware_stack]] · 검토 [[research/sim2real_strategy_review]]
 - [[research/perception_integration_survey]] — 🔎 **(10-03) 표적을 참값 → YOLO로 바꿀 때 선행연구는 재학습하나?** 실제 검출기를 학습 루프에 넣은 연구 없음. 참값 학습 → 배포 시 검출기, 차이는 오차 모델 반영(Swift 미세조정)
 - [[research/related_work_survey]] — 선행연구 조사(CARP 계보·학습 투척·바람 하 RL·TossingBot), 겹치는 주장 없음
 - [[research/sim2real_gap]] — 시뮬레이터에 없는 것(로터 유입류·모터 지연·게인 실측)과 실기 계획의 전제
