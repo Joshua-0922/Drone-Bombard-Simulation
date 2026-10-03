@@ -92,6 +92,7 @@ notes/
 - [[research/handoff_generalization_p0]] — 고정 초기조건은 표현을 암기시킨다, 랜덤화 축 분류 (Rule 27)
 - [[research/agility_ceiling]] — 급기동 천장 4중 구조(인지 기하가 순항 속도를 못박음)
 - [[research/sim2real_strategy]] — 🛫 **(10-03) sim2real 전략(트랙 A) 최종본** — X500 V2(약 1.4 kg) + PX4 v1.15 offboard 속도 + RPi 5, 실외 자연풍 원 스케일, 실측 SysID → Isaac 재설정 → L0 미세조정·GRU 재적합 → Gazebo SITL → 실기. 법규·효과 관문 먼저
+  - 실내 대 실외·풍동·실내 측위: [[research/sim2real_indoor_vs_outdoor]] — 바람 없는 실험은 잔차 이득을 못 보여 줌(DR 0에서 +8.8%), KOCED 용인 대형 풍동(12 × 2.5 × 40 m, 0.3–12 m/s, 드론 시험 명시)이 실내 축소 + 통제 바람에 적합
   - 보완(우선): [[research/sim2real_indoor_legal_scale]] — 투하 금지는 "위험 우려 있는 낙하물" 한정, 실내 통제 환경이 가장 안전, 실측 서보 σ가 작으면 실내 축소 실증 성립, 기하가 바뀌면 L0 처음부터 재학습(약 1시간)
   - 근거: [[research/sim2real_hardware_spec]] · [[research/sim2real_prior_hw_experiments]] · [[research/sim2real_scale_wind_retrain]] · [[research/sim2real_firmware_stack]] · 검토 [[research/sim2real_strategy_review]]
 - [[research/perception_integration_survey]] — 🔎 **(10-03) 표적을 참값 → YOLO로 바꿀 때 선행연구는 재학습하나?** 실제 검출기를 학습 루프에 넣은 연구 없음. 참값 학습 → 배포 시 검출기, 차이는 오차 모델 반영(Swift 미세조정)
