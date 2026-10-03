@@ -8,7 +8,7 @@ type: research
 > 2026-10-03 다중 에이전트 조사(하드웨어·선행연구·펌웨어 1차 조사 → 상호 결과 공유·수정 + 스케일 판단 → 종합 → 비판 검토 → 최종본)의 산출물입니다.
 > 관련: [[research/sim2real_strategy]] · [[research/sim2real_hardware_spec]] · [[research/sim2real_prior_hw_experiments]] · [[research/sim2real_scale_wind_retrain]] · [[research/sim2real_strategy_review]] · [[research/sim2real_gap]] · [[research/perception_integration_survey]] · [[00_index]]
 
-# (4) 펌웨어와 배포 스택 분석: 트랙 A, 표적 좌표는 참값 사용 (교차 검토 반영본)
+# sim2real (4) 펌웨어·배포 스택 — PX4 offboard 속도, ROS 2 노드, 관측 26채널 출처, SITL
 
 ## 교차 검토로 바뀐 점
 

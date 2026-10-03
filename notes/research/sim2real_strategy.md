@@ -12,7 +12,7 @@ type: research
 > 2026-10-03 다중 에이전트 조사(하드웨어·선행연구·펌웨어 1차 조사 → 상호 결과 공유·수정 + 스케일 판단 → 종합 → 비판 검토 → 최종본)의 산출물입니다.
 > 관련: [[research/sim2real_hardware_spec]] · [[research/sim2real_prior_hw_experiments]] · [[research/sim2real_scale_wind_retrain]] · [[research/sim2real_firmware_stack]] · [[research/sim2real_strategy_review]] · [[research/sim2real_gap]] · [[research/perception_integration_survey]] · [[00_index]]
 
-# (5) sim2real 전략 종합 최종본: 트랙 A (표적 위치는 참값으로 줌)
+# sim2real 전략 (트랙 A) — 최종본: 기체·제어기·측위·바람·재학습·단계별 로드맵·실험 프로토콜
 
 ## 0. 한 줄 결론
 

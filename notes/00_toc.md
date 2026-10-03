@@ -49,15 +49,15 @@ type: index
 | [[research/reward_operating_point]] | 보상이 정하는 운용점 — w_time이 속도-정확도 트레이드오프의 어디에 앉을지를 결정한다 | 2026-08-27 | open |
 | [[research/rl_rules]] | RL 실험 & 디버깅 규칙 | 2026-04-14 | active |
 | [[research/sim2real_bom]] | sim2real 구매 목록 (실외, X500 V2, 이륙중량 2 kg 이하) | 2026-10-03 | active |
-| [[research/sim2real_firmware_stack]] | (4) 펌웨어와 배포 스택 분석: 트랙 A, 표적 좌표는 참값 사용 (교차 검토 반영본) | 2026-10-03 | active |
+| [[research/sim2real_firmware_stack]] | sim2real (4) 펌웨어·배포 스택 — PX4 offboard 속도, ROS 2 노드, 관측 26채널 출처, SITL | 2026-10-03 | active |
 | [[research/sim2real_gap]] | sim2real 대비 — 지금 시뮬레이터에 없는 것 | 2026-08-27 | open |
-| [[research/sim2real_hardware_spec]] | (1) 하드웨어 사양 조사, 교차 검토 반영본: 트랙 A(표적 참값) 실기 구성 | 2026-10-03 | active |
+| [[research/sim2real_hardware_spec]] | sim2real (1) 하드웨어 사양 — X500 V2·컴패니언 컴퓨터·추력 계산·투하 기구·측위 | 2026-10-03 | active |
 | [[research/sim2real_indoor_legal_scale]] | sim2real 보완 — 투하 법규, 실내 축소 실증, 재학습 범위 | 2026-10-03 | active |
 | [[research/sim2real_indoor_vs_outdoor]] | sim2real — 실내(축소) 대 실외(X500), 바람 주 변수 대 투하 성능 주 변수 | 2026-10-03 | active |
-| [[research/sim2real_prior_hw_experiments]] | (2) 선행연구의 하드웨어 실험 구조 조사 (교차 검토 반영본) | 2026-10-03 | active |
-| [[research/sim2real_scale_wind_retrain]] | (3) 바람·스케일·재학습 판단 | 2026-10-03 | active |
-| [[research/sim2real_strategy]] | (5) sim2real 전략 종합 최종본: 트랙 A (표적 위치는 참값으로 줌) | 2026-10-03 | active |
-| [[research/sim2real_strategy_review]] | sim2real 전략 초안 비판적 검토 | 2026-10-03 | archived |
+| [[research/sim2real_prior_hw_experiments]] | sim2real (2) 선행연구의 하드웨어 실험 구조 — 기체·펌웨어·sim2real 기법·반복 횟수·바람 생성 | 2026-10-03 | active |
+| [[research/sim2real_scale_wind_retrain]] | sim2real (3) 바람·스케일·재학습 판단 | 2026-10-03 | active |
+| [[research/sim2real_strategy]] | sim2real 전략 (트랙 A) — 최종본: 기체·제어기·측위·바람·재학습·단계별 로드맵·실험 프로토콜 | 2026-10-03 | active |
+| [[research/sim2real_strategy_review]] | sim2real 전략 초안 비판 검토 (반영 완료) | 2026-10-03 | archived |
 | [[research/t3_oracle_entrainment]] | T3 오라클이 상한선이 아니었다 — 즉시 엔트레인먼트 가정 | 2026-08-27 | resolved |
 | [[research/training_seed_protocol]] | 학습 시드 vs 평가 시드 — 무엇을 몇 개나 돌려야 하나 | 2026-08-30 | active |
 
@@ -237,10 +237,11 @@ type: index
 | [[daily/daily_2026-04-16]] | 연구 일지 — 2026-04-16 | 2026-04-16 | complete |
 | [[daily/daily_2026-04-14]] | 연구 일지 — 2026-04-14 | 2026-04-14 | complete |
 
-## sessions — 세션 기록·명령 (11)
+## sessions — 세션 기록·명령 (12)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
+| [[sessions/session_2026-10-03]] | 세션 — 2026-10-03 | 2026-10-03 | complete |
 | [[sessions/session_2026-09-25]] | 세션 — 2026-09-25 | 2026-09-25 | complete |
 | [[sessions/session_2026-09-24]] | 세션 — 2026-09-24 (UTC 04:50 ~ 23:30) | 2026-09-24 | complete |
 | [[sessions/session_2026-09-14]] | 세션 — 2026-09-13 15:00 ~ 2026-09-14 04:00 (UTC) | 2026-09-14 | complete |
@@ -262,4 +263,4 @@ type: index
 
 ---
 
-총 204편.
+총 205편.

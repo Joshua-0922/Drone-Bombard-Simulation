@@ -8,7 +8,7 @@ type: research
 > 2026-10-03 다중 에이전트 조사(하드웨어·선행연구·펌웨어 1차 조사 → 상호 결과 공유·수정 + 스케일 판단 → 종합 → 비판 검토 → 최종본)의 산출물입니다.
 > 관련: [[research/sim2real_strategy]] · [[research/sim2real_hardware_spec]] · [[research/sim2real_scale_wind_retrain]] · [[research/sim2real_firmware_stack]] · [[research/sim2real_strategy_review]] · [[research/sim2real_gap]] · [[research/perception_integration_survey]] · [[00_index]]
 
-# (2) 선행연구의 하드웨어 실험 구조 조사 (교차 검토 반영본)
+# sim2real (2) 선행연구의 하드웨어 실험 구조 — 기체·펌웨어·sim2real 기법·반복 횟수·바람 생성
 
 조사 범위는 2020년 이후 논문입니다. 주제는 멀티로터 sim2real, 드론 투하·투척, 그리고 4족·휴머노이드 로봇의 던지기로 한정했습니다. 출처는 WebSearch와 WebFetch로 확인했고, 원문에서 확인하지 못한 항목은 "미확인"으로 적었습니다. 게재처가 확인되지 않은 프리프린트는 표에 **[프리프린트]**로 표시했고 참고용으로만 씁니다.
 

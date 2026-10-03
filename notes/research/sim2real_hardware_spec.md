@@ -8,7 +8,7 @@ type: research
 > 2026-10-03 다중 에이전트 조사(하드웨어·선행연구·펌웨어 1차 조사 → 상호 결과 공유·수정 + 스케일 판단 → 종합 → 비판 검토 → 최종본)의 산출물입니다.
 > 관련: [[research/sim2real_strategy]] · [[research/sim2real_prior_hw_experiments]] · [[research/sim2real_scale_wind_retrain]] · [[research/sim2real_firmware_stack]] · [[research/sim2real_strategy_review]] · [[research/sim2real_gap]] · [[research/perception_integration_survey]] · [[00_index]]
 
-# (1) 하드웨어 사양 조사, 교차 검토 반영본: 트랙 A(표적 참값) 실기 구성
+# sim2real (1) 하드웨어 사양 — X500 V2·컴패니언 컴퓨터·추력 계산·투하 기구·측위
 
 ## 교차 검토로 바뀐 점
 
