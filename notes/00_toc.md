@@ -17,7 +17,7 @@ type: index
 |---|---|---|---|
 | [[00_index]] | 드론 정밀 투하 연구 — Obsidian 대시보드 | 2026-04-14 | active |
 
-## research — 현행 연구 노트 (39)
+## research — 현행 연구 노트 (40)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -49,6 +49,7 @@ type: index
 | [[research/reward_operating_point]] | 보상이 정하는 운용점 — w_time이 속도-정확도 트레이드오프의 어디에 앉을지를 결정한다 | 2026-08-27 | open |
 | [[research/rl_rules]] | RL 실험 & 디버깅 규칙 | 2026-04-14 | active |
 | [[research/sim2real_bom]] | sim2real 구매 목록 (실외, X500 V2, 이륙중량 2 kg 이하) | 2026-10-03 | active |
+| [[research/sim2real_controller_alignment]] | 시뮬 제어기를 PX4에 맞추기 — 무엇을, 어디서부터, 재학습 범위 | 2026-10-03 | active |
 | [[research/sim2real_firmware_stack]] | sim2real (4) 펌웨어·배포 스택 — PX4 offboard 속도, ROS 2 노드, 관측 26채널 출처, SITL | 2026-10-03 | active |
 | [[research/sim2real_gap]] | sim2real 대비 — 지금 시뮬레이터에 없는 것 | 2026-08-27 | open |
 | [[research/sim2real_hardware_spec]] | sim2real (1) 하드웨어 사양 — X500 V2·컴패니언 컴퓨터·추력 계산·투하 기구·측위 | 2026-10-03 | active |
@@ -263,4 +264,4 @@ type: index
 
 ---
 
-총 205편.
+총 206편.

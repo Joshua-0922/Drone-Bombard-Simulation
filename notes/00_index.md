@@ -93,6 +93,7 @@ notes/
 - [[research/agility_ceiling]] — 급기동 천장 4중 구조(인지 기하가 순항 속도를 못박음)
 - [[research/sim2real_strategy]] — 🛫 **(10-03) sim2real 전략(트랙 A) 최종본** — X500 V2(약 1.4 kg) + PX4 v1.15 offboard 속도 + RPi 5, 실외 자연풍 원 스케일, 실측 SysID → Isaac 재설정 → L0 미세조정·GRU 재적합 → Gazebo SITL → 실기. 법규·효과 관문 먼저
   - ✅ **결정(10-03): 실외 X500 + 자연풍 기록.** 효과 관문: 2–4 m/s −41%, 4–6 m/s −48%, 2 m/s 미만 −4% → 2 m/s 이상 팔당 40회 목표 ([[research/sim2real_indoor_vs_outdoor]] §6). 원 스케일 유지, 부지 약 65 × 40 m, RTK 필수, 페이로드 100 g Ø10×6 cm (§7)
+  - 🎛 제어기 정합: [[research/sim2real_controller_alignment]] — PX4 펌웨어를 넣는 게 아니라 루프 수식(I·D·포화)만 torch로, L0는 처음부터가 아니라 미세조정, SITL은 검증용(진짜 PX4)
   - 🛒 구매 목록·가격·무게 예산: [[research/sim2real_bom]] — 장소 서울대 대운동장(108 × 65 m), 관악구 R-75 → 드론원스톱 사전 비행승인 필요, 총 약 430–440만 원(최소안)
   - 실내 대 실외·풍동·실내 측위: [[research/sim2real_indoor_vs_outdoor]] — 바람 없는 실험은 잔차 이득을 못 보여 줌(DR 0에서 +8.8%), KOCED 용인 대형 풍동(12 × 2.5 × 40 m, 0.3–12 m/s, 드론 시험 명시)이 실내 축소 + 통제 바람에 적합
   - 보완(우선): [[research/sim2real_indoor_legal_scale]] — 투하 금지는 "위험 우려 있는 낙하물" 한정, 실내 통제 환경이 가장 안전, 실측 서보 σ가 작으면 실내 축소 실증 성립, 기하가 바뀌면 L0 처음부터 재학습(약 1시간)
