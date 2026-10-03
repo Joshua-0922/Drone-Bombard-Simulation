@@ -17,7 +17,7 @@ type: index
 |---|---|---|---|
 | [[00_index]] | 드론 정밀 투하 연구 — Obsidian 대시보드 | 2026-04-14 | active |
 
-## research — 현행 연구 노트 (38)
+## research — 현행 연구 노트 (39)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -48,6 +48,7 @@ type: index
 | [[research/reward_design]] | 보상 함수와 MDP 정의 — 현재 (Isaac Lab task env) | 2026-03-22 | active |
 | [[research/reward_operating_point]] | 보상이 정하는 운용점 — w_time이 속도-정확도 트레이드오프의 어디에 앉을지를 결정한다 | 2026-08-27 | open |
 | [[research/rl_rules]] | RL 실험 & 디버깅 규칙 | 2026-04-14 | active |
+| [[research/sim2real_bom]] | sim2real 구매 목록 (실외, X500 V2, 이륙중량 2 kg 이하) | 2026-10-03 | active |
 | [[research/sim2real_firmware_stack]] | (4) 펌웨어와 배포 스택 분석: 트랙 A, 표적 좌표는 참값 사용 (교차 검토 반영본) | 2026-10-03 | active |
 | [[research/sim2real_gap]] | sim2real 대비 — 지금 시뮬레이터에 없는 것 | 2026-08-27 | open |
 | [[research/sim2real_hardware_spec]] | (1) 하드웨어 사양 조사, 교차 검토 반영본: 트랙 A(표적 참값) 실기 구성 | 2026-10-03 | active |
@@ -261,4 +262,4 @@ type: index
 
 ---
 
-총 203편.
+총 204편.
