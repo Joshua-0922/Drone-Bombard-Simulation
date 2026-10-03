@@ -17,7 +17,7 @@ type: index
 |---|---|---|---|
 | [[00_index]] | 드론 정밀 투하 연구 — Obsidian 대시보드 | 2026-04-14 | active |
 
-## research — 현행 연구 노트 (36)
+## research — 현행 연구 노트 (37)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -51,6 +51,7 @@ type: index
 | [[research/sim2real_firmware_stack]] | (4) 펌웨어와 배포 스택 분석: 트랙 A, 표적 좌표는 참값 사용 (교차 검토 반영본) | 2026-10-03 | active |
 | [[research/sim2real_gap]] | sim2real 대비 — 지금 시뮬레이터에 없는 것 | 2026-08-27 | open |
 | [[research/sim2real_hardware_spec]] | (1) 하드웨어 사양 조사, 교차 검토 반영본: 트랙 A(표적 참값) 실기 구성 | 2026-10-03 | active |
+| [[research/sim2real_indoor_legal_scale]] | sim2real 보완 — 투하 법규, 실내 축소 실증, 재학습 범위 | 2026-10-03 | active |
 | [[research/sim2real_prior_hw_experiments]] | (2) 선행연구의 하드웨어 실험 구조 조사 (교차 검토 반영본) | 2026-10-03 | active |
 | [[research/sim2real_scale_wind_retrain]] | (3) 바람·스케일·재학습 판단 | 2026-10-03 | active |
 | [[research/sim2real_strategy]] | (5) sim2real 전략 종합 최종본: 트랙 A (표적 위치는 참값으로 줌) | 2026-10-03 | active |
@@ -259,4 +260,4 @@ type: index
 
 ---
 
-총 201편.
+총 202편.

@@ -5,6 +5,8 @@ status: active
 type: research
 ---
 
+> ⚠️ **10-03 보완:** 법규 해석, 실내 축소 실증 가능성(앞선 "축소 불가" 판단은 시뮬 DR 잡음값 기준이라 수정), 재학습 범위는 [[research/sim2real_indoor_legal_scale]]이 우선한다.
+>
 > 2026-10-03 다중 에이전트 조사(하드웨어·선행연구·펌웨어 1차 조사 → 상호 결과 공유·수정 + 스케일 판단 → 종합 → 비판 검토 → 최종본)의 산출물입니다.
 > 관련: [[research/sim2real_hardware_spec]] · [[research/sim2real_prior_hw_experiments]] · [[research/sim2real_scale_wind_retrain]] · [[research/sim2real_firmware_stack]] · [[research/sim2real_strategy_review]] · [[research/sim2real_gap]] · [[research/perception_integration_survey]] · [[00_index]]
 
