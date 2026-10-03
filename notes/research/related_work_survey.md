@@ -63,6 +63,8 @@ type: research
 
 ---
 
+> 인지(검출기) 통합 방식의 선행연구 비교는 [[research/perception_integration_survey]] (10-03).
+
 ## 2. ⭐ 직접 경쟁 논문 정밀 분석 — Scaramuzza 2026
 
 **"Learning to Throw: Agile and Accurate Cable-Suspended Payload Delivery with a Quadrotor"**

@@ -91,6 +91,7 @@ notes/
 - [[research/reward_operating_point]] — `w_time`이 정하는 운용점(정지 투하 vs 통과 투하 무차별점)
 - [[research/handoff_generalization_p0]] — 고정 초기조건은 표현을 암기시킨다, 랜덤화 축 분류 (Rule 27)
 - [[research/agility_ceiling]] — 급기동 천장 4중 구조(인지 기하가 순항 속도를 못박음)
+- [[research/perception_integration_survey]] — 🔎 **(10-03) 표적을 참값 → YOLO로 바꿀 때 선행연구는 재학습하나?** 실제 검출기를 학습 루프에 넣은 연구 없음. 참값 학습 → 배포 시 검출기, 차이는 오차 모델 반영(Swift 미세조정)
 - [[research/related_work_survey]] — 선행연구 조사(CARP 계보·학습 투척·바람 하 RL·TossingBot), 겹치는 주장 없음
 - [[research/sim2real_gap]] — 시뮬레이터에 없는 것(로터 유입류·모터 지연·게인 실측)과 실기 계획의 전제
 - [[research/physical_payload_attach]] — 물리 페이로드 kinematic weld 패턴 (Rule 24)

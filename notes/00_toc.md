@@ -17,7 +17,7 @@ type: index
 |---|---|---|---|
 | [[00_index]] | 드론 정밀 투하 연구 — Obsidian 대시보드 | 2026-04-14 | active |
 
-## research — 현행 연구 노트 (29)
+## research — 현행 연구 노트 (30)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -34,6 +34,7 @@ type: index
 | [[research/l1_sl_pipeline]] | L1-SL 파이프라인 — 본 방법(L0 + GRU-S + EMA)이 무엇을, 어떤 입력으로, 어디에 넣는가 | 2026-09-14 | active |
 | [[research/paper_metrics]] | 논문 지표 확정 — 성공률을 헤드라인에서 내린다 | 2026-08-30 | decided |
 | [[research/paper_outline_v6]] | 논문 개요 v6 — "바람 속에서 던지기: 비행은 강화학습, 조준 보정은 지도학습" | 2026-09-24 | active |
+| [[research/perception_integration_survey]] | 선행연구 조사 — 표적 위치를 참값에서 검출기(YOLO)로 바꿀 때, 학습을 다시 하는가 | 2026-10-03 | active |
 | [[research/physical_payload_attach]] | 물리 페이로드 부착/분리 — kinematic weld 패턴 | 2026-07-21 | active |
 | [[research/related_work_survey]] | 선행연구 조사 — 우리는 어디에 서 있나 | 2026-08-27 | open |
 | [[research/release_gate_jitter]] | 릴리즈 게이트는 첫 교차 판정이다 — 잔차는 정확한 것만으로 부족하고 매끄러워야 한다 | 2026-09-01 | active |
@@ -251,4 +252,4 @@ type: index
 
 ---
 
-총 193편.
+총 194편.
