@@ -107,6 +107,7 @@ notes/
 
 ### 실험 (experiments/) — 논문 단계
 - [[experiments/training_history]] — 전체 학습·평가 히스토리 허브
+- [[experiments/exp_042_px4_controller_noretrain]] — ⛔ **(10-03) PX4 속도 PID에서 재학습 없이: L0는 강건(0.279), GRU 잔차는 붕괴(0.338, L0보다 +21%) → GRU 재적합 필수 (Rule 47)**
 - [[experiments/exp_041_ema_alpha_sweep]] — ✅ EMA α 민감도(정상 + 현실 돌풍 A·B): [0.1, 0.4] 평탄, 무필터만 유의 악화 → **α=0.3 유지, 논문 당위성 §5**
 - [[experiments/exp_040_consistency_final]] — 🟰 시간 일관성 GRU 최종 비교, 12조건 전부 동률 → 본 방법 = GRU-S + EMA 유지
 - [[experiments/exp_039_gate_aware_stage23]] — ⛔ 게이트를 손실에 결합: 악화 또는 유의차 없음

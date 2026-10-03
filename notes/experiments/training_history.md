@@ -13,6 +13,7 @@ type: reference
 
 | 날짜 | Run ID | Steps | Mean Drop Error | 요약 |
 |------|--------|-------|-----------------|------|
+| 2026-10-03 | exp_042 PX4 v1.15.4 속도 PID에서 P 학습 L0·L0+GRU-S 재학습 없이 평가 (24 run) | 완료 | L0 CEP50 0.305→0.279(강건), GRU-S 0.204→0.338(PX4에서 L0보다 +21~27%) | ⛔ 잔차는 저수준 제어기에 결합 → PX4 모드 덤프로 GRU 재적합 필수 (Rule 47). → [[experiments/exp_042_px4_controller_noretrain]] |
 | 2026-10-03 | exp_041 추가: EMA α × 현실 돌풍 A·B (α 0.1/0.2/0.4 × 2조건 × 3 seed = 18 run) | 완료 | 3조건 모두 CEP50·CEP90 차이 CI 0 포함. "짧은 지연이 시변 바람에 유리" 가설 불지지 | ✅ α=0.3 유지, 근거 = 오프라인 기준 + 닫힌 루프 둔감성(논문 §4.4·부록). → [[experiments/exp_041_ema_alpha_sweep]] §5 |
 | 2026-09-25 | exp_041 EMA α 민감도 (L0+GRU-S, 정상, 8 α × 3 seed = 21 run) | 완료 | α 0.1~0.4 CEP50 0.201~0.204 평탄, 0.5부터 CEP90 악화, 무필터 0.239/0.775 (CI [+0.007,+0.053]) | ✅ **α = 0.3 확정**(평탄 구간의 최단 지연). 표·그림 변경 없음. → [[experiments/exp_041_ema_alpha_sweep]] |
 | 2026-09-25 | exp_040 GRU-C(λ=20, 1000 epoch, EMA 없음) 최종 비교, 12조건 × 3 seed = 36 run | 완료 | 12/12 조건 paired ΔCEP50 CI가 0 포함(−0.022 ~ +0.018) | 🟰 동률 → **본 방법 = GRU-S + EMA 유지**, 평활 항은 ablation 한 문장. → [[experiments/exp_040_consistency_final]] |

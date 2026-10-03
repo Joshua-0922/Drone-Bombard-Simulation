@@ -953,6 +953,9 @@ class DroneBombardTaskEnv(DroneBombardEnv):
             root[:, 10:13] = torch.randn(n, 3, device=device) * hc.ang_vel_std
         self._robot.write_root_pose_to_sim(root[:, :7], env_ids)
         self._robot.write_root_velocity_to_sim(root[:, 7:13], env_ids)
+        # PX4-mode loop state: derivative filter at the handoff velocity, integrator holding the
+        # drag compensation a cruising vehicle would already have (unused state in "p" mode).
+        self.seed_px4_controller(env_ids, root[:, 7:10])
 
         d0 = torch.linalg.norm(marker - spawn_xy, dim=-1)
         self._d_xy_prev[env_ids] = d0

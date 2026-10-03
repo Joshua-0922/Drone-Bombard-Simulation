@@ -1049,3 +1049,57 @@ def test_tilt_channels_layout_matches_the_fitted_regressor():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# =====================================================================
+# PX4 velocity controller port (math_utils.px4_velocity_control)
+# =====================================================================
+
+def _px4_gains(n=1):
+    p = torch.tensor([[1.8, 1.8, 4.0]]).repeat(n, 1)
+    i = torch.tensor([[0.4, 0.4, 2.0]]).repeat(n, 1)
+    d = torch.tensor([[0.2, 0.2, 0.0]]).repeat(n, 1)
+    return p, i, d
+
+
+def test_px4_hover_at_rest_is_vertical_hover_thrust():
+    p, i, d = _px4_gains()
+    z = torch.zeros(1, 3)
+    thr, vint = mu.px4_velocity_control(z, z, z, z, torch.tensor([0.5]), 0.01, math.radians(35), p, i, d)
+    torch.testing.assert_close(thr, torch.tensor([[0.0, 0.0, 0.5]]))
+    torch.testing.assert_close(vint, z)
+
+
+def test_px4_tilt_is_limited():
+    p, i, d = _px4_gains()
+    z = torch.zeros(1, 3)
+    thr, _ = mu.px4_velocity_control(torch.tensor([[20.0, 0.0, 0.0]]), z, z, z, torch.tensor([0.5]), 0.01,
+                                     math.radians(35), p, i, d)
+    tilt = math.degrees(math.atan2(float(thr[0, 0]), float(thr[0, 2])))
+    assert tilt <= 35.0 + 1e-3
+
+
+def _fly_point_mass(use_integrator, steps=3000, dt=0.01):
+    """1-D-in-x point mass, 2.17 kg, T/W 2, quadratic drag in a 4 m/s headwind; command 3.5 m/s."""
+    m, g, k, tw = 2.17, 9.80665, 0.06, 2.0
+    tmax = tw * m * g
+    p, i, d = _px4_gains()
+    if not use_integrator:
+        i = torch.zeros_like(i); d = torch.zeros_like(d)
+    v = torch.tensor([[3.5, 0.0, 0.0]]); vint = torch.zeros(1, 3); vdot = torch.zeros(1, 3)
+    for _ in range(steps):
+        thr, vint = mu.px4_velocity_control(torch.tensor([[3.5, 0.0, 0.0]]), v, vint, vdot, torch.tensor([0.5]),
+                                            dt, math.radians(35), p, i, d)
+        air = torch.tensor([[-4.0, 0.0, 0.0]]) - v
+        acc = thr * tmax / m + k * air.norm() * air / m - torch.tensor([[0.0, 0.0, g]])
+        v_new = v + acc * dt
+        vdot = mu.lowpass_derivative(v_new, v, vdot, dt, 5.0)
+        v = v_new
+    return float(v[0, 0])
+
+
+def test_px4_integrator_removes_wind_lag_p_only_does_not():
+    v_pid = _fly_point_mass(True)
+    v_p = _fly_point_mass(False)
+    assert abs(v_pid - 3.5) < 0.05, v_pid
+    assert 3.5 - v_p > 0.5, v_p          # P-only lags ~0.86 m/s in a 4 m/s headwind (analytic)

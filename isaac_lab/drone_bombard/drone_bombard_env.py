@@ -78,6 +78,8 @@ from .math_utils import (
     stagnation_guard,
     hold_buffer_update,
     quat_apply_inverse_pure,
+    px4_velocity_control,
+    lowpass_derivative,
     pixel_to_ground_xy,
     singer_transition_matrix,
     singer_process_noise,
@@ -441,6 +443,24 @@ class DroneBombardControllerCfg:
     k_att_rp: float = 6.5
     k_att_yaw: float = 4.0
     k_rate: tuple[float, float, float] = (18.0, 18.0, 8.0)
+
+    # --- velocity-loop mode ---------------------------------------------
+    # "p"   : P-only velocity loop above (what every policy so far was trained on).
+    # "px4" : PX4 v1.15.4 velocity PID + thrust saturation/anti-windup
+    #         (math_utils.px4_velocity_control). Attitude P (6.5 = MC_ROLL_P) and the
+    #         rate loop are shared by both modes. Tilt limit = asset.tilt_clamp_deg
+    #         (real vehicle: MPC_TILTMAX_AIR set to the same value).
+    mode: str = "p"
+    px4_vel_xy_pid: tuple[float, float, float] = (1.8, 0.4, 0.2)   # MPC_XY_VEL_{P,I,D}_ACC
+    px4_vel_z_pid: tuple[float, float, float] = (4.0, 2.0, 0.0)    # MPC_Z_VEL_{P,I,D}_ACC
+    px4_thr_min: float = 0.12        # MPC_THR_MIN
+    px4_thr_max: float = 1.0         # MPC_THR_MAX
+    px4_thr_xy_marg: float = 0.3     # MPC_THR_XY_MARG
+    px4_veld_lp_hz: float = 5.0      # MPC_VELD_LP
+    px4_seed_integrator: bool = True
+    """At handoff the real vehicle has been cruising in offboard, so its integrator already
+    holds the wind-drag compensation. Seed it with -drag/m instead of 0 (a 0 start is a
+    transient that does not exist on the real vehicle)."""
 
 
 @configclass
@@ -905,6 +925,10 @@ class DroneBombardEnv(DirectRLEnv):
         self._ctrl_mass = torch.full((N,), self._ctrl_mass_nominal, device=device)
         self._kp_vel_scale = torch.ones(N, device=device)
         self._k_att_rate_scale = torch.ones(N, device=device)
+        # PX4-mode velocity-loop state (unused in "p" mode)
+        self._vel_int = torch.zeros(N, 3, device=device)
+        self._vel_prev = torch.zeros(N, 3, device=device)
+        self._vel_dot = torch.zeros(N, 3, device=device)
         self._payload_bc_scale = torch.ones(N, device=device)
         # Per-episode release latency in seconds (A group). The plant holds the
         # drop command for this long before actually detaching; the predictor
@@ -1460,6 +1484,48 @@ class DroneBombardEnv(DirectRLEnv):
         # controller that is not perfectly tuned for THIS airframe.
         kp_vel = self._kp_vel_scale.unsqueeze(-1)
 
+        if c.mode == "px4":
+            thrust_dir_w, thrust_mag = self._px4_thrust(v_filt, vel_w)
+        else:
+            thrust_dir_w, thrust_mag = self._p_thrust(v_filt, vel_w, quat_w, kp_vel)
+        self._attitude_rate_and_apply(thrust_dir_w, thrust_mag, v_filt, vel_w, quat_w, ang_vel_b)
+
+    def _px4_thrust(self, v_filt: torch.Tensor, vel_w: torch.Tensor):
+        """PX4 v1.15.4 velocity PID -> (desired body-up dir, thrust N). See math_utils.px4_velocity_control."""
+        c = self.cfg.controller
+        dt = self.cfg.sim.dt
+        s = self._kp_vel_scale.unsqueeze(-1)
+        gp = torch.tensor([c.px4_vel_xy_pid[0], c.px4_vel_xy_pid[0], c.px4_vel_z_pid[0]], device=self.device) * s
+        gi = torch.tensor([c.px4_vel_xy_pid[1], c.px4_vel_xy_pid[1], c.px4_vel_z_pid[1]], device=self.device) * s
+        gd = torch.tensor([c.px4_vel_xy_pid[2], c.px4_vel_xy_pid[2], c.px4_vel_z_pid[2]], device=self.device) * s
+        self._vel_dot = lowpass_derivative(vel_w, self._vel_prev, self._vel_dot, dt, c.px4_veld_lp_hz)
+        self._vel_prev = vel_w.clone()
+        hover = self._ctrl_mass * 9.81 / self._max_thrust
+        vel_sp = v_filt[:, :3]
+        thr, self._vel_int = px4_velocity_control(
+            vel_sp, vel_w, self._vel_int, self._vel_dot, hover, dt,
+            math.radians(self.cfg.asset.tilt_clamp_deg), gp, gi, gd,
+            c.px4_thr_min, c.px4_thr_max, c.px4_thr_xy_marg)
+        n = torch.linalg.norm(thr, dim=-1, keepdim=True).clamp(min=1e-6)
+        # PX4 commands the collective |thr_sp| along the ACTUAL body z (no projection)
+        return thr / n, (n.squeeze(-1) * self._max_thrust).clamp(max=self._max_thrust)
+
+    def seed_px4_controller(self, env_ids: torch.Tensor, vel_w: torch.Tensor):
+        """Handoff state for the PX4 loop: derivative filter at rest at the current velocity,
+        integrator holding the steady drag compensation (see ControllerCfg.px4_seed_integrator)."""
+        self._vel_prev[env_ids] = vel_w
+        self._vel_dot[env_ids] = 0.0
+        self._vel_int[env_ids] = 0.0
+        if self.cfg.controller.px4_seed_integrator and self.cfg.wind_force_enabled:
+            v_air = torch.zeros_like(vel_w)
+            v_air[:, :2] = self._wind_xy[env_ids] - vel_w[:, :2]
+            f = self.cfg.wind_drag_k * torch.linalg.norm(v_air, dim=-1, keepdim=True) * v_air
+            self._vel_int[env_ids, :2] = -f[:, :2] / self._ctrl_mass[env_ids].unsqueeze(-1)
+
+    def _p_thrust(self, v_filt, vel_w, quat_w, kp_vel):
+        """Original P-only velocity loop (training default)."""
+        from isaaclab.utils.math import matrix_from_quat
+        c = self.cfg.controller
         vel_err_xy = v_filt[:, :2] - vel_w[:, :2]
         vel_err_z = v_filt[:, 2] - vel_w[:, 2]
         accel_des_xy = torch.clamp(c.kp_vel_xy * kp_vel * vel_err_xy, min=-c.accel_xy_clamp, max=c.accel_xy_clamp)
@@ -1489,6 +1555,13 @@ class DroneBombardEnv(DirectRLEnv):
         body_z_w = matrix_from_quat(quat_w)[:, :, 2]  # current body-up in world
         # rotor thrust magnitude = projection of desired force onto current body-up
         thrust_mag = torch.clamp((f_des * body_z_w).sum(dim=-1), min=0.0, max=self._max_thrust)
+        return thrust_dir_w, thrust_mag
+
+    def _attitude_rate_and_apply(self, thrust_dir_w, thrust_mag, v_filt, vel_w, quat_w, ang_vel_b):
+        """Attitude P -> rate P -> torque, plus airframe wind drag; shared by both velocity loops."""
+        from isaaclab.utils.math import matrix_from_quat
+        c = self.cfg.controller
+        body_z_w = matrix_from_quat(quat_w)[:, :, 2]
 
         # attitude error: rotate current body-up toward desired thrust dir.
         # axis*angle is a WORLD-frame rotation vector; convert to BODY frame

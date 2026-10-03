@@ -104,7 +104,7 @@ type: index
 | [[research/legacy/system_overview]] | 시스템 전체 구조 (Gazebo/PX4/ROS2 — jekyun 브랜치) | 2026-04-14 | active |
 | [[research/legacy/terminal_overshoot_trap]] | v12 종단 보상 트랩 (Terminal "Overshoot Moat") | 2026-06-16 | implemented |
 
-## experiments — 논문 단계 실험 (exp_025~) (18)
+## experiments — 논문 단계 실험 (exp_025~) (19)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -125,6 +125,7 @@ type: index
 | [[experiments/exp_039_gate_aware_stage23]] | exp_039 — 게이트 인지 학습 2·3단계: 게이트를 손실에 결합해도 평활 항 이상은 없다 | 2026-09-25 | done |
 | [[experiments/exp_040_consistency_final]] | exp_040 — 시간 일관성 GRU(GRU-C) 최종 재학습·전 조건 비교: 동률 → 본 방법은 GRU-S + EMA 유지 | 2026-09-25 | done |
 | [[experiments/exp_041_ema_alpha_sweep]] | exp_041 — EMA α 민감도: 정상·현실 돌풍 3조건 모두 [0.1, 0.4]에서 평탄, 무필터만 유의하게 나쁨 → α = 0.3 유지 | 2026-09-25 | done |
+| [[experiments/exp_042_px4_controller_noretrain]] | exp_042 — PX4 v1.15.4 속도 PID에서 P 학습 정책을 재학습 없이 평가: L0는 강건, GRU 잔차는 깨진다 | 2026-10-03 | done |
 | [[experiments/training_history]] | 전체 학습 히스토리 (RL_Project_Log.md에서 이전) | 2026-04-14 | active |
 
 ## experiments/legacy — exp_001~024 (37)
@@ -264,4 +265,4 @@ type: index
 
 ---
 
-총 206편.
+총 207편.

@@ -862,3 +862,82 @@ def release_gate(
         & (ang_vel_norm <= max_ang_vel)
         & (payload_attached > 0)
     )
+
+
+# ---------------------------------------------------------------------------
+# PX4 v1.15.4 multicopter velocity controller (PositionControl::_velocityControl
+# + _accelerationControl + ControlMath::limitTilt), ported line-for-line into a
+# z-UP world frame (PX4 itself is NED). Defaults are the v1.15.4 parameter
+# defaults: MPC_XY_VEL_{P,I,D}_ACC 1.8/0.4/0.2, MPC_Z_VEL_{P,I,D}_ACC 4.0/2.0/0.0,
+# MPC_THR_MAX 1.0, MPC_THR_MIN 0.12, MPC_THR_XY_MARG 0.3, MPC_VELD_LP 5 Hz.
+# Not ported (2nd-order for this task): attitude reference model, the rate PID
+# (PX4 rate gains are in normalized actuator units, not physical), notch filters.
+# ---------------------------------------------------------------------------
+
+def limit_tilt_up(body_z: torch.Tensor, max_angle: float) -> torch.Tensor:
+    """ControlMath::limitTilt with world_unit = +z (up). body_z: [N,3] unit."""
+    dot = body_z[:, 2].clamp(-1.0, 1.0)
+    angle = torch.acos(dot).clamp(max=max_angle)
+    rej = body_z.clone()
+    rej[:, 2] = 0.0
+    n = torch.linalg.norm(rej, dim=-1, keepdim=True)
+    rej = torch.where(n < 1e-7, torch.tensor([1.0, 0.0, 0.0], device=body_z.device).expand_as(rej), rej / n.clamp(min=1e-7))
+    out = rej * torch.sin(angle).unsqueeze(-1)
+    out[:, 2] = torch.cos(angle)
+    return out
+
+
+def px4_velocity_control(
+    vel_sp: torch.Tensor, vel: torch.Tensor, vel_int: torch.Tensor, vel_dot: torch.Tensor,
+    hover_thrust: torch.Tensor, dt: float, tilt_max: float,
+    gain_p: torch.Tensor, gain_i: torch.Tensor, gain_d: torch.Tensor,
+    thr_min: float = 0.12, thr_max: float = 1.0, thr_xy_marg: float = 0.3, g: float = 9.80665,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """One PX4 velocity-control step. All vectors [N,3], world frame, z UP.
+
+    gain_* : [N,3] (per-env so DR can scale them). hover_thrust: [N] normalized.
+    vel_dot: filtered velocity derivative (PX4 feeds D with it, not with the error).
+    Returns (thrust_sp [N,3] normalized to max thrust, updated vel_int).
+    """
+    vel_int = vel_int.clone()
+    vel_int[:, 2] = vel_int[:, 2].clamp(-g, g)
+    vel_err = vel_sp - vel
+    acc_sp = vel_err * gain_p + vel_int - vel_dot * gain_d
+
+    # _accelerationControl (decoupling OFF: include acc_sp z in the attitude)
+    body_z = torch.stack([acc_sp[:, 0], acc_sp[:, 1], g + acc_sp[:, 2]], dim=-1)
+    body_z = body_z / torch.linalg.norm(body_z, dim=-1, keepdim=True).clamp(min=1e-6)
+    body_z = limit_tilt_up(body_z, tilt_max)
+    thrust_up = acc_sp[:, 2] * (hover_thrust / g) + hover_thrust
+    collective = torch.maximum(thrust_up / body_z[:, 2].clamp(min=1e-3), torch.full_like(thrust_up, thr_min))
+    thr = body_z * collective.unsqueeze(-1)
+
+    # vertical anti-windup: freeze the z integrator while saturated in the error's direction
+    ez = vel_err[:, 2]
+    sat_z = ((thr[:, 2] <= thr_min) & (ez <= 0.0)) | ((thr[:, 2] >= thr_max) & (ez >= 0.0))
+    ez = torch.where(sat_z, torch.zeros_like(ez), ez)
+
+    # prioritize vertical thrust, keep a horizontal margin
+    thr_xy = thr[:, :2]
+    nxy = torch.linalg.norm(thr_xy, dim=-1)
+    alloc_h = torch.clamp(nxy, max=thr_xy_marg)
+    thr_z = torch.minimum(thr[:, 2], torch.sqrt((thr_max ** 2 - alloc_h ** 2).clamp(min=0.0)))
+    thr_max_xy = torch.sqrt((thr_max ** 2 - thr_z ** 2).clamp(min=0.0))
+    scale = torch.where(nxy > thr_max_xy, thr_max_xy / nxy.clamp(min=1e-7), torch.ones_like(nxy))
+    thr_xy = thr_xy * scale.unsqueeze(-1)
+
+    # horizontal tracking anti-windup (Rundqwist 1990), gain 2/P
+    acc_prod = thr_xy * (g / hover_thrust).unsqueeze(-1)
+    acc_xy = acc_sp[:, :2]
+    use_prod = (acc_xy ** 2).sum(-1) > (acc_prod ** 2).sum(-1)
+    acc_lim = torch.where(use_prod.unsqueeze(-1), acc_prod, acc_xy)
+    exy = vel_err[:, :2] - (2.0 / gain_p[:, :1]) * (acc_xy - acc_lim)
+
+    vel_int = vel_int + torch.cat([exy, ez.unsqueeze(-1)], dim=-1) * gain_i * dt
+    return torch.cat([thr_xy, thr_z.unsqueeze(-1)], dim=-1), vel_int
+
+
+def lowpass_derivative(x: torch.Tensor, x_prev: torch.Tensor, d_prev: torch.Tensor, dt: float, cutoff_hz: float) -> torch.Tensor:
+    """PX4 BlockDerivative: raw finite difference through a 1st-order low-pass (MPC_VELD_LP)."""
+    alpha = dt / (dt + 1.0 / (2.0 * math.pi * cutoff_hz))
+    return d_prev + alpha * ((x - x_prev) / dt - d_prev)
