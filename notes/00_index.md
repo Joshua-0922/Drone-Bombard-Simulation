@@ -100,6 +100,7 @@ notes/
   - 보완(우선): [[research/sim2real_indoor_legal_scale]] — 투하 금지는 "위험 우려 있는 낙하물" 한정, 실내 통제 환경이 가장 안전, 실측 서보 σ가 작으면 실내 축소 실증 성립, 기하가 바뀌면 L0 처음부터 재학습(약 1시간)
   - 근거: [[research/sim2real_hardware_spec]] · [[research/sim2real_prior_hw_experiments]] · [[research/sim2real_scale_wind_retrain]] · [[research/sim2real_firmware_stack]] · 검토 [[research/sim2real_strategy_review]]
 - [[research/perception_integration_survey]] — 🔎 **(10-03) 표적을 참값 → YOLO로 바꿀 때 선행연구는 재학습하나?** 실제 검출기를 학습 루프에 넣은 연구 없음. 참값 학습 → 배포 시 검출기, 차이는 오차 모델 반영(Swift 미세조정)
+- [[research/sim2real_field_feasibility_f450]] — (10-11) 하한 5 m·F450 기준 부지(고정 방위 76×36 m, 버퍼 10 m)·추력 여유(T/W 2.2–2.5)·실기 오차 예산(CEP50 0.3–0.4 m 예상)·성공 가능성
 - [[research/release_altitude_task_difficulty]] — (10-11) 정책은 투하 고도 하한에 붙는다; 난이도는 속도로(항력 ∝ v²), 하한은 운용 제약으로 유지; 선행 13편의 기체·고도·기동; F450 전환 방향
 - [[research/related_work_survey]] — 선행연구 조사(CARP 계보·학습 투척·바람 하 RL·TossingBot), 겹치는 주장 없음
 - [[research/sim2real_gap]] — 시뮬레이터에 없는 것(로터 유입류·모터 지연·게인 실측)과 실기 계획의 전제
