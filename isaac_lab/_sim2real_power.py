@@ -2,11 +2,11 @@
 for per-arm n given CEP50 pairs, 2D Gaussian error with optional heavy tail. stdlib only:  python3 isaac_lab/_sim2real_power.py"""
 import random, math
 random.seed(1)
-def rad(cep50, n, tail):
+def rad(cep50, n, tail, sg=0.0):  # sg: per-sortie positioning bias, m per axis (GPS vs RTK, sim2real_hardware_spec §7)
     s=cep50/1.1774
     out=[]
     for _ in range(n):
-        r=math.hypot(random.gauss(0,s),random.gauss(0,s))
+        r=math.hypot(random.gauss(0,s)+random.gauss(0,sg),random.gauss(0,s)+random.gauss(0,sg))
         if tail and random.random()<0.1: r*=1.6   # heavier tail: CEP90/CEP50 ~2
         out.append(r)
     return out
@@ -20,3 +20,6 @@ for tail in (0,1):
     for n in (10,20,30,40,60):
         k=sum(mw_p(rad(c1,n,tail),rad(c2,n,tail)) for _ in range(2000)); row.append(f"{n}:{k/2000:.2f}")
     print("tail" if tail else "rayl",c1,c2," ".join(row))
+# positioning bias sweep at n=40, 0.25 -> 0.20 (sim2real_hardware_spec.md section 7)
+for sg in (0.0,0.02,0.05,0.1,0.2,0.3,0.5,1.0,1.3):
+    k=sum(mw_p(rad(0.25,40,0,sg),rad(0.20,40,0,sg)) for _ in range(2000)); print(f"sg={sg:.2f} power(n=40)={k/2000:.2f}")
