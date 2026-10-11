@@ -27,7 +27,7 @@ def generate_launch_description():
     res_path = ":".join(["/workspace/gazebo_models", f"{PX4}/Tools/simulation/gz/models"])
     env = f"mkdir -p /tmp/runtime-root && export XDG_RUNTIME_DIR=/tmp/runtime-root && export GZ_SIM_RESOURCE_PATH={res_path} && "
 
-    gz = ExecuteProcess(cmd=["bash", "-c", [env, "gz sim -s -r ", world]], name="gz_sim", output="log")
+    gz = ExecuteProcess(cmd=["bash", "-c", [env, "gz sim -s -r --headless-rendering ", world]], name="gz_sim", output="log")
     wind = TimerAction(period=4.0, actions=[ExecuteProcess(
         cmd=["bash", "-c", ["gz topic -t /ocean_current -m gz.msgs.Vector3d -p 'x: ", wx, " y: ", wy, " z: 0'"]],
         name="set_wind", output="screen")])
@@ -43,9 +43,9 @@ def generate_launch_description():
         name="px4_sitl", output="log")])
     ctrl = TimerAction(period=10.0, actions=[Node(package="drone_controller", executable="controller",
                                                     name="drone_controller", output="log",
-                                                    parameters=[{"velocity_lpf_alpha": 0.4}])])
+                                                    parameters=[{"velocity_lpf_alpha": 0.4, "use_sim_time": True}])])
     mission = Node(package="drop_policy", executable="drop_mission", name="drop_mission_node",
-                   output="screen", parameters=[params])
+                   output="screen", parameters=[params, {"use_sim_time": True}])
     mission_t = TimerAction(period=10.0, actions=[mission])
     return LaunchDescription([
         DeclareLaunchArgument("world"), DeclareLaunchArgument("params"),

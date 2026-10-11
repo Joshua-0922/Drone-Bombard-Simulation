@@ -18,7 +18,6 @@ at rest, 0.24 m for x500).
 import json
 import math
 import os
-import time
 
 import numpy as np
 import rclpy
@@ -70,7 +69,7 @@ class DropMissionNode(Node):
         self.yaw_pub = self.create_publisher(Float32, "/drone/cmd/yaw", 10)
 
         self.state = "WAIT"
-        self.state_t = time.monotonic()
+        self.state_t = self.now()
         self.armed_offboard = False
         self.est = None              # (pos, vel, R, ang) ENU local, altitude above ground in pos[2]
         self.payload = None          # world ENU position of the payload
@@ -86,6 +85,11 @@ class DropMissionNode(Node):
     # ----------------------------------------------------------------- callbacks
     def status_cb(self, msg):
         self.armed_offboard = (msg.arming_state == 2 and msg.nav_state == 14)
+
+    def now(self):
+        """Seconds on the node clock: wall time on hardware, Gazebo /clock with use_sim_time (SITL may run
+        slower than real time, e.g. while rendering video; PX4 is lockstepped to the same clock)."""
+        return self.get_clock().now().nanoseconds * 1e-9
 
     def odom_cb(self, msg):
         if not (np.all(np.isfinite(msg.position)) and np.all(np.isfinite(msg.velocity))):
@@ -103,6 +107,7 @@ class DropMissionNode(Node):
         vel = R @ np.array([tw.linear.x, tw.linear.y, tw.linear.z])       # odometry twist is in the body frame
         ang = np.array([tw.angular.x, tw.angular.y, tw.angular.z])
         self.truth = (pos, vel, R, ang)
+        self.sim_t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
         if self.state_source == "gz_truth":
             self.on_state(pos, vel, R, ang)
 
@@ -110,10 +115,10 @@ class DropMissionNode(Node):
         self.est = (pos, vel, R, ang)
         if self.state == "POLICY" and not self.policy.released:
             if self.policy.release_check(pos, vel, R, ang):
-                self.release_state = dict(t=time.monotonic() - self.handoff_t, pos=pos.tolist(), vel=vel.tolist())
-                self.drop_cmd_t = time.monotonic() + self.release_delay
+                self.release_state = dict(t=self.now() - self.handoff_t, pos=pos.tolist(), vel=vel.tolist())
+                self.drop_cmd_t = self.now() + self.release_delay
                 self.get_logger().info(f"RELEASE decided at {pos.round(2)} v={vel.round(2)} -> drop in {self.release_delay:.2f}s")
-        if self.drop_cmd_t is not None and time.monotonic() >= self.drop_cmd_t:
+        if self.drop_cmd_t is not None and self.now() >= self.drop_cmd_t:
             self.drop_pub.publish(Empty())
             self.policy.attached = False
             self.release_state["detach_pos"] = pos.tolist()
@@ -128,6 +133,7 @@ class DropMissionNode(Node):
             self.mount_log.append((self.payload - drone_w).tolist())
         if self.state == "POLICY" and not self.policy.attached and self.result is None \
                 and p.z <= pc.PAYLOAD_GROUND_Z + pc.PAYLOAD_LAND_EPS:
+            self.land_sim_t = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
             self.finish("landed", impact_w=self.payload[:2])
 
     def payload_rel(self):
@@ -159,7 +165,7 @@ class DropMissionNode(Node):
     # ----------------------------------------------------------------- state machine
     def goto(self, s):
         self.get_logger().info(f"{self.state} -> {s}")
-        self.state, self.state_t = s, time.monotonic()
+        self.state, self.state_t = s, self.now()
 
     def tick(self):
         if self.est is None:
@@ -175,7 +181,7 @@ class DropMissionNode(Node):
         elif self.state == "CLIMB":
             self.cmd_position([0.0, 0.0, self.cruise_alt])
             if abs(pos[2] - self.cruise_alt) < 0.3 and np.linalg.norm(vel) < 0.3 and abs(yaw_err) < math.radians(5) \
-                    and time.monotonic() - self.state_t > 3.0:
+                    and self.now() - self.state_t > 3.0:
                 carried = self.payload_rel()
                 if carried is not None:
                     self.hover_mount = carried.tolist()
@@ -186,13 +192,14 @@ class DropMissionNode(Node):
             along = float((self.target_local - pos[:2]) @ u)
             if along <= self.marker_dist:
                 self.policy.reset(np.array([*(u * self.cruise_speed), 0.0]))
-                self.handoff_t = time.monotonic()
+                self.handoff_t = self.now()
+                self.handoff_sim_t = getattr(self, "sim_t", None)
                 self.handoff_state = dict(pos=pos.tolist(), vel=vel.tolist(), along=along)
                 self.goto("POLICY")
         elif self.state == "POLICY":
             v, yr, obs = self.policy.step(pos, vel, R, ang)
             self.cmd_velocity(v, yr)
-            t = time.monotonic() - self.handoff_t
+            t = self.now() - self.handoff_t
             _, d_imp, _ = self.policy.ccip(pos, vel)
             px4 = getattr(self, "px4_est", None)
             self.trace.append(dict(px4_pos=None if px4 is None else px4[0].round(3).tolist(), t=round(t, 2), pos=pos.round(3).tolist(), vel=vel.round(3).tolist(),
@@ -211,10 +218,11 @@ class DropMissionNode(Node):
                    target_w=self.target_w.tolist(), spawn_w=self.spawn_w.tolist(),
                    heading_deg=math.degrees(self.heading), cruise_speed=self.cruise_speed, cruise_alt=self.cruise_alt,
                    marker_dist=self.marker_dist, handoff=getattr(self, "handoff_state", None),
-                   release=self.release_state, deliver_time_s=time.monotonic() - self.handoff_t if self.handoff_t else None,
+                   release=self.release_state, deliver_time_s=self.now() - self.handoff_t if self.handoff_t else None,
                    mount_offset_mean=np.mean(self.mount_log, axis=0).tolist() if self.mount_log else None,
                    mount_offset_std=np.std(self.mount_log, axis=0).tolist() if self.mount_log else None,
                    mount_samples=len(self.mount_log), hover_mount_offset=getattr(self, "hover_mount", None),
+                   handoff_sim_t=getattr(self, "handoff_sim_t", None), land_sim_t=getattr(self, "land_sim_t", None),
                    trace=self.trace)
         if impact_w is not None:
             res["impact_w"] = np.asarray(impact_w).tolist()
