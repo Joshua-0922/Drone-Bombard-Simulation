@@ -1133,6 +1133,7 @@ RL만 떠안는다. ③ 학습 잔차 권한 1.0 m vs SL 평가 2.0 m로 클램�
 - sim2real 순서: 시뮬 제어기를 실기 펌웨어와 맞춤 → 그 위에서 덤프 → 잔차 적합 → SITL → 실기. 실기 라벨 재적합이 최종 보정이다.
 - PX4 모드 평가에서 2 rad/s 각속도 가드는 실패가 아니라 가드 트립을 센다(가드 6 rad/s면 0건).
 → [[experiments/exp_042_px4_controller_noretrain]] · [[research/sim2real_controller_alignment]]
+- (10-11) 투하 고도 하한은 정책이 항상 꽉 채워 쓴다 → 하한은 과제 정의(운용 제약)이지 셰이핑이 아니다. 과제 난이도는 고도가 아니라 투하 속도로 만든다 → [[research/release_altitude_task_difficulty]]
 - (10-11 재확인) 진짜 PX4 SITL(Gazebo)에서도 P 학습 GRU는 L0보다 나빴다(중앙값 0.282 대 0.203 m, 맞바람 1.23 m) → [[experiments/exp_043_gazebo_px4_sim2sim]]
 
 ---

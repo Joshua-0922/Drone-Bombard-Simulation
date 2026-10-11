@@ -17,7 +17,7 @@ type: index
 |---|---|---|---|
 | [[00_index]] | 드론 정밀 투하 연구 — Obsidian 대시보드 | 2026-04-14 | active |
 
-## research — 현행 연구 노트 (41)
+## research — 현행 연구 노트 (42)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -37,6 +37,7 @@ type: index
 | [[research/perception_integration_survey]] | 선행연구 조사 — 표적 위치를 참값에서 검출기(YOLO)로 바꿀 때, 학습을 다시 하는가 | 2026-10-03 | active |
 | [[research/physical_payload_attach]] | 물리 페이로드 부착/분리 — kinematic weld 패턴 | 2026-07-21 | active |
 | [[research/related_work_survey]] | 선행연구 조사 — 우리는 어디에 서 있나 | 2026-08-27 | open |
+| [[research/release_altitude_task_difficulty]] | 투하 고도·속도 상한과 과제 난이도 — 정책은 고도 하한에 붙는다, 난이도는 속도로 만든다 | 2026-10-11 | open |
 | [[research/release_gate_jitter]] | 릴리즈 게이트는 첫 교차 판정이다 — 잔차는 정확한 것만으로 부족하고 매끄러워야 한다 | 2026-09-01 | active |
 | [[research/research_architecture]] | 드론 정밀 투하 연구 — 최종 아키텍처 v6 | 2026-08-23 | active |
 | [[research/residual_ceiling]] | 잔차 RL의 상한선 — 측정했다, 그리고 레시피 | 2026-08-30 | active |
@@ -243,10 +244,11 @@ type: index
 | [[daily/daily_2026-04-16]] | 연구 일지 — 2026-04-16 | 2026-04-16 | complete |
 | [[daily/daily_2026-04-14]] | 연구 일지 — 2026-04-14 | 2026-04-14 | complete |
 
-## sessions — 세션 기록·명령 (12)
+## sessions — 세션 기록·명령 (13)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
+| [[sessions/session_2026-10-11]] | 세션 2026-10-11 | 2026-10-11 | done |
 | [[sessions/session_2026-10-03]] | 세션 — 2026-10-03 | 2026-10-03 | complete |
 | [[sessions/session_2026-09-25]] | 세션 — 2026-09-25 | 2026-09-25 | complete |
 | [[sessions/session_2026-09-24]] | 세션 — 2026-09-24 (UTC 04:50 ~ 23:30) | 2026-09-24 | complete |
@@ -269,4 +271,4 @@ type: index
 
 ---
 
-총 211편.
+총 213편.

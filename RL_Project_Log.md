@@ -335,6 +335,8 @@ wandb: `sl_gen_unseenR` / `sl_gen_policy_transfer` / `sl_gen_label_count` (job_t
 
 # 2. Recent Progress
 
+- **2026-10-11 오후:** 최고 사례 영상(측풍 3 m/s, 0.043 m), 녹화 모드·use_sim_time. 과제 난이도 점검: 정책이 투하 고도 하한 3 m에 붙음, 난이도는 속도로 만들기로. 기체 F450 전환·시작 고도 5–7 m 방향, 속도 상한·하한·페이로드 미결정.
+
 ## 2026-09-07 (오후) — 중간보고서 Isaac Lab 파트 작성
 
 | 항목 | 내용 |
