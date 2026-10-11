@@ -6,6 +6,8 @@
 
 # 1. Current State
 
+**2026-10-11** — Isaac 정책을 ROS 2 노드(`ros2_ws/src/drop_policy`)로 이식, Isaac 정합 Gazebo 모델 + 진짜 PX4 v1.15.4 SITL에서 12/12 착지. L0 6/6이 0.5 m 이내(중앙값 0.203 m), 장착 −0.140 m·분리 정상. GRU는 PX4에서 불리(Rule 47) → 현 배포 최선 L0. `drone_controller` yaw 버그(속도 모드 yaw=0) 수정. → [[notes/experiments/exp_043_gazebo_px4_sim2sim]]
+
 **2026-10-03 (저녁)** — PX4 v1.15.4 속도 PID 이식(`--controller px4`). exp_042: P로 학습한 L0는 PX4에서 강건(0.305→0.279), GRU 잔차는 붕괴(0.204→0.338, Rule 47). 결정: 학습·평가·실기를 PX4 PID로 통일하고, 재학습 유발 요인 17개를 묶어 **하드웨어 결정 후 L0를 처음부터 재학습** → GRU 적합 → 표 재평가. → [[notes/research/sim2real_retrain_audit]]
 
 **2026-10-03 (마감)** — sim2real 결정: **실외 X500 + 자연풍 기록 + 원 스케일**, 장소 서울대 대운동장(관악구 R-75 → 드론원스톱 사전 승인 필요). 효과 관문 2–4 m/s −41%, 4–6 m/s −48%, 2 m/s 미만 −4%. 구매 목록 최소안 약 430–440만 원(무게 예산 1.66–2.0 kg). YOLO 하네스 카메라 버그 3개 수정. → [[notes/research/sim2real_bom]] · [[notes/daily/daily_2026-10-03]]
@@ -524,6 +526,8 @@ SL은 정책 변경 시 몇 분짜리 재적합, RL은 애초에 전체 재학�
 ---
 
 # 4. Training History
+
+- **2026-10-11:** exp_043 Gazebo + PX4 SITL 투하 12 에피소드(L0 6/6 0.5 m 이내).
 
 - **2026-10-03:** exp_042 PX4 PID 재학습 없는 평가 24 run + 진단 8 run — L0 강건, GRU 붕괴(Rule 47).
 

@@ -4,6 +4,8 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 
 # ROS 2 메시지
 from geometry_msgs.msg import Twist, Vector3
+from std_msgs.msg import Float32
+import math
 # PX4 메시지
 from px4_msgs.msg import OffboardControlMode, TrajectorySetpoint, VehicleCommand, VehicleStatus, VehicleCommandAck
 
@@ -44,6 +46,13 @@ class DroneControllerNode(Node):
         # B. 속도 제어 (추적 모드)
         self.vel_sub = self.create_subscription(
             Twist, '/drone/cmd/velocity', self.velocity_command_callback, 10)
+
+        # C. Heading for POSITION mode (ENU yaw, rad, CCW from East). Without it the position
+        # setpoint carries yaw=NaN and the heading after takeoff is whatever PX4 holds -- the
+        # Isaac drop policy observes its heading, so drop_policy pins it to the approach heading.
+        self.yaw_sub = self.create_subscription(
+            Float32, '/drone/cmd/yaw', self.yaw_command_callback, 10)
+        self.target_yaw_ned = float('nan')
 
         self.status_sub = self.create_subscription(
             VehicleStatus, '/fmu/out/vehicle_status',
@@ -98,6 +107,11 @@ class DroneControllerNode(Node):
         self.control_mode = "POSITION"
         # ROS(ENU) -> PX4(NED): x->N, y->-E, z->-D
         self.target_pos = [msg.x, -msg.y, -msg.z] 
+
+    def yaw_command_callback(self, msg):
+        # ENU yaw (CCW from East) -> PX4 NED heading (CW from North)
+        y = math.pi / 2.0 - float(msg.data)
+        self.target_yaw_ned = math.atan2(math.sin(y), math.cos(y))
 
     def velocity_command_callback(self, msg):
         self.control_mode = "VELOCITY"
@@ -217,7 +231,7 @@ class DroneControllerNode(Node):
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         msg.position = [float(pos_ned[0]), float(pos_ned[1]), float(pos_ned[2])]
         msg.velocity = [float('nan'), float('nan'), float('nan')]
-        msg.yaw = float('nan')
+        msg.yaw = self.target_yaw_ned
         self.trajectory_setpoint_pub.publish(msg)
 
     def publish_velocity_setpoint(self, vel_ned):
@@ -225,6 +239,10 @@ class DroneControllerNode(Node):
         msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
         msg.position = [float('nan'), float('nan'), float('nan')]
         msg.velocity = [float(vel_ned[0]), float(vel_ned[1]), float(vel_ned[2])]
+        # yaw must be NaN for PX4 to follow yawspeed. Left at the message default (0.0) PX4 pins
+        # the heading to North and ignores yawspeed -- every RL yaw-rate command was silently
+        # dropped before 2026-10-11 (found in the drop_policy sim-to-sim check).
+        msg.yaw = float('nan')
         msg.yawspeed = float(vel_ned[3])
         self.trajectory_setpoint_pub.publish(msg)
 

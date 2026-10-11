@@ -49,6 +49,14 @@ type: reference
 | ⑤ 주입 | `play.py` `_SLResidual` L431 (recurrent 모듈이면 env별 hidden 유지) → `_ResidualEMA` L485 (`--sl_ema 0.3`, α 근거 exp_041) → 행동 채널 5:7 → `task_env._ccip` L695 (예측 착탄점 = 공식 + 2 m × 채널) |
 | 회귀기 파일 | 컨테이너 `/tmp/sl/res_gru_S.pt`(**본 방법**) · `res_gi.pt`(수제 MLP, ablation) · `res_gru_{R,I,U,Urel2,Urel4,C}.pt`(논문 미포함 변형) |
 
+## 3b. 배포 (ROS 2, Gazebo SITL → 실기)
+
+| 무엇 | 위치 |
+|---|---|
+| 정책 내보내기 | `isaac_lab/_export_deploy.py` → `ros2_ws/src/drop_policy/models/drop_policy_models.npz` |
+| 관측 동등성 기록 | `isaac_lab/_trace_policy_obs.py` |
+| numpy 코어 / 노드 / 실행 | `ros2_ws/src/drop_policy/` (README 참조), Gazebo 모델 `gazebo_models/x500_drop`, `payload_drop`, airframe `gazebo_models/px4_airframes/4020_gz_x500_drop` |
+
 ## 4. 평가·표·그림
 
 | 무엇 | 위치 |

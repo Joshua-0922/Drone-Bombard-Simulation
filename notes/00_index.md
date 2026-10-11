@@ -108,6 +108,7 @@ notes/
 
 ### 실험 (experiments/) — 논문 단계
 - [[experiments/training_history]] — 전체 학습·평가 히스토리 허브
+- [[experiments/exp_043_gazebo_px4_sim2sim]] — ✅ **(10-11) Isaac 정책을 ROS 2 노드로 이식, Gazebo + 진짜 PX4 SITL에서 12/12 착지. L0 6/6 0.5 m 이내(중앙값 0.20 m), 장착 −0.140 m 정상. GRU는 PX4 재적합 전까지 불리**
 - [[experiments/exp_042_px4_controller_noretrain]] — ⛔ **(10-03) PX4 속도 PID에서 재학습 없이: L0는 강건(0.279), GRU 잔차는 붕괴(0.338, L0보다 +21%) → GRU 재적합 필수 (Rule 47)**
 - [[experiments/exp_041_ema_alpha_sweep]] — ✅ EMA α 민감도(정상 + 현실 돌풍 A·B): [0.1, 0.4] 평탄, 무필터만 유의 악화 → **α=0.3 유지, 논문 당위성 §5**
 - [[experiments/exp_040_consistency_final]] — 🟰 시간 일관성 GRU 최종 비교, 12조건 전부 동률 → 본 방법 = GRU-S + EMA 유지
@@ -128,7 +129,7 @@ notes/
 - [[experiments/exp_025_dr_scale_sweep_gate]] — DR 스윕 유효성 게이트(무학습): 오라클 갭 단조 증가
 
 ### 에러 · 일지 · 세션 · 환경
-전체 목록은 목차 [[00_toc]]에 있다. 최근: [[errors/err_20261003_yolo_eval_camera]] · [[daily/daily_2026-09-25]] · [[daily/daily_2026-09-24]] · [[sessions/session_2026-09-24]] · [[errors/err_20260827_free_exit_termination]]
+전체 목록은 목차 [[00_toc]]에 있다. 최근: [[errors/err_20261011_offboard_yaw_nan]] · [[errors/err_20261003_yolo_eval_camera]] · [[daily/daily_2026-09-25]] · [[daily/daily_2026-09-24]] · [[sessions/session_2026-09-24]] · [[errors/err_20260827_free_exit_termination]]
 
 ---
 

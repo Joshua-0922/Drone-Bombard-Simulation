@@ -105,7 +105,7 @@ type: index
 | [[research/legacy/system_overview]] | 시스템 전체 구조 (Gazebo/PX4/ROS2 — jekyun 브랜치) | 2026-04-14 | active |
 | [[research/legacy/terminal_overshoot_trap]] | v12 종단 보상 트랩 (Terminal "Overshoot Moat") | 2026-06-16 | implemented |
 
-## experiments — 논문 단계 실험 (exp_025~) (19)
+## experiments — 논문 단계 실험 (exp_025~) (20)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -127,6 +127,7 @@ type: index
 | [[experiments/exp_040_consistency_final]] | exp_040 — 시간 일관성 GRU(GRU-C) 최종 재학습·전 조건 비교: 동률 → 본 방법은 GRU-S + EMA 유지 | 2026-09-25 | done |
 | [[experiments/exp_041_ema_alpha_sweep]] | exp_041 — EMA α 민감도: 정상·현실 돌풍 3조건 모두 [0.1, 0.4]에서 평탄, 무필터만 유의하게 나쁨 → α = 0.3 유지 | 2026-09-25 | done |
 | [[experiments/exp_042_px4_controller_noretrain]] | exp_042 — PX4 v1.15.4 속도 PID에서 P 학습 정책을 재학습 없이 평가: L0는 강건, GRU 잔차는 깨진다 | 2026-10-03 | done |
+| [[experiments/exp_043_gazebo_px4_sim2sim]] | exp_043 — Isaac 정책을 ROS 2 노드로 이식해 Gazebo + PX4 SITL에서 투하: L0 6/6 성공(중앙값 0.20 m), 장착 정상 | 2026-10-11 | done |
 | [[experiments/training_history]] | 전체 학습 히스토리 (RL_Project_Log.md에서 이전) | 2026-04-14 | active |
 
 ## experiments/legacy — exp_001~024 (37)
@@ -171,10 +172,11 @@ type: index
 | [[experiments/legacy/exp_023_table1_baselines]] | exp_023 — Table 1 1차: 규칙 기반 릴리스 베이스라인 vs 학습 정책 | 2026-08-03 | done |
 | [[experiments/legacy/exp_024_v20_warmstart_failure]] | exp_024 — (a) 안 검증: v20(방위 랜덤) warm-start 학습은 과제가 아니라 페널티 회피로 수렴한다 | 2026-08-03 | done |
 
-## errors — 에러 해결 기록 (14)
+## errors — 에러 해결 기록 (15)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
+| [[errors/err_20261011_offboard_yaw_nan]] | drone_controller가 PX4에 yaw를 0으로 보내 기수가 북쪽에 고정되고 yaw 속도 명령이 무시되었다 | 2026-10-11 | resolved |
 | [[errors/err_20261003_yolo_eval_camera]] | yolo_eval.py 카메라가 표적을 한 번도 보지 못하고 있었다 — 3개 버그 | 2026-10-03 | resolved |
 | [[errors/err_20260830_aim_reward_residual_inclusive]] | task_env의 dense aim 보상이 잔차 포함 오차를 먹고 있다 | 2026-08-30 | resolved |
 | [[errors/err_20260827_payload_drag_body_frame]] | err_20260827 — 페이로드 항력을 월드 프레임으로 계산해놓고 링크 프레임으로 전달 | 2026-08-27 | resolved |
@@ -190,10 +192,11 @@ type: index
 | [[errors/err_20260320_physics_explosion]] | Err — Gazebo 물리 폭발 (d_xy = 1.98×10¹¹ m) | 2026-03-20 | resolved |
 | [[errors/err_20260319_ode_aabb_crash]] | Err — ODE AABB 크래시 (드론 스폰 고도) | 2026-03-19 | resolved |
 
-## daily — 연구 일지 (45)
+## daily — 연구 일지 (46)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
+| [[daily/daily_2026-10-11]] | 연구 일지 — 2026-10-11 | 2026-10-11 | complete |
 | [[daily/daily_2026-10-03]] | 연구 일지 — 2026-10-03 | 2026-10-03 | complete |
 | [[daily/daily_2026-09-25]] | 연구 일지 — 2026-09-25 | 2026-09-25 | complete |
 | [[daily/daily_2026-09-24]] | 연구 일지 — 2026-09-24 | 2026-09-24 | complete |
@@ -266,4 +269,4 @@ type: index
 
 ---
 
-총 208편.
+총 211편.
