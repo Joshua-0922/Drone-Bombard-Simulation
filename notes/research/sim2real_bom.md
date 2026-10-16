@@ -7,7 +7,9 @@ type: research
 
 # sim2real 구매 목록 (실외, X500 V2, 이륙중량 2 kg 이하)
 
-관련: [[research/sim2real_indoor_vs_outdoor]] §7 · [[research/sim2real_strategy]] · [[00_index]]
+> **2026-10-16 갱신:** 기체는 F450 + Pixhawk 6C Mini + Jetson Orin Nano Super + 4S 3000 mAh + 4S 1 kg/모터급 추력 조합으로 확정 → 기체·컴패니언·무게 예산은 [[research/sim2real_hardware_f450]]가 대체한다(이륙 약 1.60 kg). 아래 §1 기체 키트·§2 컴패니언·§4 무게 예산은 X500 기준 기록. RTK·조종 링크·지상 장비·서보·센서는 유효.
+
+관련: [[research/sim2real_hardware_f450]] · [[research/sim2real_indoor_vs_outdoor]] §7 · [[research/sim2real_strategy]] · [[00_index]]
 
 > 2026-10-03 가격 조사(조사 에이전트 3개, 상품 페이지 직접 확인). 환율은 **1 USD ≈ 1,400원, 1 EUR ≈ 1,600원으로 가정**했다(당일 시세 아님). 배송비·관부가세는 미확인. "미확인"은 페이지에서 확인하지 못한 값이다. 엘레파츠 가격은 VAT 별도.
 

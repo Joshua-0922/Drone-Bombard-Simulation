@@ -7,7 +7,9 @@ type: research
 
 # 실외 투하 실현 가능성 — 하한 5 m, F450, 서울대 대운동장(108 × 65 m)
 
-관련: [[research/sim2real_retrain_audit]] (#18·#19) · [[research/release_altitude_task_difficulty]] · [[research/sim2real_bom]] · [[experiments/exp_043_gazebo_px4_sim2sim]]
+> **2026-10-16:** 구성 확정으로 이륙 약 1.60 kg(Jetson·4S 3000 mAh), T/W 2.5(모터당 1 kg), 체공 약 8.5분·팩당 2비행 → [[research/sim2real_hardware_f450]]. §2 표의 1.44 kg·13분은 Pi 5 기준 옛 추정.
+
+관련: [[research/sim2real_hardware_f450]] · [[research/sim2real_retrain_audit]] (#18·#19) · [[research/release_altitude_task_difficulty]] · [[research/sim2real_bom]] · [[experiments/exp_043_gazebo_px4_sim2sim]]
 
 전제: 시작 고도 8–12 m, 접근 18–22 m, 시작 속도 2–6 m/s, 방위 ±30°(학습), 표적 원판 반경 5 m, 투하 고도 하한 5 m(결정 고도 약 5.2 m, 분리 약 4.7 m, 낙하 약 0.83 s), 정책 명령 상한 4/3/3 m/s, 기울기 35°. 수치는 추정이며 부품 확정·실측 후 갱신한다.
 

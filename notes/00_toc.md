@@ -17,7 +17,7 @@ type: index
 |---|---|---|---|
 | [[00_index]] | 드론 정밀 투하 연구 — Obsidian 대시보드 | 2026-04-14 | active |
 
-## research — 현행 연구 노트 (43)
+## research — 현행 연구 노트 (44)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -54,6 +54,7 @@ type: index
 | [[research/sim2real_field_feasibility_f450]] | 실외 투하 실현 가능성 — 하한 5 m, F450, 서울대 대운동장(108 × 65 m) | 2026-10-11 | open |
 | [[research/sim2real_firmware_stack]] | sim2real (4) 펌웨어·배포 스택 — PX4 offboard 속도, ROS 2 노드, 관측 26채널 출처, SITL | 2026-10-03 | active |
 | [[research/sim2real_gap]] | sim2real 대비 — 지금 시뮬레이터에 없는 것 | 2026-08-27 | open |
+| [[research/sim2real_hardware_f450]] | F450 하드웨어 구성 확정안 — 질량·관성·배터리·추력, 시뮬 반영값 | 2026-10-16 | active |
 | [[research/sim2real_hardware_spec]] | sim2real (1) 하드웨어 사양 — X500 V2·컴패니언 컴퓨터·추력 계산·투하 기구·측위 | 2026-10-03 | active |
 | [[research/sim2real_indoor_legal_scale]] | sim2real 보완 — 투하 법규, 실내 축소 실증, 재학습 범위 | 2026-10-03 | active |
 | [[research/sim2real_indoor_vs_outdoor]] | sim2real — 실내(축소) 대 실외(X500), 바람 주 변수 대 투하 성능 주 변수 | 2026-10-03 | active |
@@ -272,4 +273,4 @@ type: index
 
 ---
 
-총 214편.
+총 215편.
