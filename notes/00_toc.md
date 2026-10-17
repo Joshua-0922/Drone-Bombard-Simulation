@@ -195,10 +195,11 @@ type: index
 | [[errors/err_20260320_physics_explosion]] | Err — Gazebo 물리 폭발 (d_xy = 1.98×10¹¹ m) | 2026-03-20 | resolved |
 | [[errors/err_20260319_ode_aabb_crash]] | Err — ODE AABB 크래시 (드론 스폰 고도) | 2026-03-19 | resolved |
 
-## daily — 연구 일지 (46)
+## daily — 연구 일지 (47)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
+| [[daily/daily_2026-10-17]] | 연구 일지 — 2026-10-16 ~ 10-17 | 2026-10-17 | complete |
 | [[daily/daily_2026-10-11]] | 연구 일지 — 2026-10-11 | 2026-10-11 | complete |
 | [[daily/daily_2026-10-03]] | 연구 일지 — 2026-10-03 | 2026-10-03 | complete |
 | [[daily/daily_2026-09-25]] | 연구 일지 — 2026-09-25 | 2026-09-25 | complete |
@@ -273,4 +274,4 @@ type: index
 
 ---
 
-총 215편.
+총 216편.
