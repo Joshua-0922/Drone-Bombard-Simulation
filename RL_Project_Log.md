@@ -335,6 +335,7 @@ wandb: `sl_gen_unseenR` / `sl_gen_policy_transfer` / `sl_gen_label_count` (job_t
 
 # 2. Recent Progress
 
+- **2026-10-19:** 추진계 선정 = T-Motor AIR2216 II KV920 + T1045(4S 최대 1,332 g/모터, 프롭 한계 1.2 kg) → T/W 3.0(1.60 kg)·2.7(5200 mAh 1.80 kg), 정지 스로틀 약 47–50%. 국내 세트 재고 팰콘샵·아트콥터·엑스캅터(18.7–19.1만 원). 시뮬 T/W 2.5→2.8 ±15%. 조립 주의(자동 조임 프롭 방향, PDB 납땜, Jetson 별도 DC-DC, 서보 5 V)와 구매 후 측정 목록 9항목 → notes/research/sim2real_hardware_f450.md §8–9
 - **2026-10-17:** RL sim2real 문헌 조사(드론·다리/조작·투하·DR 방법론, 제어기 스택 포함) → notes/reports/강화학습 sim2real DR 설계 조사.md. 결론: 실기 성패 = 지연·모터·저수준 제어기 반영 여부, DR은 SysID 중심으로 좁게. L0 학습 바람은 에피소드 내 일정(돌풍은 평가 전용) 확인. 측정 순서: 투하·명령 지연(Pixhawk+Jetson) → 조립 후 질량·관성·추력·모터 τ → L0 1회 학습.
 - **2026-10-16:** 기체 구성 확정(F450·Pixhawk 6C Mini·Jetson Orin Nano Super·4S 3000 mAh·모터당 1 kg 추력) → 이륙 약 1.60 kg, T/W 2.5, 관성 (0.0175, 0.0175, 0.024), 팩당 3분 비행 2회. 코드 확인: T/W·물리 질량·관성은 DR 대상 아님(T/W는 실제로 적재 질량 기준), 투하 지연만 가우시안 N(0.22, 0.05²), 속도 명령·모터 지연 없음. 시뮬 반영값 → notes/research/sim2real_hardware_f450.md §7
 - **2026-10-11 저녁:** 투하 고도 하한 5 m 확정, 다이빙 제외, 시작 고도 8–12 m 유지. F450 실외 실현 가능성: 부지 76×36 m(고정 방위), T/W 2.2–2.5, 실기 CEP50 0.32–0.36 m 예상. 다음 = 기체 구매 후 수동 비행.
