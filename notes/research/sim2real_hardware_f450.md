@@ -1,5 +1,6 @@
 ---
 date: 2026-10-16
+updated: 2026-10-24
 tags: [research, sim2real, hardware, f450, mass, inertia, battery, thrust, domain-randomization]
 status: active
 type: research
@@ -10,6 +11,127 @@ type: research
 관련: [[research/sim2real_bom]] (X500 V2 기준 구매 목록, 이 노트가 기체·무게 예산을 대체) · [[research/sim2real_field_feasibility_f450]] · [[research/sim2real_retrain_audit]] (#8·#10·#11·#19) · [[00_index]]
 
 모든 수치는 **부품 사양·일반값 기반 추정**이다. 조립 후 저울·bifilar pendulum·추력 벤치·첫 비행 로그로 실측해 갱신한다. DR을 쓰므로 공칭값이 참값과 정확히 같을 필요는 없고, 참값이 DR 범위 안에 들어오면 된다.
+
+> **이 노트의 기준은 §0이다.** §1–§10은 값이 정해진 과정의 기록이다. 값이 서로 다르면 §0을 따른다.
+
+## 0. 최종 sim2real 수정안 (2026-10-24 확정)
+
+L0 재학습과 실기 이전의 단일 지침이다. 시뮬레이션의 구조는 실제 배포 경로와 같게 만든다. DR은 측정값을 중심으로 소수 축에만 건다.
+
+### 0.1 하드웨어 사양
+
+| 항목 | 사양 | 시뮬 반영 |
+|---|---|---|
+| 프레임 | F450, 대각 450 mm, 팔 길이 $l$ = 0.225 m, Quad X | 믹서 기하 |
+| FC | Pixhawk 6C Mini, PX4 v1.15.4 | 제어기(§0.2) |
+| 컴패니언 | Jetson Orin Nano Super 개발 키트. 정책과 YOLO 실행, 별도 DC-DC 급전 | 명령·YOLO 지연 |
+| 배터리 | 4S 3000 mAh (예비 4S 5200 mAh) | T/W, 질량 |
+| 모터 | T-Motor AIR2216 II KV920 × 4 (64 g) | 추력 곡선, 모터 τ |
+| 프롭 | T-Motor T1045 (10×4.5), 자동 조임 | 추력 한계 1.2 kg/개 |
+| ESC | 연속 20 A 이상, **양방향 DShot**(RPM 로그용). 미지원 시 AIR 20A(PWM) | 모터 τ 식별 |
+| 투하 서보 | Pixhawk AUX 출력으로 구동 | 투하 지연 경로 |
+| 카메라 | 미정. 현재 시뮬은 화각 60°, 640×480 | `h_fov`, `img_w/h` |
+| 질량 | 기체 1.50 kg + 하중 0.10 kg = 이륙 **1.60 kg** (5200 mAh면 1.80 kg) | `drone_mass`, `payload_mass` |
+| 관성(적재, CoM 기준) | diag(0.0175, 0.0175, 0.024) kg·m² | `inertia_diag` |
+| 최대 추력 | 모터당 1,332 g @16 V(추력표), 프롭 한계 1.2 kg → 합계 4.8 kg | T/W 공칭 2.8 |
+| 정지 비행 | 모터당 400 g, 스로틀 약 47%, 약 13.5 A, 체공 약 9–10분 | 정지 추력 $T_h$ |
+
+### 0.2 제어 경로와 제어기
+
+배포 경로와 같다. 정책이 Jetson에서 속도 설정값을 내고, 나머지 루프는 모두 Pixhawk(PX4)에서 돈다. 시뮬은 물리 100 Hz($\Delta t$ = 0.01 s), 정책 10 Hz(decimation 10)다.
+
+| 단계 | 주기 | 식 | 파라미터 |
+|---|---|---|---|
+| ① 정책 출력 | 10 Hz | $a=(v_x, v_y, v_z)$, 스케일 4/3/3 m/s. yaw는 접근 방향 고정 | **정렬 필요:** 시뮬 행동의 yaw-rate 채널(`yaw_scale` 1.0)을 0으로 두고, yaw 각도 설정값으로 바꾼다(배포 노드와 동일) |
+| ② 행동 전처리(Jetson) | 10 Hz / 20 Hz | rate limit: $\lvert a_k-a_{k-1}\rvert\le0.2$ (정규화). EMA: $y\leftarrow y+0.4(a-y)$, 20 Hz(물리 5스텝마다), 연속 등가 τ ≈ 0.098 s | `rate_limit` 0.2, `lpf_alpha` 0.4. `drop_policy` 노드와 비트 단위 동일 |
+| ③ 명령 지연 | 물리 스텝 | $v_{sp}(t)=y(t-d_{cmd})$, 링 버퍼 | §0.3 |
+| ④ 속도 PID(PX4 `PositionControl`) | 100 Hz | $e=v_{sp}-v$, $a_{sp}=K_P e+K_I\!\int\! e\,dt-K_D\,\dot v_f$, $\dot v_f$는 1차 LPF 5 Hz | xy (P, I, D) = (1.8, 0.4, 0.2), z = (4.0, 2.0, 0.0) [MPC_*_VEL_*_ACC]. z 적분 ±g로 제한. 진입 시 적분을 $-F_{drag}/m$로 시드 |
+| ⑤ 추력 벡터·포화 | 100 Hz | $\hat b_z=\mathrm{norm}(-a_{xy}, g)$ 기울기 제한, $T=\dfrac{(a_z/g)T_h+T_h}{b_{z,z}}\ge T_{min}$. 수직 우선, 수평 여유. z는 포화 시 적분 정지, xy는 추종형 anti-windup(이득 2/P) | 기울기 35°(MPC_TILTMAX_AIR = 35), MPC_THR_MIN 0.12, THR_MAX 1.0, THR_XY_MARG 0.3, $T_h$ = 정지 스로틀 |
+| ⑥ 자세 P(PX4 `AttitudeControl`) | 100 Hz | $\omega_{sp}=K_{att}\odot e_q$ (쿼터니언 오차, yaw 가중) | MC_ROLL_P = MC_PITCH_P = 6.5, MC_YAW_P 2.8, MC_YAW_WEIGHT 0.4. 각속도 한계 220/220/200 °/s |
+| ⑦ **각속도 PID(PX4 `RateControl`, 신규 이식)** | 100 Hz | $u_\tau=K\left(P e_\omega+I\!\int\! e_\omega dt-D\,\dot\omega_f\right)$, $e_\omega=\omega_{sp}-\omega$. 적분은 출력 포화 시 정지, 한계 ±0.3. D는 각속도 미분의 LPF | roll·pitch (P, I, D) = (0.15, 0.2, 0.003), yaw = (0.2, 0.1, 0), K = 1, 적분 한계 0.30, D항 LPF 30 Hz. 자이로 LPF 40 Hz는 물리 100 Hz에서 생략(G1에서 불일치하면 물리 200 Hz로). PX4 v1.15 기본값이며 실기 파라미터 파일로 확정 |
+| ⑧ 믹서(PX4 Control Allocator, Quad X) | 100 Hz | $u_i=B^{+}[u_\tau;\,T]$, $u_i\in[0,1]$로 자름. $B$는 팔 0.225 m, 45° 배치의 효과도 행렬 | 정규화는 PX4 의사역행렬 방식을 따른다. 단위테스트: $u_\tau$ = 1에서 모터가 포화 경계에 닿는지 확인 |
+| ⑨ 모터·추력 모델 | 100 Hz | 정적: $T_i^{cmd}=k_T\,T_{max}\,f(u_i)$, $f(u)=(1-a)u+au^2$. 동적: $T_{i,k+1}=T_{i,k}+\alpha(T_i^{cmd}-T_{i,k})$, $\alpha=1-e^{-\Delta t/\tau_m}$. yaw 토크: $Q_i=\pm c_Q T_i$ | 사전값 $a$ = 0.65(추력표 16 V 적합: 30% +3%, 50%·100% 일치, 75% −8%). PX4 THR_MDL_FAC = $a$로 맞춘다. $c_Q$ 사전값 0.016 m |
+| ⑩ 강체 | 100 Hz | PhysX. 질량·관성은 스폰 시 MassAPI로 저작하고 런타임 변경 없음(Rule 19) | §0.1 |
+| ⑪ 상태 추정(EKF2 출력 모델) | 100 Hz | $\hat x(t)=x(t-d_{obs})+b+n$. EKF2 자체는 이식하지 않음 | §0.3 |
+| ⑫ 표적 관측(YOLO + KF) | 10 Hz | 픽셀 잡음·누락·hold·거리별 conf 저하(기존) + 탐지 지연 $d_{yolo}$ | 픽셀 σ 3 px, 누락 5%, hold 10프레임(기존). 지연은 §0.3 |
+| ⑬ 투하 | 물리 스텝 | 정책·게이트 투하 판단 → $d_{rel}$ 후 분리. CCIP 예측기는 명목 평균 $\bar d_{rel}$을 쓴다 | §0.3. **배포 노드의 SITL용 명목 지연 대기는 실기에서 0**(기구가 지연을 만든다) |
+
+### 0.3 DR 지침
+
+**공통 규칙**
+- 무작위 축의 폭은 기본 폭 $w_i$ × 상수 $s$다. 학습은 $s$ = 1로 고정해 처음부터 하고, 평가 스윕은 $s\in\{0, 0.5, 1, 1.5\}$다. 고정 축에는 $s$가 걸리지 않는다.
+- 분포는 **균등분포**를 쓴다. 배율 파라미터는 $\theta=\theta_0\,(1+w\,s\,\xi)$, $\xi\sim U[-1,1]$이다.
+- **경험분포 재표집:** 측정값 $d_1,\dots,d_n$($n\ge40$)이 있는 지연 축은 에피소드마다 $i\sim U\{1..n\}$을 뽑아 $d=\bar d+c\,s\,(d_i-\bar d)+\epsilon$로 쓴다. $\epsilon\sim U[-\delta,\delta]$, $\delta$는 측정 해상도다(기본 2 ms). $c=\max(1,\ \sigma_{min}/\hat\sigma)$는 측정 편차가 하한보다 작을 때 폭을 키우는 계수다. 측정 전에는 같은 평균·표준편차의 균등분포를 쓴다.
+- 지연은 물리 스텝(10 ms) 단위 링 버퍼로 구현한다.
+- MAP 추정 축의 폭은 $w=\mathrm{clip}(2.5\,\sigma_{post}/\theta_{MAP},\ 0.05,\ 0.20)$이다.
+- 학습이 정지 비행이나 추락 국소해에 빠질 때만 $s$를 학습 초기 30% 동안 0에서 1로 선형 확장한다.
+
+**무작위 축**
+
+| 축 | 적용 위치 | 측정 전 | 측정 후 | 뽑는 시점 | 적용 대상 |
+|---|---|---|---|---|---|
+| T/W 배율 $k_T$ | ⑨ | $k_T=1+0.15\,s\,\xi$, 공칭 T/W 2.8 | 공칭 = 정지 스로틀과 추력 곡선에서 역산, 폭 ±15% 유지(배터리 16.8→14 V 처짐) | 에피소드 | L0, GRU |
+| 모터 시정수 $\tau_m$ | ⑨ | $\tau_m=0.04(1+0.5\,s\,\xi)$ → $s$=1에서 U[0.02, 0.06] s | $\tau_m=\tau_{MAP}(1+w\,s\,\xi)$ | 에피소드 | L0, GRU |
+| 명령 지연 $d_{cmd}$ | ③ | U[0, 30 ms · s] | 경험분포 재표집, $\sigma_{min}$ = 5 ms | 에피소드 | L0, GRU |
+| 관측 지연 $d_{obs}$ | ⑪ | U[0, 20 ms · s] | 경험분포 재표집, $\sigma_{min}$ = 5 ms | 에피소드 | L0, GRU |
+| YOLO 탐지 지연 $d_{yolo}$ | ⑫ | U[0, 100 ms · s] | 경험분포 재표집, $\sigma_{min}$ = 10 ms | 에피소드 | L0, GRU |
+| 투하 지연 $d_{rel}$ | ⑬ | U[$\bar d-\sqrt3\sigma s$, $\bar d+\sqrt3\sigma s$], $\bar d$ = 0.22, σ = 0.05 → $s$=1에서 U[0.133, 0.307] s | 경험분포 재표집, $\sigma_{min}$ = 10 ms. CCIP 명목값은 측정 평균 $\bar d$로 고정 | 에피소드 | L0, GRU |
+| 평균풍 | 외력 | 크기 $U\sim U[0, 6\,s]$ m/s, 방향 $\psi\sim U[0, 2\pi)$ | 상한을 현장 풍속계 분포로 조정 | 에피소드 | L0, GRU |
+| 돌풍(Dryden 파라미터 OU) | 외력 | 축별 $g_{k+1}=\rho g_k+\sigma_u\sqrt{1-\rho^2}\,\eta$, $\rho=e^{-\Delta t/\tau_u}$, $\eta\sim N(0,1)$. $\tau_u=L_u(h_0)/\max(U, 1)$, $L_u=h/(0.177+0.000823h)^{1.2}$(ft), $h_0$ = 시작 고도. $\sigma_u=I\,U$, $I\sim U[0.10, 0.25]$ | $I$와 $\tau_u$를 현장 풍속계로 추정 | 에피소드(τ, σ), 스텝(g) | L0, GRU |
+| 하중 탄도계수 $k/m$ | 낙하 ODE | $1+0.20\,s\,\xi$ | 낙하 시험으로 중심 조정 | 에피소드 | GRU(낙하만) |
+| 관측 잡음·편향 | ⑪ | 스텝 σ 0.01, 에피소드 편향 σ 0.001(정규화 단위, 기존) | 속도 채널은 정지 비행 EKF 속도 분산으로 물리 단위 교체 | 스텝 / 에피소드 | L0, GRU |
+| 행동 잡음·편향 | ① | 스텝 σ 0.025, 에피소드 편향 σ 0.02(정규화, 기존) | 유지 | 스텝 / 에피소드 | L0, GRU |
+
+참고로 5–10 m, 3 m/s에서 $L_u$ = 37–67 m, $\tau_u$ = 12–22 s다. 이는 낙하 시간(1.0–1.4 s)보다 한 자릿수 길다(Rule 46의 잔차 유리 영역).
+
+**고정 축(DR 없음)**
+
+| 값 | 측정 전 | 측정 후 |
+|---|---|---|
+| 기체 질량 | 1.50 kg | 저울 측정값. 5200 mAh를 함께 쓰면 스폰 시 env 그룹 {1.50, 1.70} kg 두 변형 |
+| 하중 질량 | 0.10 kg | 저울 측정값 |
+| 관성 | diag(0.0175, 0.0175, 0.024) | MAP($I_{xx}, I_{yy}$)와 진자($I_{zz}$) |
+| 추력 곡선 모양 $a$, $c_Q$ | 0.65, 0.016 m | 추력 벤치·MAP |
+| 제어기 이득 | §0.2(PX4 기본값) | 실기 파라미터 파일. 기존 `ctrl_mass_rel`·`kp_vel_rel`·`k_att_rate_rel` DR은 0으로 둔다 |
+| 외부 조건 | 시작 고도 8–12 m, 투하 고도 하한 5 m, 접근 18–22 m, 속도 상한 | 유지 |
+
+**재중심화 순서:** L0는 위의 측정 전 범위로 한 번 학습한다. 측정이 끝나면 측정 후 분포로 GRU 덤프를 다시 만들어 재적합한다(수 분). G1에서 불일치가 나오면 L0를 미세조정한다.
+
+### 0.4 SysID: 비행 로그 MAP 추정
+
+| 항목 | 내용 |
+|---|---|
+| 추정 대상 | $\theta=\{k_f, c_Q, \tau_m, I_{xx}, I_{yy}, I_{zz}/c_Q\text{ 비율}\}$ |
+| 모델 | $\dot\omega_i=(\omega_i^{cmd}(u_i,V)-\omega_i)/\tau_m$, $T_i=k_f\omega_i^2$, $Q_i=c_Q T_i$, $I\dot\Omega=\tau_{body}(T_i,Q_i)-\Omega\times I\Omega$, $m\dot v=R\sum T_i\hat z+m g+F_{drag}$ |
+| 사전분포 | $\log\theta\sim N(\log\theta_0,\ 0.3^2)$, $\theta_0$ = §0.1·추력표·진자 값 |
+| 목적함수 | $\hat\theta=\arg\min\ \sum_t\lVert \dot\Omega_{meas}-\dot\Omega_{model}\rVert^2_{\Sigma_\Omega^{-1}}+\lVert a_{meas}-a_{model}\rVert^2_{\Sigma_a^{-1}}+\lVert\log\theta-\log\theta_0\rVert^2/0.3^2$ |
+| 데이터 | 2–3분 비행: 정지 1분, roll·pitch·yaw 각속도 doublet 각 5회, 스로틀 계단 ±10% 5회 |
+| ulog 토픽 | `sensor_combined`(자이로·가속도), `esc_status`(RPM), `actuator_motors`, `battery_status`(전압), `vehicle_local_position` |
+| 식별 순서 | 질량 → 정지 비행에서 $k_f$ → RPM 계단응답에서 $\tau_m$ → roll·pitch 응답에서 $I_{xx}, I_{yy}$ → yaw 응답에서 $c_Q/I_{zz}$ |
+| 출력 | MAP 값 → DR 중심, 라플라스 근사 $\sigma_{post}$ → DR 폭(§0.3) |
+
+### 0.5 측정 목록 (시뮬 반영 우선순위)
+
+| 순위 | 측정값 | 방법 | 사용 부품·장비 | 반영되는 시뮬 값·DR | 선행 조건 |
+|---|---|---|---|---|---|
+| 1 | 투하 지연 평균·분포(명령 → 분리) | 0단계: 서보만(하한). 명령 시각과 래치 해제 각도의 스위치 검출 시각 차이. 1단계: 래치 아래 광센서 + 하중 IMU 자유낙하(≈0 g) 교차 확인. 각 40회 이상 × BEC 전압 2종, 벤치 + 정지 비행 | Pixhawk 6C Mini(AUX PWM), 서보, 마이크로스위치·광센서, ESP32(`micros()` 기록) 또는 로직 분석기, 하중 IMU(휴대폰 가능) | ⑬ CCIP 명목 $\bar d$, $d_{rel}$ 재표집 | 0단계: 지금. 1단계: 래치 제작 후 |
+| 2 | 기체 질량·하중 질량·무게중심 | 저울, 2점 매달기로 무게중심 | 저울(1 g 단위), 실 | 고정 질량, 스폰 저작 | 조립 후 |
+| 3 | 정적 추력 곡선 $f(u)$, $T_{max}$ | 스로틀 10–100% 단계별 추력, 전압 2종(16.4/14.8 V) | 모터·ESC·T1045, ESP32(PWM·DShot 신호), 저울 + 고정 지그, 전력계 | ⑨ $a$, $T_{max}$, T/W 공칭 | 모터·ESC 확보 |
+| 4 | 모터 시정수 $\tau_m$ | 스로틀 계단(40→60%)의 RPM 응답, 63% 도달 시간. 또는 비행 로그 MAP | 양방향 DShot ESC + Pixhawk(RPM 로그) 또는 광학 타코미터 | ⑨ $\tau_m$ 중심·폭 | 3과 같은 지그 |
+| 5 | 명령 지연 $d_{cmd}$ | Jetson 발행 시각 vs PX4 `trajectory_setpoint` 수신 시각(uXRCE timesync), 1000샘플 이상 | Jetson, Pixhawk, uXRCE-DDS 연결(TELEM 921600) | ③ 재표집 | Jetson 도착 |
+| 6 | 관측 지연 $d_{obs}$ | PX4 `vehicle_odometry` 타임스탬프 vs Jetson 수신 시각 | Jetson, Pixhawk | ⑪ 재표집 | Jetson 도착 |
+| 7 | YOLO 탐지 지연 $d_{yolo}$ | ESP32로 LED를 켠 시각 vs 탐지 출력 시각. 추론 시간(TensorRT)과 분리해 기록 | Jetson, 카메라, ESP32 + LED | ⑫ 재표집 | Jetson·카메라 |
+| 8 | 관성 $I_{xx}, I_{yy}$, $c_Q/I_{zz}$ (및 $k_f$, $\tau_m$ 재확인) | 비행 로그 MAP(§0.4). $I_{zz}$ 절댓값은 2선 진자 | 조립 기체, 양방향 DShot ESC, 실·스톱워치(진자) | 고정 관성, $\tau_m$, $k_T$ 공칭 | 첫 비행 |
+| 9 | 속도 계단응답(G1 관문) | 오프보드 0→2 m/s 축별 계단 5회. 축별 시상수·지연을 시뮬과 비교, ±15% 이내 통과 | 조립 기체, Jetson, RTK | 제어 경로 전체 검증. 불일치 시 물리 200 Hz, 이득 재조정 | 첫 비행 |
+| 10 | EKF 속도 추정 잡음 | 정지 비행 1분 속도 표준편차·편향 | 조립 기체, RTK | ⑪ 관측 잡음 물리 단위 | 첫 비행 |
+| 11 | YOLO 고도별 픽셀 잡음·누락률·conf | 고도 3–12 m 정지 비행에서 표적 촬영 | Jetson, 카메라, 실제 표적 | ⑫ `pixel_noise_std`, `dropout_prob`, conf 곡선 | 비행 가능 후 |
+| 12 | 현장 바람(평균·세기 $I$·상관시간 $\tau_u$) | 1–10 Hz 풍속계를 투하 고도 근처에 설치해 기록 | 풍속계, 마스트 | 평균풍 상한, 돌풍 $I$·$\tau_u$ | 현장 |
+| 13 | 카메라 화각·해상도 | 사양서 | 카메라 | ⑫ `h_fov`, `img_w/h` | 카메라 선정 |
+| 14 | 하중 탄도계수 $k/m$ | 정지 비행 낙하(고도 5–10 m) 낙하 시간·착지점 | 조립 기체, 하중, 영상 | 낙하 ODE 중심 | 래치 제작 후 |
+
+**실기 전 검증 관문:** G1 속도 계단응답 일치(±15%) → G2 같은 `drop_policy` 노드로 SITL 회귀(exp_043 재현) → G3 정지 비행 투하로 지연 평균·$k/m$ 검증 → G4 2 m/s 이상 자연풍에서 팔당 40회.
+
+---
 
 ## 1. 확정 구성 (2026-10-16)
 
