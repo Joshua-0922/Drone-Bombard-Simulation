@@ -335,6 +335,7 @@ wandb: `sl_gen_unseenR` / `sl_gen_policy_transfer` / `sl_gen_label_count` (job_t
 
 # 2. Recent Progress
 
+- **2026-10-24:** 사용자 DR 설계와 문헌 제안 비교·수정안 → notes/reports/강화학습 sim2real DR 설계 조사.md §사용자 설계와의 비교·수정안. 상수 s 유지·소수 5축 무작위(T/W, 모터 τ, 명령·관측 지연, 투하 지연, 바람)·나머지 고정, 균등분포, 측정 후 경험분포 재표집. 제어기 = PX4 PID 이식(각속도 PID 추가, EKF2는 출력만 모델링), PD·CTBR 기각. 돌풍 = Dryden 파라미터화 OU. 투하 지연 추가 조사: 새 실측 드론 연구 없음, 서보만 측정은 하한. 배포 노드의 SITL용 명목 지연 대기는 실기에서 0으로 수정 필요.
 - **2026-10-23:** PID 전환·지연 모델 판단 정리 → notes/research/sim2real_hardware_f450.md §10. A안(PX4 PID + 사전 범위 지연 모델로 L0 재학습)과 B안(기존 L0 동결 + PID 덤프로 GRU 재적합)을 병행하고, 배달률 ≥ 92%·CEP50 ≤ 0.31 기준으로 선택. 추가할 모델: T/W ±15%, 모터 τ U[0.02,0.06] s, 명령 지연 0–30 ms, YOLO 탐지 지연 0–100 ms. 측정 목록에 YOLO 항목 추가, Jetson 구매 결정.
 - **2026-10-19:** 추진계 선정 = T-Motor AIR2216 II KV920 + T1045(4S 최대 1,332 g/모터, 프롭 한계 1.2 kg) → T/W 3.0(1.60 kg)·2.7(5200 mAh 1.80 kg), 정지 스로틀 약 47–50%. 국내 세트 재고 팰콘샵·아트콥터·엑스캅터(18.7–19.1만 원). 시뮬 T/W 2.5→2.8 ±15%. 조립 주의(자동 조임 프롭 방향, PDB 납땜, Jetson 별도 DC-DC, 서보 5 V)와 구매 후 측정 목록 9항목 → notes/research/sim2real_hardware_f450.md §8–9
 - **2026-10-17:** RL sim2real 문헌 조사(드론·다리/조작·투하·DR 방법론, 제어기 스택 포함) → notes/reports/강화학습 sim2real DR 설계 조사.md. 결론: 실기 성패 = 지연·모터·저수준 제어기 반영 여부, DR은 SysID 중심으로 좁게. L0 학습 바람은 에피소드 내 일정(돌풍은 평가 전용) 확인. 측정 순서: 투하·명령 지연(Pixhawk+Jetson) → 조립 후 질량·관성·추력·모터 τ → L0 1회 학습.
