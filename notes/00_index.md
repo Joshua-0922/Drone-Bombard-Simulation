@@ -27,6 +27,7 @@ type: index
 - 표·그림 완료: [[research/final_tables_v6]] · `notes/figures/fig{1,2,3}.png`
 - EMA α=0.3: 오프라인 기준(예측 스텝 변화 ≈ 정답 변화)으로 정하고, 닫힌 루프 [0.1, 0.4]는 정상·현실 돌풍 3조건 모두 둔감(무필터만 +17%/+92%): [[experiments/exp_041_ema_alpha_sweep]] §5
 - **다음 (10-03 확정):** 트랙 A sim2real — [[research/sim2real_strategy]]. −1단계(법규 서면 질의, 풍속 구간별 이득 계산, 후보지 풍황) → 구매 → SysID → 재학습 → SITL → 실기. YOLO는 트랙 B(다른 담당)로 병렬
+- **하드웨어 (10-25):** F450 조립·점검 중(이륙 실측 1,658 g + 미측정 약 60 g, 추정 T/W 2.1–2.3). Pixhawk·GPS(GPS2 포트, 3D fix)·텔레메트리(TELEM1, 양방향) 정상. 모터 스텝 응답 측정 → [[experiments/exp_044_f450_motor_step_response]]
 
 최근 일지: [[daily/daily_2026-10-03]] · [[daily/daily_2026-09-25]] · [[daily/daily_2026-09-24]] · 세션: [[sessions/session_2026-09-24]]
 
@@ -100,6 +101,7 @@ notes/
   - 보완(우선): [[research/sim2real_indoor_legal_scale]] — 투하 금지는 "위험 우려 있는 낙하물" 한정, 실내 통제 환경이 가장 안전, 실측 서보 σ가 작으면 실내 축소 실증 성립, 기하가 바뀌면 L0 처음부터 재학습(약 1시간)
   - 근거: [[research/sim2real_hardware_spec]] · [[research/sim2real_prior_hw_experiments]] · [[research/sim2real_scale_wind_retrain]] · [[research/sim2real_firmware_stack]] · 검토 [[research/sim2real_strategy_review]]
 - [[research/perception_integration_survey]] — 🔎 **(10-03) 표적을 참값 → YOLO로 바꿀 때 선행연구는 재학습하나?** 실제 검출기를 학습 루프에 넣은 연구 없음. 참값 학습 → 배포 시 검출기, 차이는 오차 모델 반영(Swift 미세조정)
+- [[research/f450_motor_dynamics]] — (10-25) F450 로터 응답 가속 τ ≈ 80 ms, 감속 65–95 ms: Gazebo 기본값보다 느림 → SITL 모터 시정수는 벤치 실측으로 (Rule 48)
 - [[research/sim2real_field_feasibility_f450]] — (10-11) 하한 5 m·F450 기준 부지(고정 방위 76×36 m, 버퍼 10 m)·추력 여유(T/W 2.2–2.5)·실기 오차 예산(CEP50 0.3–0.4 m 예상)·성공 가능성
 - [[research/sim2real_hardware_f450]] — (10-16) **기체 구성 확정**: F450·Pixhawk 6C Mini·Jetson Orin Nano Super·4S 3000 mAh·모터당 1 kg → 이륙 1.60 kg, T/W 2.5, 관성 (0.0175, 0.0175, 0.024), 팩당 2비행; T/W·물리 질량·관성은 DR 대상 아님(제어기 불일치로 등가), 명령 지연·모터 지연 없음; 시뮬 반영값 표
 - [[reports/강화학습 sim2real DR 설계 조사]] — (10-16) **sim2real DR 설계 조사 보고서**: 실기 ablation 1순위 = 지연·모터·저수준 제어기, DR은 SysID 중심으로 좁게; L0 재학습 전 설정 10항목(명령 지연 버퍼·모터 1차 지연·추력 배율·Dryden 돌풍 학습 투입)과 SysID 후 GRU 덤프 재중심화; 정정(Learning to Throw 서지·AeroThrow=NMPC·§V-A 미검증·학습 시 바람 돌풍 꺼짐)
@@ -112,6 +114,7 @@ notes/
 
 ### 실험 (experiments/) — 논문 단계
 - [[experiments/training_history]] — 전체 학습·평가 히스토리 허브
+- [[experiments/exp_044_f450_motor_step_response]] — ⚠️ **(10-25) F450 단일 모터 스텝 응답(모터 2·3): 가속 τ ≈ 80 ms, 감속 65–95 ms, 명령→PWM 5 ms. Gazebo `x500_drop` 0.08/0.08 s로 변경**
 - [[experiments/exp_043_gazebo_px4_sim2sim]] — ✅ **(10-11) Isaac 정책을 ROS 2 노드로 이식, Gazebo + 진짜 PX4 SITL에서 12/12 착지. L0 6/6 0.5 m 이내(중앙값 0.20 m), 장착 −0.140 m 정상. GRU는 PX4 재적합 전까지 불리**
 - [[experiments/exp_042_px4_controller_noretrain]] — ⛔ **(10-03) PX4 속도 PID에서 재학습 없이: L0는 강건(0.279), GRU 잔차는 붕괴(0.338, L0보다 +21%) → GRU 재적합 필수 (Rule 47)**
 - [[experiments/exp_041_ema_alpha_sweep]] — ✅ EMA α 민감도(정상 + 현실 돌풍 A·B): [0.1, 0.4] 평탄, 무필터만 유의 악화 → **α=0.3 유지, 논문 당위성 §5**

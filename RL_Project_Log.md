@@ -6,6 +6,8 @@
 
 # 1. Current State
 
+**2026-10-25** — F450 하드웨어 점검: Pixhawk 6C mini(PX4 v1.16.2)·GPS(GPS2, 3D fix)·텔레메트리(TELEM1 433 MHz, 양방향) 정상. 이륙 실측 1,658 g(+미측정 약 60 g), ML2212 추력표 기준 T/W 약 2.1–2.3. exp_044 모터 스텝 응답(모터 2·3): 가속 τ ≈ 80 ms, 감속 65–95 ms → Gazebo `x500_drop` 모터 시정수 0.0125/0.025 → 0.08/0.08 s (Rule 48). 측정 코드·데이터 `hardware/bench/motor_step/`. → [[notes/experiments/exp_044_f450_motor_step_response]]
+
 **2026-10-11** — Isaac 정책을 ROS 2 노드(`ros2_ws/src/drop_policy`)로 이식, Isaac 정합 Gazebo 모델 + 진짜 PX4 v1.15.4 SITL에서 12/12 착지. L0 6/6이 0.5 m 이내(중앙값 0.203 m), 장착 −0.140 m·분리 정상. GRU는 PX4에서 불리(Rule 47) → 현 배포 최선 L0. `drone_controller` yaw 버그(속도 모드 yaw=0) 수정. → [[notes/experiments/exp_043_gazebo_px4_sim2sim]]
 
 **2026-10-03 (저녁)** — PX4 v1.15.4 속도 PID 이식(`--controller px4`). exp_042: P로 학습한 L0는 PX4에서 강건(0.305→0.279), GRU 잔차는 붕괴(0.204→0.338, Rule 47). 결정: 학습·평가·실기를 PX4 PID로 통일하고, 재학습 유발 요인 17개를 묶어 **하드웨어 결정 후 L0를 처음부터 재학습** → GRU 적합 → 표 재평가. → [[notes/research/sim2real_retrain_audit]]
@@ -335,6 +337,7 @@ wandb: `sl_gen_unseenR` / `sl_gen_policy_transfer` / `sl_gen_label_count` (job_t
 
 # 2. Recent Progress
 
+- **2026-10-25:** F450 모터 스텝 응답 벤치 시험(exp_044). PX4 액추에이터 테스트 param5는 모터 번호(1..)임을 확인, Windows 마이크 잡음 억제를 WASAPI 배타 모드로 우회. Gazebo 모터 시정수 실측 근사로 변경.
 - **2026-10-24 (2):** 최종 sim2real 수정안을 notes/research/sim2real_hardware_f450.md §0으로 정리(단일 지침): 하드웨어 사양, 제어 경로 ①–⑬ 식·PX4 파라미터(각속도 PID·믹서·모터 모델 신규), DR 공통 규칙(폭×s, 균등, 경험분포 재표집 식), 무작위 11축·고정 축 표, 비행 로그 MAP, 측정 목록 14항목(시뮬 반영 우선순위·부품·반영 DR). 보고서의 비교 절은 §0을 가리키는 안내로 대체.
 - **2026-10-24:** 사용자 DR 설계와 문헌 제안 비교·수정안 → notes/reports/강화학습 sim2real DR 설계 조사.md §사용자 설계와의 비교·수정안. 상수 s 유지·소수 5축 무작위(T/W, 모터 τ, 명령·관측 지연, 투하 지연, 바람)·나머지 고정, 균등분포, 측정 후 경험분포 재표집. 제어기 = PX4 PID 이식(각속도 PID 추가, EKF2는 출력만 모델링), PD·CTBR 기각. 돌풍 = Dryden 파라미터화 OU. 투하 지연 추가 조사: 새 실측 드론 연구 없음, 서보만 측정은 하한. 배포 노드의 SITL용 명목 지연 대기는 실기에서 0으로 수정 필요.
 - **2026-10-23:** PID 전환·지연 모델 판단 정리 → notes/research/sim2real_hardware_f450.md §10. A안(PX4 PID + 사전 범위 지연 모델로 L0 재학습)과 B안(기존 L0 동결 + PID 덤프로 GRU 재적합)을 병행하고, 배달률 ≥ 92%·CEP50 ≤ 0.31 기준으로 선택. 추가할 모델: T/W ±15%, 모터 τ U[0.02,0.06] s, 명령 지연 0–30 ms, YOLO 탐지 지연 0–100 ms. 측정 목록에 YOLO 항목 추가, Jetson 구매 결정.
@@ -535,6 +538,8 @@ SL은 정책 변경 시 몇 분짜리 재적합, RL은 애초에 전체 재학�
 ---
 
 # 4. Training History
+
+- **2026-10-25:** exp_044 F450 단일 모터 스텝 응답 벤치(모터 2·3, 각 8 스텝 × 2방향, 학습 없음) — 가속 τ ≈ 80 ms, 감속 65–95 ms, Gazebo 모터 시정수 변경(Rule 48).
 
 - **2026-10-11:** exp_043 Gazebo + PX4 SITL 투하 12 에피소드(L0 6/6 0.5 m 이내).
 

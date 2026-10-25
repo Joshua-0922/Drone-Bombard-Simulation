@@ -1138,6 +1138,18 @@ RL만 떠안는다. ③ 학습 잔차 권한 1.0 m vs SL 평가 2.0 m로 클램�
 
 ---
 
+## Rule 48 — SITL 모터 모델은 실기 벤치 측정값으로 맞춰라; PX4 기본 기체 값을 그대로 쓰지 마라
+
+**증상(exp_044).** F450 실기(2212 920KV + DJI 9450 + 30 A PWM ESC)의 로터 스텝 응답은 가속 $\tau \approx 80$ ms, 감속 약 65–95 ms였다. Gazebo `x500_drop`이 물려받은 PX4 X500 기본값(12.5 / 25 ms)은 신뢰구간 하한보다도 빨랐다.
+
+**규칙.**
+- 기체·모터·ESC·프롭을 바꾸면 SITL 모터 시정수를 벤치에서 다시 재서 넣는다(`hardware/bench/motor_step/`). 현재 `x500_drop` = 0.08 / 0.08 s.
+- Isaac에는 모터 모델을 따로 넣지 않는다. 모터 지연은 PX4 속도 스텝 응답 동정(P0)에 통째로 담는다.
+- 오디오 측정은 τ ±40 ms가 한계다. 그 이상의 정밀도가 필요하면 광학·DShot 회전수로 다시 잰다.
+→ [[experiments/exp_044_f450_motor_step_response]] · [[research/f450_motor_dynamics]]
+
+---
+
 ## Known Failure Modes
 
 | 증상 | 원인 | 해결 |
