@@ -337,6 +337,7 @@ wandb: `sl_gen_unseenR` / `sl_gen_policy_transfer` / `sl_gen_label_count` (job_t
 
 # 2. Recent Progress
 
+- **2026-11-11:** Jetson_Mounted 실측값을 sim2real 지침에 반영(notes/research/sim2real_hardware_f450.md §0). PX4 v1.16.2(기본값 동일, MC_YAW_TQ_CUTOFF 2 Hz 추가), USB uXRCE-DDS. 관측 지연 5.9 ± 2.8 ms → DR U[0,12 ms], 명령 왕복 11.1 ± 3.7 ms → U[0,20 ms], YOLO SOF→결과 102.1 ± 9.8 ms(실외 중앙 약 93 ms) → U[76,110 ms] + 30 Hz 검출 생성. 투하 경로 DO_SET_ACTUATOR(노드 미구현), 투하 지연·모터 τ·관성은 미측정(SysID 패키지 대기, roll·pitch 관성은 PX4 autotune). 측정 JSON에 원시 샘플 없음 → 재표집 위해 저장 필요. sim2real_strategy·firmware_stack에 현행 안내 추가.
 - **2026-10-25:** F450 모터 스텝 응답 벤치 시험(exp_044). PX4 액추에이터 테스트 param5는 모터 번호(1..)임을 확인, Windows 마이크 잡음 억제를 WASAPI 배타 모드로 우회. Gazebo 모터 시정수 실측 근사로 변경.
 - **2026-10-24 (2):** 최종 sim2real 수정안을 notes/research/sim2real_hardware_f450.md §0으로 정리(단일 지침): 하드웨어 사양, 제어 경로 ①–⑬ 식·PX4 파라미터(각속도 PID·믹서·모터 모델 신규), DR 공통 규칙(폭×s, 균등, 경험분포 재표집 식), 무작위 11축·고정 축 표, 비행 로그 MAP, 측정 목록 14항목(시뮬 반영 우선순위·부품·반영 DR). 보고서의 비교 절은 §0을 가리키는 안내로 대체.
 - **2026-10-24:** 사용자 DR 설계와 문헌 제안 비교·수정안 → notes/reports/강화학습 sim2real DR 설계 조사.md §사용자 설계와의 비교·수정안. 상수 s 유지·소수 5축 무작위(T/W, 모터 τ, 명령·관측 지연, 투하 지연, 바람)·나머지 고정, 균등분포, 측정 후 경험분포 재표집. 제어기 = PX4 PID 이식(각속도 PID 추가, EKF2는 출력만 모델링), PD·CTBR 기각. 돌풍 = Dryden 파라미터화 OU. 투하 지연 추가 조사: 새 실측 드론 연구 없음, 서보만 측정은 하한. 배포 노드의 SITL용 명목 지연 대기는 실기에서 0으로 수정 필요.

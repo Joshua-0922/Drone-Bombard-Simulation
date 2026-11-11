@@ -27,16 +27,18 @@ L0 재학습과 실기 이전의 단일 지침이다. 시뮬레이션의 구조�
 | 항목 | 사양 | 시뮬 반영 |
 |---|---|---|
 | 프레임 | F450, 대각 450 mm, 팔 길이 $l$ = 0.225 m, Quad X | 믹서 기하 |
-| FC | Pixhawk 6C Mini, **PX4 v1.16.2**(실기 펌웨어. 시뮬 이식은 v1.15.4 기준, 파라미터 차이는 실기 파일로 확인) | 제어기(§0.2) |
-| 컴패니언 | Jetson Orin Nano Super 개발 키트(실측 180 g). 정책과 YOLO 실행, 별도 DC-DC 급전 | 명령·YOLO 지연 |
+| FC | Pixhawk 6C Mini(FMU v6C), **PX4 v1.16.2**(출고 펌웨어). 제어기 기본값은 v1.15.4와 같고, 새 파라미터 중 `MC_YAW_TQ_CUTOFF`(요 토크 2 Hz LPF)만 루프에 영향 | 제어기(§0.2) |
+| 컴패니언 | Jetson Orin Nano Super 개발 키트(실측 180 g). JetPack 7.2.1(Ubuntu 24.04), ROS 2 Jazzy, `px4_msgs` release/1.16. 정책과 YOLO 실행, 별도 DC-DC 급전 | 명령·관측·YOLO 지연 |
+| FC 연결 | **USB-C uXRCE-DDS**(921600, Micro XRCE-DDS Agent v2.4.2). QGC는 TELEM1 무선(MAVLink 57600). 오도메트리 100 Hz(간격 p99 12.3 ms) | ③·⑪ 지연 |
 | 배터리 | Vega 4S 5200 mAh(실측 499 g). 4000 mAh로 바꾸면 약 85 g 감소 | T/W, 질량 |
 | 모터 | Polytronics 2212 920KV × 4 | 추력 곡선, 모터 τ |
 | 프롭 | DJI 9450 | – |
 | ESC | Polytronics MR X-3 OPTO 30 A(BEC 없음), **PWM 전용**(RPM 텔레메트리 없음). `PWM_MAIN_MIN/MAX` 1100/1900 µs | 모터 τ는 벤치(exp_044)·IMU MAP으로 식별 |
 | 텔레메트리 | 3DR 433 MHz 한 쌍, TELEM1 57600 | – |
 | GPS | RTK급 GPS, **GPS2 포트**(`GPS_1_CONFIG` = 202) | – |
-| 투하 서보 | Pixhawk AUX 출력으로 구동(실측 10 g) | 투하 지연 경로 |
-| 카메라 | 미정(후보 IMX219, 수평 약 62°). 현재 시뮬은 화각 60°, 640×480 | `h_fov`, `img_w/h` |
+| 투하 서보 | `VehicleCommand` **DO_SET_ACTUATOR(187)** → PX4 "Peripheral via Actuator Set n" → PWM 서보(실측 10 g. Pixhawk 6C 기본 빌드에는 gripper 모듈 없음). 배포 노드 구현은 아직 없음 | 투하 지연 경로 |
+| 카메라 | **IMX219 CSI**, 센서 모드 2(1920×1080@30) → ISP 1280×720, `header.stamp` = 센서 SOF. 줄 읽기(readout) 20.4 ms. 렌즈 화각 수평 약 62°(일반 IMX219 렌즈 기준, 보정으로 확인). 현재 시뮬은 화각 60°, 640×480 | `h_fov`, `img_w/h`, YOLO 지연 |
+| 검출기 | YOLOv8n(`best.pt`, PyTorch FP16, imgsz 640), 약 30 Hz(29.6 Hz), 프레임 누락 1.4%, 추론 25 ms. 비행 시 `publish_annotated:=false` | ⑫ |
 | 질량 | 실측 합계 1,658 g(5200 mAh 499 + 기체 823 + 프롭 46 + Jetson 180 + 하중 100 + 서보 10) + 미측정(래치·배선·마운트·카메라) 약 60 g → 이륙 **약 1.72 kg** | `drone_mass`, `payload_mass` |
 | 관성(적재, CoM 기준) | diag(0.0175, 0.0175, 0.024) kg·m²(1.60 kg 기준 추정, 재계산 필요) | `inertia_diag` |
 | 최대 추력 | 모터당 990 g @14.8 V(ML2212 920KV + 9.4×4.3 판매처 추력표, 11.5 A) → 합계 약 3.96 kg. DJI 공식치는 850 g/모터 | T/W 공칭 **2.3**(1.72 kg) |
@@ -54,13 +56,13 @@ L0 재학습과 실기 이전의 단일 지침이다. 시뮬레이션의 구조�
 | ④ 속도 PID(PX4 `PositionControl`) | 100 Hz | $e=v_{sp}-v$, $a_{sp}=K_P e+K_I\!\int\! e\,dt-K_D\,\dot v_f$, $\dot v_f$는 1차 LPF 5 Hz | xy (P, I, D) = (1.8, 0.4, 0.2), z = (4.0, 2.0, 0.0) [MPC_*_VEL_*_ACC]. z 적분 ±g로 제한. 진입 시 적분을 $-F_{drag}/m$로 시드 |
 | ⑤ 추력 벡터·포화 | 100 Hz | $\hat b_z=\mathrm{norm}(-a_{xy}, g)$ 기울기 제한, $T=\dfrac{(a_z/g)T_h+T_h}{b_{z,z}}\ge T_{min}$. 수직 우선, 수평 여유. z는 포화 시 적분 정지, xy는 추종형 anti-windup(이득 2/P) | 기울기 35°(MPC_TILTMAX_AIR = 35), MPC_THR_MIN 0.12, THR_MAX 1.0, THR_XY_MARG 0.3, $T_h$ = 정지 스로틀 |
 | ⑥ 자세 P(PX4 `AttitudeControl`) | 100 Hz | $\omega_{sp}=K_{att}\odot e_q$ (쿼터니언 오차, yaw 가중) | MC_ROLL_P = MC_PITCH_P = 6.5, MC_YAW_P 2.8, MC_YAW_WEIGHT 0.4. 각속도 한계 220/220/200 °/s |
-| ⑦ **각속도 PID(PX4 `RateControl`, 신규 이식)** | 100 Hz | $u_\tau=K\left(P e_\omega+I\!\int\! e_\omega dt-D\,\dot\omega_f\right)$, $e_\omega=\omega_{sp}-\omega$. 적분은 출력 포화 시 정지, 한계 ±0.3. D는 각속도 미분의 LPF | roll·pitch (P, I, D) = (0.15, 0.2, 0.003), yaw = (0.2, 0.1, 0), K = 1, 적분 한계 0.30, D항 LPF 30 Hz. 자이로 LPF 40 Hz는 물리 100 Hz에서 생략(G1에서 불일치하면 물리 200 Hz로). PX4 v1.15 기본값이며 실기 파라미터 파일로 확정 |
+| ⑦ **각속도 PID(PX4 `RateControl`, 신규 이식)** | 100 Hz | $u_\tau=K\left(P e_\omega+I\!\int\! e_\omega dt-D\,\dot\omega_f\right)$, $e_\omega=\omega_{sp}-\omega$. 적분은 출력 포화 시 정지, 한계 ±0.3. D는 각속도 미분의 LPF | roll·pitch (P, I, D) = (0.15, 0.2, 0.003), yaw = (0.2, 0.1, 0), K = 1, 적분 한계 0.30, D항 LPF 30 Hz. 자이로 LPF 40 Hz는 물리 100 Hz에서 생략(G1에서 불일치하면 물리 200 Hz로). yaw 토크 출력에 1차 LPF 2 Hz(`MC_YAW_TQ_CUTOFF`, v1.16 신규). PX4 v1.16.2 기본값이며 실기 파라미터 파일로 확정 |
 | ⑧ 믹서(PX4 Control Allocator, Quad X) | 100 Hz | $u_i=B^{+}[u_\tau;\,T]$, $u_i\in[0,1]$로 자름. $B$는 팔 0.225 m, 45° 배치의 효과도 행렬 | 정규화는 PX4 의사역행렬 방식을 따른다. 단위테스트: $u_\tau$ = 1에서 모터가 포화 경계에 닿는지 확인 |
 | ⑨ 모터·추력 모델 | 100 Hz | 정적: $T_i^{cmd}=k_T\,T_{max}\,f(u_i)$, $f(u)=(1-a)u+au^2$. 동적: $T_{i,k+1}=T_{i,k}+\alpha(T_i^{cmd}-T_{i,k})$, $\alpha=1-e^{-\Delta t/\tau_m}$. yaw 토크: $Q_i=\pm c_Q T_i$ | 사전값 $a$ ≈ 0.6(ML2212 14.8 V 표 50/65/75/85/100% = 350/490/640/790/990 g에 적합하면 점별 0.41–0.68. 판매처 표의 스로틀 축은 PX4 $u$(1100–1900 µs)와 정의가 다를 수 있어 추력 벤치로 확정). PX4 THR_MDL_FAC = $a$로 맞춘다. $c_Q$ 사전값 0.016 m |
 | ⑩ 강체 | 100 Hz | PhysX. 질량·관성은 스폰 시 MassAPI로 저작하고 런타임 변경 없음(Rule 19) | §0.1 |
 | ⑪ 상태 추정(EKF2 출력 모델) | 100 Hz | $\hat x(t)=x(t-d_{obs})+b+n$. EKF2 자체는 이식하지 않음 | §0.3 |
-| ⑫ 표적 관측(YOLO + KF) | 10 Hz | 픽셀 잡음·누락·hold·거리별 conf 저하(기존) + 탐지 지연 $d_{yolo}$ | 픽셀 σ 3 px, 누락 5%, hold 10프레임(기존). 지연은 §0.3 |
-| ⑬ 투하 | 물리 스텝 | 정책·게이트 투하 판단 → $d_{rel}$ 후 분리. CCIP 예측기는 명목 평균 $\bar d_{rel}$을 쓴다 | §0.3. **배포 노드의 SITL용 명목 지연 대기는 실기에서 0**(기구가 지연을 만든다) |
+| ⑫ 표적 관측(YOLO + KF) | 검출 30 Hz, 정책은 최신 결과 사용 | 검출을 물리 3–4스텝(33.8 ms)마다 생성 → 지연 버퍼 $d_{yolo}$ → 정책 스텝에서 최신 결과를 읽는다. 이렇게 하면 실측 "결과 나이"(지연 + 표본 유지)가 재현된다. 픽셀 잡음·누락·hold·거리별 conf 저하는 기존 | 픽셀 σ 3 px, 누락 5%(YOLO 미검출, 프레임 누락 1.4% 포함), hold 10프레임(기존). 지연은 §0.3 |
+| ⑬ 투하 | 물리 스텝 | 정책·게이트 투하 판단 → `DO_SET_ACTUATOR` → $d_{rel}$ 후 분리. $d_{rel}$은 명령 전송부터 분리까지 전체다. CCIP 예측기는 명목 평균 $\bar d_{rel}$을 쓴다 | §0.3. **배포 노드의 SITL용 명목 지연 대기는 실기에서 0**(기구가 지연을 만든다) |
 
 ### 0.3 DR 지침
 
@@ -78,9 +80,9 @@ L0 재학습과 실기 이전의 단일 지침이다. 시뮬레이션의 구조�
 |---|---|---|---|---|---|
 | T/W 배율 $k_T$ | ⑨ | $k_T=1+0.15\,s\,\xi$, 공칭 T/W 2.3 | 공칭 = 정지 스로틀과 추력 곡선에서 역산, 폭 ±15% 유지(배터리 16.8→14 V 처짐) | 에피소드 | L0, GRU |
 | 모터 시정수 $\tau_m$ | ⑨ | $\tau_m=0.08(1+0.5\,s\,\xi)$ → $s$=1에서 U[0.04, 0.12] s. 중심 = exp_044 벤치(가속 약 80 ms, 감속 65–95 ms, 오디오 기반 90% 구간 약 40–140 ms). 이전 사전값 0.04 s(AIR2216 기준)는 폐기 | $\tau_m=\tau_{MAP}(1+w\,s\,\xi)$ | 에피소드 | L0, GRU |
-| 명령 지연 $d_{cmd}$ | ③ | U[0, 30 ms · s] | 경험분포 재표집, $\sigma_{min}$ = 5 ms | 에피소드 | L0, GRU |
-| 관측 지연 $d_{obs}$ | ⑪ | U[0, 20 ms · s] | 경험분포 재표집, $\sigma_{min}$ = 5 ms | 에피소드 | L0, GRU |
-| YOLO 탐지 지연 $d_{yolo}$ | ⑫ | U[0, 100 ms · s] | 경험분포 재표집, $\sigma_{min}$ = 10 ms | 에피소드 | L0, GRU |
+| 명령 지연 $d_{cmd}$ | ③ | **U[0, 20 ms · s]**. 실측 상한 기준: `VehicleCommand` 왕복 11.1 ± 3.7 ms(p95 17.1, p99 18.9, 최대 21.9), 편도 ≈ 왕복 − 상향 ≈ 6 ms | `trajectory_setpoint` 경로를 직접 재면(ulog 수신 시각 − Jetson 발행 시각) 경험분포 재표집, $\sigma_{min}$ = 5 ms | 에피소드 | L0, GRU |
+| 관측 지연 $d_{obs}$ | ⑪ | **U[0, 12 ms · s]**. 실측(USB, YOLO 부하와 무관): 센서 샘플 → Jetson 수신 5.9 ± 2.8 ms, p95 10.0, p99 11.4, 최대 23.6 | 원시 샘플을 저장하면 경험분포 재표집, $\sigma_{min}$ = 3 ms | 에피소드 | L0, GRU |
+| YOLO 탐지 지연 $d_{yolo}$ | ⑫ | **$d=\mu+\sqrt3\,\sigma\,s\,\xi$, $\mu$ = 93 ms(실외, 화면 중앙), σ = 10 ms → $s$=1에서 U[76, 110] ms.** 실측(실내, SOF → 결과 수신): 102.1 ± 9.8 ms(p50 103, p95 113, p99 121, 최대 141). 장면 기준 보정 $D+t_{exp}/2-(y/H)\cdot20.4$ ms → 실내(노출 33 ms) 중앙 약 109 ms, 실외(노출 1 ms 미만) 약 93 ms | 실외 노출을 재측정해 $\mu$ 확정, 원시 샘플로 재표집, $\sigma_{min}$ = 10 ms | 에피소드 | L0, GRU |
 | 투하 지연 $d_{rel}$ | ⑬ | U[$\bar d-\sqrt3\sigma s$, $\bar d+\sqrt3\sigma s$], $\bar d$ = 0.22, σ = 0.05 → $s$=1에서 U[0.133, 0.307] s | 경험분포 재표집, $\sigma_{min}$ = 10 ms. CCIP 명목값은 측정 평균 $\bar d$로 고정 | 에피소드 | L0, GRU |
 | 평균풍 | 외력 | 크기 $U\sim U[0, 6\,s]$ m/s, 방향 $\psi\sim U[0, 2\pi)$ | 상한을 현장 풍속계 분포로 조정 | 에피소드 | L0, GRU |
 | 돌풍(Dryden 파라미터 OU) | 외력 | 축별 $g_{k+1}=\rho g_k+\sigma_u\sqrt{1-\rho^2}\,\eta$, $\rho=e^{-\Delta t/\tau_u}$, $\eta\sim N(0,1)$. $\tau_u=L_u(h_0)/\max(U, 1)$, $L_u=h/(0.177+0.000823h)^{1.2}$(ft), $h_0$ = 시작 고도. $\sigma_u=I\,U$, $I\sim U[0.10, 0.25]$ | $I$와 $\tau_u$를 현장 풍속계로 추정 | 에피소드(τ, σ), 스텝(g) | L0, GRU |
@@ -94,10 +96,10 @@ L0 재학습과 실기 이전의 단일 지침이다. 시뮬레이션의 구조�
 
 | 값 | 측정 전 | 측정 후 |
 |---|---|---|
-| 기체 질량 | 1.50 kg | 저울 측정값. 5200 mAh를 함께 쓰면 스폰 시 env 그룹 {1.50, 1.70} kg 두 변형 |
+| 기체 질량 | 약 1.62 kg(이륙 약 1.72 kg − 하중 0.10 kg, 미측정 약 60 g 포함) | 미측정 부품까지 저울 측정. 배터리를 4000 mAh로 바꾸면 약 85 g 감소 |
 | 하중 질량 | 0.10 kg | 저울 측정값 |
 | 관성 | diag(0.0175, 0.0175, 0.024) | MAP($I_{xx}, I_{yy}$)와 진자($I_{zz}$) |
-| 추력 곡선 모양 $a$, $c_Q$ | 0.65, 0.016 m | 추력 벤치·MAP |
+| 추력 곡선 모양 $a$, $c_Q$ | 약 0.6, 0.016 m | 추력 벤치·MAP |
 | 제어기 이득 | §0.2(PX4 기본값) | 실기 파라미터 파일. 기존 `ctrl_mass_rel`·`kp_vel_rel`·`k_att_rate_rel` DR은 0으로 둔다 |
 | 외부 조건 | 시작 고도 8–12 m, 투하 고도 하한 5 m, 접근 18–22 m, 속도 상한 | 유지 |
 
@@ -111,28 +113,31 @@ L0 재학습과 실기 이전의 단일 지침이다. 시뮬레이션의 구조�
 | 모델 | $\dot\omega_i=(\omega_i^{cmd}(u_i,V)-\omega_i)/\tau_m$, $T_i=k_f\omega_i^2$, $Q_i=c_Q T_i$, $I\dot\Omega=\tau_{body}(T_i,Q_i)-\Omega\times I\Omega$, $m\dot v=R\sum T_i\hat z+m g+F_{drag}$ |
 | 사전분포 | $\log\theta\sim N(\log\theta_0,\ 0.3^2)$, $\theta_0$ = §0.1·추력표·진자 값 |
 | 목적함수 | $\hat\theta=\arg\min\ \sum_t\lVert \dot\Omega_{meas}-\dot\Omega_{model}\rVert^2_{\Sigma_\Omega^{-1}}+\lVert a_{meas}-a_{model}\rVert^2_{\Sigma_a^{-1}}+\lVert\log\theta-\log\theta_0\rVert^2/0.3^2$ |
-| 데이터 | 2–3분 비행: 정지 1분, roll·pitch·yaw 각속도 doublet 각 5회, 스로틀 계단 ±10% 5회 |
-| ulog 토픽 | `sensor_combined`(자이로·가속도), `esc_status`(RPM), `actuator_motors`, `battery_status`(전압), `vehicle_local_position` |
-| 식별 순서 | 질량 → 정지 비행에서 $k_f$ → RPM 계단응답에서 $\tau_m$ → roll·pitch 응답에서 $I_{xx}, I_{yy}$ → yaw 응답에서 $c_Q/I_{zz}$ |
+| 데이터 | `Jetson_Mounted/ros2_ws/src/system_identification`: 지상 PC가 MAVLink(TELEM1)로 10 Hz 설정점을 보내고 PX4 ulog를 원자료로 쓴다. 시험: `hover`(30 s), `vertical`(z 계단 + chirp 0.1→1.5 Hz: 추력 곡선 전 구간·모터 τ), `horizontal`(위치 계단·chirp), `yaw`(±45°·±90°: $k_M/I_{zz}$), `velocity`(x ±1·±2, y ±1 m/s: 정책 기준 계단응답·항력), `battery`(만충→3.6 V/셀: 추력-전압). 각 2회 이상(식별 1, 검증 1), 바람 2 m/s 미만. **roll·pitch 관성은 10 Hz 설정점으로 여기되지 않으므로 PX4 autotune(`MC_AT_EN=1`, `MC_AT_APPLY=0`: 이득은 바꾸지 않고 여기 신호만) 또는 조종사 doublet**, $I_{zz}$는 2선 진자 |
+| ulog 토픽 | `SDLOG_PROFILE=25`(기본 + System identification + High rate): `sensor_combined`, `vehicle_acceleration`, `vehicle_angular_velocity`(각가속도 포함), `actuator_motors`, `vehicle_thrust_setpoint`·`vehicle_torque_setpoint`, `battery_status`(현재 PWM ESC라 `esc_status` RPM 없음). **`MC_BAT_SCALE_EN=0`**(1이면 모터 명령이 전압으로 보정되어 추력-전압 관계가 가려진다) |
+| 추가 적합 | 추력 $T=\sum_i k_T(V)[(1-\theta)u_i+\theta u_i^2]$($\theta$ = THR_MDL_FAC 꼴, 비력 × 질량 기준). 모터 τ: `vertical` chirp에서 `actuator_motors` → 측정 추력의 1차 지연 + 순지연. 항력: `velocity` 정속 구간 $m g\tan\theta=D(v)$. 닫힌 루프: `velocity`·`horizontal` 계단응답을 Isaac에 같은 명령으로 넣어 시정수·오버슈트 ±10% |
+| 식별 순서 | 질량 → 정지 비행에서 $k_f$ → `vertical` chirp·벤치(exp_044)에서 $\tau_m$ → roll·pitch 응답에서 $I_{xx}, I_{yy}$ → yaw 응답에서 $c_Q/I_{zz}$ |
 | 출력 | MAP 값 → DR 중심, 라플라스 근사 $\sigma_{post}$ → DR 폭(§0.3) |
 
 ### 0.5 측정 목록 (시뮬 반영 우선순위)
 
+실측 원자료는 `/opt/drone-bombard/Jetson_Mounted/measurements/`(JSON 요약). **현재 JSON은 요약 통계만 담고 있어 경험분포 재표집에 쓸 원시 샘플이 없다.** 측정 스크립트에 원시 샘플 저장을 추가해야 한다.
+
 | 순위 | 측정값 | 방법 | 사용 부품·장비 | 반영되는 시뮬 값·DR | 선행 조건 |
 |---|---|---|---|---|---|
-| 1 | 투하 지연 평균·분포(명령 → 분리) | 0단계: 서보만(하한). 명령 시각과 래치 해제 각도의 스위치 검출 시각 차이. 1단계: 래치 아래 광센서 + 하중 IMU 자유낙하(≈0 g) 교차 확인. 각 40회 이상 × BEC 전압 2종, 벤치 + 정지 비행 | Pixhawk 6C Mini(AUX PWM), 서보, 마이크로스위치·광센서, ESP32(`micros()` 기록) 또는 로직 분석기, 하중 IMU(휴대폰 가능) | ⑬ CCIP 명목 $\bar d$, $d_{rel}$ 재표집 | 0단계: 지금. 1단계: 래치 제작 후 |
+| 1 | 투하 지연 평균·분포(명령 → 분리) | 경로: Jetson → `DO_SET_ACTUATOR` → PX4 → PWM 서보. 0단계(기구 없음, 하한): 같은 명령으로 Actuator Set 2에 LED를 켜고 서보 혼의 해제 각도 스위치 시각과 비교, ulog `vehicle_command` 시각으로 전송·기구 지연 분리. 1단계: 래치 아래 광센서 + 하중 IMU 자유낙하 교차 확인. 각 40회 이상 × BEC 전압 2종. 비행 검증: 투하 순간 상향 가속 계단 $g(m_{loaded}/m_{empty}-1)\approx9.81\times(1.72/1.62-1)\approx0.61$ m/s²를 `sensor_combined`에서 검출 | Pixhawk 6C Mini(Actuator Set 출력), 서보, LED, 마이크로스위치·광센서, 240 fps 카메라 또는 로직 분석기, 하중 IMU | ⑬ CCIP 명목 $\bar d$, $d_{rel}$ 재표집 | 0단계: 지금. 1단계: 래치 제작 후 |
 | 2 | 기체 질량·하중 질량·무게중심 | 저울, 2점 매달기로 무게중심 | 저울(1 g 단위), 실 | 고정 질량, 스폰 저작 | 조립 후 |
 | 3 | 정적 추력 곡선 $f(u)$, $T_{max}$ | 스로틀 10–100% 단계별 추력, 전압 2종(16.4/14.8 V) | 모터·ESC·DJI 9450, PX4 액추에이터 테스트(`hardware/bench/motor_step/`과 같은 방식), 저울 + 고정 지그, 전력계 | ⑨ $a$, $T_{max}$, T/W 공칭 | 지금 가능 |
-| 4 | 모터 시정수 $\tau_m$ | **1차 완료(exp_044, 오디오, 모터 2·3):** 가속 약 80 ms, 감속 65–95 ms. 정밀화: 반사 테이프 + IR 센서(광학 타코미터)로 30↔50% 계단 RPM 응답, 63% 도달 시간 | 현재 ESC는 PWM 전용이라 DShot RPM 로그 불가 → 광학 타코미터 또는 IMU MAP | ⑨ $\tau_m$ 중심·폭 | 3과 같은 지그 |
-| 5 | 명령 지연 $d_{cmd}$ | Jetson 발행 시각 vs PX4 `trajectory_setpoint` 수신 시각(uXRCE timesync), 1000샘플 이상 | Jetson, Pixhawk, uXRCE-DDS 연결(TELEM 921600) | ③ 재표집 | Jetson 도착 |
-| 6 | 관측 지연 $d_{obs}$ | PX4 `vehicle_odometry` 타임스탬프 vs Jetson 수신 시각 | Jetson, Pixhawk | ⑪ 재표집 | Jetson 도착 |
-| 7 | YOLO 탐지 지연 $d_{yolo}$ | ESP32로 LED를 켠 시각 vs 탐지 출력 시각. 추론 시간(TensorRT)과 분리해 기록 | Jetson, 카메라, ESP32 + LED | ⑫ 재표집 | Jetson·카메라 |
+| 4 | 모터 시정수 $\tau_m$ | **1차 완료(exp_044, 오디오, 모터 2·3):** 가속 약 80 ms, 감속 65–95 ms. 정밀화: 반사 테이프 + IR 센서(광학 타코미터)로 30↔50% 계단 RPM 응답, 63% 도달 시간 | 현재 ESC는 PWM 전용이라 DShot RPM 로그 불가 → 광학 타코미터 또는 IMU MAP | ⑨ $\tau_m$ 중심·폭 | 3과 같은 지그. 비행 후 `system_identification` `vertical` chirp(`actuator_motors` → 비력의 1차 지연 + 순지연)로 교차 확인 |
+| 5 | 명령 지연 $d_{cmd}$ | ✅ 상한 실측(10-28): `VehicleCommand` 왕복 11.1 ± 3.7 ms. ⏳ 남은 것: `trajectory_setpoint` 편도(ulog 수신 시각 − Jetson 발행 시각), 원시 샘플 저장 | Jetson, Pixhawk(USB uXRCE-DDS), `scripts/measure_link_latency.py` | ③ U[0, 20 ms] → 재표집 | 지상 |
+| 6 | 관측 지연 $d_{obs}$ | ✅ 실측(10-28): 5.9 ± 2.8 ms, p99 11.4 ms, YOLO 부하와 무관. ⏳ 원시 샘플 저장 | Jetson, Pixhawk, `measure_link_latency.py` | ⑪ U[0, 12 ms] → 재표집 | 지상 |
+| 7 | YOLO 탐지 지연 $d_{yolo}$ | ✅ 실내 실측(11-05): SOF → 결과 102.1 ± 9.8 ms, 결과 나이 119 ± 14 ms. ⏳ 실외 노출 재측정(`argus_sof_probe`), TensorRT 엔진·단일 프로세스로 단축 시 재측정 | Jetson, IMX219, `measure_yolo_latency.py`, `argus_sof_probe.cpp` | ⑫ $\mu$, σ | 실외 |
 | 8 | 관성 $I_{xx}, I_{yy}$, $c_Q/I_{zz}$ (및 $k_f$, $\tau_m$ 재확인) | 비행 로그 MAP(§0.4). PWM ESC라 `esc_status` RPM이 없으므로 $\tau_m$은 IMU 각가속도 응답으로만 추정. $I_{zz}$ 절댓값은 2선 진자 | 조립 기체, 실·스톱워치(진자) | 고정 관성, $\tau_m$, $k_T$ 공칭 | 첫 비행 |
 | 9 | 속도 계단응답(G1 관문) | 오프보드 0→2 m/s 축별 계단 5회. 축별 시상수·지연을 시뮬과 비교, ±15% 이내 통과 | 조립 기체, Jetson, RTK | 제어 경로 전체 검증. 불일치 시 물리 200 Hz, 이득 재조정 | 첫 비행 |
 | 10 | EKF 속도 추정 잡음 | 정지 비행 1분 속도 표준편차·편향 | 조립 기체, RTK | ⑪ 관측 잡음 물리 단위 | 첫 비행 |
 | 11 | YOLO 고도별 픽셀 잡음·누락률·conf | 고도 3–12 m 정지 비행에서 표적 촬영 | Jetson, 카메라, 실제 표적 | ⑫ `pixel_noise_std`, `dropout_prob`, conf 곡선 | 비행 가능 후 |
 | 12 | 현장 바람(평균·세기 $I$·상관시간 $\tau_u$) | 1–10 Hz 풍속계를 투하 고도 근처에 설치해 기록 | 풍속계, 마스트 | 평균풍 상한, 돌풍 $I$·$\tau_u$ | 현장 |
-| 13 | 카메라 화각·해상도 | 사양서 | 카메라 | ⑫ `h_fov`, `img_w/h` | 카메라 선정 |
+| 13 | 카메라 화각 | IMX219 렌즈 사양 또는 체커보드 보정(OpenCV) | IMX219, 체커보드 | ⑫ `h_fov`(해상도는 1280×720로 확정) | 지금 |
 | 14 | 하중 탄도계수 $k/m$ | 정지 비행 낙하(고도 5–10 m) 낙하 시간·착지점 | 조립 기체, 하중, 영상 | 낙하 ODE 중심 | 래치 제작 후 |
 
 **실기 전 검증 관문:** G1 속도 계단응답 일치(±15%) → G2 같은 `drop_policy` 노드로 SITL 회귀(exp_043 재현) → G3 정지 비행 투하로 지연 평균·$k/m$ 검증 → G4 2 m/s 이상 자연풍에서 팔당 40회.
