@@ -575,7 +575,7 @@ class DroneBombardDynDRCfg:
     # --- plant axes (2026-11-11, sim2real_hardware_f450.md §0.3) ---
     thrust_scale_down: float = 0.15    # k_T ~ U[1 - down, 1 + up]: battery sag lowers thrust
     thrust_scale_up: float = 0.05
-    motor_tau_up_range: tuple[float, float] = (0.04, 0.12)    # s, exp_044 rise ~80 ms
+    motor_tau_up_range: tuple[float, float] = (0.03, 0.12)    # s: exp_044 audio 80 ms (+-40) and same-class literature ~35 ms (AIR2216+1045)
     motor_tau_down_ratio_range: tuple[float, float] = (1.0, 2.0)  # exp_044 fall/rise t50 ratio 0.8-2.3
     cmd_delay_max_s: float = 0.020     # Jetson -> PX4 setpoint, measured one-way 5.1 +/- 2.7 ms
     obs_delay_max_s: float = 0.012     # PX4 state -> Jetson, measured 5.9 +/- 2.8 ms (p99 11.4)
