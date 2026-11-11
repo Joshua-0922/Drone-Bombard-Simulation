@@ -337,6 +337,7 @@ wandb: `sl_gen_unseenR` / `sl_gen_policy_transfer` / `sl_gen_label_count` (job_t
 
 # 2. Recent Progress
 
+- **2026-11-11 (2):** Jetson_Mounted pull 후 재확인 — **투하 지연 실측(11-08 벤치, 240 fps 19회): Jetson 명령 → 분리 76.8 ± 14.5 ms**(기계 59.3 ± 13.3 ms + PWM 50 Hz 0–20 + PX4 0–4 + 링크 약 5 ms). 기존 가정 0.22 ± 0.05 s 대비 평균 약 3배 짧음 → CCIP 명목값 0.077 s, DR은 성분 합 + 기계 지연 19회 재표집(§0.3). 서보 MG90S FMU PWM1 50 Hz, ESC I/O 400 Hz. 남은 것: 서보 내부 반응 δ, 비행 중 투하, Jetson 경로. 시뮬 `release_delay_mean`·배포 `RELEASE_DELAY_MEAN` 0.22 수정 필요(코드 미수정).
 - **2026-11-11:** Jetson_Mounted 실측값을 sim2real 지침에 반영(notes/research/sim2real_hardware_f450.md §0). PX4 v1.16.2(기본값 동일, MC_YAW_TQ_CUTOFF 2 Hz 추가), USB uXRCE-DDS. 관측 지연 5.9 ± 2.8 ms → DR U[0,12 ms], 명령 왕복 11.1 ± 3.7 ms → U[0,20 ms], YOLO SOF→결과 102.1 ± 9.8 ms(실외 중앙 약 93 ms) → U[76,110 ms] + 30 Hz 검출 생성. 투하 경로 DO_SET_ACTUATOR(노드 미구현), 투하 지연·모터 τ·관성은 미측정(SysID 패키지 대기, roll·pitch 관성은 PX4 autotune). 측정 JSON에 원시 샘플 없음 → 재표집 위해 저장 필요. sim2real_strategy·firmware_stack에 현행 안내 추가.
 - **2026-10-25:** F450 모터 스텝 응답 벤치 시험(exp_044). PX4 액추에이터 테스트 param5는 모터 번호(1..)임을 확인, Windows 마이크 잡음 억제를 WASAPI 배타 모드로 우회. Gazebo 모터 시정수 실측 근사로 변경.
 - **2026-10-24 (2):** 최종 sim2real 수정안을 notes/research/sim2real_hardware_f450.md §0으로 정리(단일 지침): 하드웨어 사양, 제어 경로 ①–⑬ 식·PX4 파라미터(각속도 PID·믹서·모터 모델 신규), DR 공통 규칙(폭×s, 균등, 경험분포 재표집 식), 무작위 11축·고정 축 표, 비행 로그 MAP, 측정 목록 14항목(시뮬 반영 우선순위·부품·반영 DR). 보고서의 비교 절은 §0을 가리키는 안내로 대체.

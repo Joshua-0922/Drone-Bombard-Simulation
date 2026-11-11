@@ -7,7 +7,7 @@ type: research
 
 > 🔄 **2026-11-11 갱신 (현행 기준):** 기체·스택이 바뀌었다. **F450 + Pixhawk 6C Mini(PX4 v1.16.2) + Jetson Orin Nano Super(JetPack 7.2.1, ROS 2 Jazzy, USB uXRCE-DDS) + IMX219 + YOLOv8n**, 추진계는 현재 장착 구성 유지(Polytronics 2212 920KV + DJI 9450 + 30 A PWM ESC, 이륙 약 1.72 kg, T/W 공칭 2.3). 배포 저장소는 `/opt/drone-bombard/Jetson_Mounted`다. 제어기·DR·측정의 단일 지침은 [[research/sim2real_hardware_f450]] §0이다. 아래 본문의 X500·RPi 5·PX4 v1.15 서술은 당시 기록이다.
 >
-> **실측된 지연(Jetson_Mounted, 10-28·11-05):** 관측(센서 샘플 → Jetson) 5.9 ± 2.8 ms(p99 11.4), 명령 왕복 11.1 ± 3.7 ms(편도 약 6 ms), YOLO(센서 SOF → 결과) 102.1 ± 9.8 ms(실외 노출 보정 시 화면 중앙 약 93 ms), YOLO 부하는 PX4 링크에 영향 없음. **모터 시정수:** 벤치 1차 측정(exp_044) 가속 약 80 ms, 감속 65–95 ms. **미측정:** 투하 지연(`DO_SET_ACTUATOR` 경로, 노드 구현 전), 추력 곡선, 관성(`system_identification` 패키지의 SysID 비행 대기).
+> **실측된 지연(Jetson_Mounted, 10-28·11-05):** 관측(센서 샘플 → Jetson) 5.9 ± 2.8 ms(p99 11.4), 명령 왕복 11.1 ± 3.7 ms(편도 약 6 ms), YOLO(센서 SOF → 결과) 102.1 ± 9.8 ms(실외 노출 보정 시 화면 중앙 약 93 ms), YOLO 부하는 PX4 링크에 영향 없음. **모터 시정수:** 벤치 1차 측정(exp_044) 가속 약 80 ms, 감속 65–95 ms. **투하 지연(11-08 벤치, 240 fps 19회):** Jetson 명령 → 분리 76.8 ± 14.5 ms(기계 59.3 ± 13.3 ms + PWM 50 Hz 대기 0–20 + PX4 0–4 + 링크) → 기존 가정 0.22 ± 0.05 s보다 약 3배 짧다. **미측정:** 서보 내부 반응 δ, 비행 중 투하, 추력 곡선, 관성(`system_identification` 패키지의 SysID 비행 대기).
 >
 > **로드맵 1–2단계의 현행 순서:** (1) 지상 측정 — 링크·YOLO 지연 완료, 투하 지연·카메라 화각 남음 → (2) Isaac 재설정 — PX4 PID 이식(각속도 PID·믹서·모터 1차 지연 τ U[0.04, 0.12] s 추가), 지연 버퍼(명령 0–20 ms, 관측 0–12 ms, YOLO 76–110 ms), 균등 DR → L0 재학습 → (3) SysID 비행(hover → vertical → horizontal → yaw → velocity → battery, 각 2회) → 측정값으로 DR 재중심화 후 GRU 재적합 → (4) SITL 회귀 → (5) 실기.
 
