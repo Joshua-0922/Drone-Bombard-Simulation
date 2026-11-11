@@ -525,7 +525,7 @@ class DroneBombardTaskCfg(DroneBombardEnvCfg):
     perception: PerceptionCfg = PerceptionCfg()
     task_reward: TaskRewardCfg = TaskRewardCfg()
 
-    dyn_dr: DroneBombardDynDRCfg = DroneBombardDynDRCfg(enabled=True)
+    dyn_dr: DroneBombardDynDRCfg = DroneBombardDynDRCfg(enabled=True, vel_obs_channels=(6, 7, 8))
     """C-GROUP randomization, ON by default.
 
     Explicitly re-declared here rather than inherited: the base default is
@@ -638,6 +638,9 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         self._live_steps = torch.zeros(N, device=device)
         self._perceived_target_xy = torch.zeros(N, 2, device=device)
         self._detected = torch.zeros(N, dtype=torch.bool, device=device)
+        # Time the marker has been inside the reveal radius; it is "detected" only after
+        # the camera -> YOLO latency (_detect_delay, base env) has elapsed.
+        self._within_age = torch.zeros(N, device=device)
         self._cruise_unit = torch.zeros(N, 2, device=device)
         self._cruise_unit[:, 0] = 1.0
 
@@ -674,10 +677,16 @@ class DroneBombardTaskEnv(DroneBombardEnv):
     # helpers
     # ------------------------------------------------------------------
     def _kinematics(self):
-        pos = self._robot.data.root_pos_w - self.scene.env_origins
-        vel = self._robot.data.root_lin_vel_w
-        ang = self._robot.data.root_ang_vel_b
-        roll, pitch, yaw = euler_xyz_from_quat(self._robot.data.root_quat_w)
+        """The state as the Jetson sees it: PX4 odometry arrives 0-12 ms late, so with
+        probability ``_obs_delay_p`` a row reads the previous physics step's state."""
+        d = self._robot.data
+        pos_w, vel, ang, quat = d.root_pos_w, d.root_lin_vel_w, d.root_ang_vel_b, d.root_quat_w
+        if self._kin_prev is not None and bool((self._obs_delay_p > 0.0).any()):
+            late = ((torch.rand_like(self._obs_delay_p) < self._obs_delay_p) & self._kin_prev_ok).unsqueeze(-1)
+            pos_w, vel, ang, quat = (torch.where(late, old, new) for old, new in
+                                     zip(self._kin_prev, (pos_w, vel, ang, quat)))
+        pos = pos_w - self.scene.env_origins
+        roll, pitch, yaw = euler_xyz_from_quat(quat)
         wrap = lambda a: torch.atan2(torch.sin(a), torch.cos(a))  # noqa: E731
         return pos, vel, ang, wrap(roll), wrap(pitch), wrap(yaw)
 
@@ -837,7 +846,9 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         ccip_err, d_impact, t_f = self._ccip(pos, vel)
         self._d_impact = d_impact
 
-        det = self._current_d_xy() <= cfg.perception.reveal_radius
+        within = self._current_d_xy() <= cfg.perception.reveal_radius
+        det = within & (self._within_age >= self._detect_delay)
+        self._within_age = torch.where(within, self._within_age + self.step_dt, torch.zeros_like(self._within_age))
         self._detected = det
         m = det.float().unsqueeze(-1)
 
@@ -956,6 +967,8 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         # PX4-mode loop state: derivative filter at the handoff velocity, integrator holding the
         # drag compensation a cruising vehicle would already have (unused state in "p" mode).
         self.seed_px4_controller(env_ids, root[:, 7:10])
+        self._yaw_ref[env_ids] = cruise_yaw  # PX4 holds the approach heading
+        self._within_age[env_ids] = 0.0
 
         d0 = torch.linalg.norm(marker - spawn_xy, dim=-1)
         self._d_xy_prev[env_ids] = d0
@@ -1046,7 +1059,7 @@ class DroneBombardTaskEnv(DroneBombardEnv):
 
         d_xy = self._current_d_xy()
         self._d_xy_min = torch.minimum(self._d_xy_min, d_xy)
-        self._detected = d_xy <= cfg.perception.reveal_radius
+        self._detected = (d_xy <= cfg.perception.reveal_radius) & (self._within_age >= self._detect_delay)
         self._overshoot_flythrough = torch.zeros_like(gate)
 
         # Scored on the REAL landing point against the TRUE marker.

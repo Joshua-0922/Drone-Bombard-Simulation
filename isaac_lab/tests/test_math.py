@@ -1103,3 +1103,19 @@ def test_px4_integrator_removes_wind_lag_p_only_does_not():
     v_p = _fly_point_mass(False)
     assert abs(v_pid - 3.5) < 0.05, v_pid
     assert 3.5 - v_p > 0.5, v_p          # P-only lags ~0.86 m/s in a 4 m/s headwind (analytic)
+
+
+def test_quadx_allocation_hover_and_roll():
+    A, Ainv = mu.quadx_allocation(0.225, 0.016)
+    t = Ainv @ torch.tensor([18.6, 0.0, 0.0, 0.0])
+    assert torch.allclose(t, torch.full((4,), 18.6 / 4))           # pure thrust -> equal rotors
+    t = Ainv @ torch.tensor([18.6, 0.5, 0.0, 0.0])                 # +roll torque
+    assert t[2] > t[0] and t[1] > t[3]                             # left rotors (y>0) push harder
+    assert torch.allclose(A @ t, torch.tensor([18.6, 0.5, 0.0, 0.0]), atol=1e-5)
+
+
+def test_motor_lag_uses_rise_and_fall_constants():
+    up, dn = torch.tensor([0.5]), torch.tensor([0.1])
+    T = torch.tensor([1.0, 1.0])
+    out = mu.motor_lag_step(T, torch.tensor([2.0, 0.0]), up, dn)
+    assert torch.allclose(out, torch.tensor([1.5, 0.9]))

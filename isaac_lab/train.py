@@ -204,6 +204,9 @@ parser.add_argument("--no_residual", action="store_true",
 parser.add_argument("--no_handoff_dr", action="store_true",
                     help="Ablation arm: pin the handoff to its nominal (fixed heading/speed/altitude) while "
                          "keeping every other randomization.")
+parser.add_argument("--controller", type=str, default=None, choices=["p", "px4"],
+                    help="Plant/controller: px4 (default since 2026-11-11) = PX4 velocity+rate PID, Quad X "
+                         "mixer, measured rotor lag. p = the legacy P loop with a direct wrench (old runs).")
 parser.add_argument("--no_dyn_dr", action="store_true",
                     help="Ablation arm: restore an exact plant -- no mass-belief/gain mismatch, no "
                          "obs/action noise. Independent of --dr_scale by construction.")
@@ -480,6 +483,9 @@ def main():
         # C group -- sensor/actuator. Also held fixed across the sweep.
         if args_cli.no_dyn_dr:
             env_cfg.dyn_dr.enabled = False
+        if args_cli.controller is not None:
+            env_cfg.controller.mode = args_cli.controller
+            env_cfg.controller.motor_model = args_cli.controller == "px4"
 
         # Learned-arm selection (§7.1): L0 Analytic-Aim / L1 Impact-Space
         # Residual / L2 End-to-End Aim.

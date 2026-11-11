@@ -13,6 +13,7 @@ type: reference
 
 | 날짜 | Run ID | Steps | Mean Drop Error | 요약 |
 |------|--------|-------|-----------------|------|
+| 2026-11-11 | exp_045 Isaac 플랜트 PX4 경로·실측 상수 교체 + 폐루프 점검 + 학습 dry-run (2048 env × 80 iter, tensorboard) | 80 iter | — | 로터 80 ms에서 기존 이득 18/6.5 진동 → PX4 모드 이득 12/4.5. dry-run 성공 0 → 38%, bad_attitude 94 → 26%, 보상 −70 → −9: 학습 진행 확인 (Rule 49) → [[experiments/exp_045_isaac_px4_plant_dryrun]] |
 | 2026-10-25 | exp_044 F450 단일 모터 스텝 응답 벤치 시험 (모터 2·3, 30↔50 % × 8회, 노트북 마이크) | 완료 | 가속 τ ≈ 80 ms, 감속 τ ≈ 65–95 ms, 명령→PWM ≈ 5 ms, 모터 간 차이 없음 | ⚠️ Gazebo 기본(12.5/25 ms)보다 느림 → `x500_drop` 0.08/0.08 s로 변경 (Rule 48) → [[experiments/exp_044_f450_motor_step_response]] |
 | 2026-10-11 | exp_043 Isaac 정책 → ROS 2 노드 → Gazebo + PX4 v1.15.4 SITL 투하 (6 환경 × L0/GRU = 12 에피소드) | 완료 | 12/12 착지, L0 6/6 0.5 m 이내(중앙값 0.203 m), GRU 중앙값 0.282 m(맞바람 1.23 m), 장착 −0.140 m | ✅ 배포 경로 검증, 장착·분리 정상. 현 최선 = L0 단독(GRU는 PX4 재적합 필요, Rule 47). drone_controller yaw 버그 수정 → [[experiments/exp_043_gazebo_px4_sim2sim]] |
 | 2026-10-03 | exp_042 PX4 v1.15.4 속도 PID에서 P 학습 L0·L0+GRU-S 재학습 없이 평가 (24 run) | 완료 | L0 CEP50 0.305→0.279(강건), GRU-S 0.204→0.338(PX4에서 L0보다 +21~27%) | ⛔ 잔차는 저수준 제어기에 결합 → PX4 모드 덤프로 GRU 재적합 필수 (Rule 47). → [[experiments/exp_042_px4_controller_noretrain]] |

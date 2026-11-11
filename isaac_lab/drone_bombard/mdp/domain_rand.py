@@ -146,3 +146,87 @@ def sample_target_turn_rate(cfg, num_envs: int, device: torch.device, enabled: b
     mag = lo + torch.rand(num_envs, device=device) * (hi - lo)
     sign = torch.where(torch.rand(num_envs, device=device) < 0.5, -1.0, 1.0)
     return mag * sign
+
+
+# =====================================================================
+# 2026-11-11 sim2real axes (notes/research/sim2real_hardware_f450.md §0.3)
+# =====================================================================
+
+def sample_wind_uniform(num_envs: int, device: torch.device, speed_max: float,
+                        enabled: bool = False) -> torch.Tensor:
+    """Per-episode wind, magnitude ``U[0, speed_max]`` and direction ``U[0, 2pi)``.
+
+    Replaces the per-axis Gaussian, whose Rayleigh magnitude put only 2.9% of
+    episodes above 4 m/s -- the band the outdoor experiment is run in. Identity
+    (zeros, no RNG) when disabled or ``speed_max <= 0``."""
+    if not enabled or speed_max <= 0.0:
+        return torch.zeros(num_envs, 2, device=device)
+    speed = torch.rand(num_envs, device=device) * speed_max
+    psi = torch.rand(num_envs, device=device) * (2.0 * math.pi)
+    return torch.stack([speed * torch.cos(psi), speed * torch.sin(psi)], dim=-1)
+
+
+def dryden_length_scale(h_m: float) -> float:
+    """MIL-F-8785C low-altitude longitudinal turbulence scale L_u [m] at height h [m].
+
+    ``L_u = h / (0.177 + 0.000823 h)^1.2`` with h and L in feet."""
+    h_ft = max(h_m, 0.1) / 0.3048
+    return 0.3048 * h_ft / (0.177 + 0.000823 * h_ft) ** 1.2
+
+
+def sample_dryden_gust(wind_xy: torch.Tensor, dt: float, h_m: float,
+                       intensity_range: tuple[float, float], enabled: bool = False
+                       ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-episode OU gust parameters ``(rho, sigma)`` [N] from the Dryden model.
+
+    ``tau = L_u(h) / max(U, 1)``, ``sigma = I * U`` with ``I ~ U[intensity_range]``
+    and ``U`` the episode's mean wind speed; ``rho = exp(-dt / tau)`` is the exact
+    per-step OU decay. Disabled -> ``rho = 1, sigma = 0`` (no gust, no RNG)."""
+    n, device = wind_xy.shape[0], wind_xy.device
+    if not enabled:
+        return torch.ones(n, device=device), torch.zeros(n, device=device)
+    speed = torch.linalg.norm(wind_xy, dim=-1)
+    tau = dryden_length_scale(h_m) / speed.clamp(min=1.0)
+    lo, hi = intensity_range
+    intensity = lo + torch.rand(n, device=device) * (hi - lo)
+    return torch.exp(-dt / tau), intensity * speed
+
+
+def sample_resampled(values: tuple[float, ...], num_envs: int, device: torch.device,
+                     widen: float, jitter: float) -> torch.Tensor:
+    """Empirical-distribution resampling of measured values.
+
+    ``d = mean + widen * (d_i - mean) + U[-jitter, jitter]`` with ``i`` uniform
+    over the measurements. ``widen`` stretches the measured spread about its
+    mean (1.5 for bench-only data), ``jitter`` is half the measurement resolution."""
+    v = torch.tensor(values, device=device)
+    mean = v.mean()
+    idx = torch.randint(len(values), (num_envs,), device=device)
+    eps = (torch.rand(num_envs, device=device) * 2.0 - 1.0) * jitter
+    return mean + widen * (v[idx] - mean) + eps
+
+
+def release_delay_composite_mean(mech_values: tuple[float, ...], link_max: float,
+                                 px4_max: float, pwm_max: float, servo_max: float) -> float:
+    """Analytic mean of the composite release delay -- the CCIP nominal must equal it."""
+    return sum(mech_values) / len(mech_values) + 0.5 * (link_max + px4_max + pwm_max + servo_max)
+
+
+def sample_release_delay_composite(num_envs: int, device: torch.device, mech_values: tuple[float, ...],
+                                   mech_widen: float, mech_jitter: float, link_max: float,
+                                   px4_max: float, pwm_max: float, servo_max: float,
+                                   scale: float, enabled: bool = False) -> torch.Tensor:
+    """Release latency = link + PX4 output + PWM frame wait + servo response + mechanism.
+
+    Each component is drawn independently (measured link-vs-mechanism r = 0.16);
+    the mechanism part is resampled from the bench measurements. ``scale`` (the
+    A-group DR_SCALE) stretches the total about its analytic mean, so the mean
+    -- what the predictor models -- never moves with the sweep. Identity (the
+    mean, no RNG) when disabled or ``scale <= 0``."""
+    mean = release_delay_composite_mean(mech_values, link_max, px4_max, pwm_max, servo_max)
+    if not enabled or scale <= 0.0:
+        return torch.full((num_envs,), mean, device=device)
+    u = lambda hi: torch.rand(num_envs, device=device) * hi  # noqa: E731
+    raw = (u(link_max) + u(px4_max) + u(pwm_max) + u(servo_max)
+           + sample_resampled(mech_values, num_envs, device, mech_widen, mech_jitter))
+    return (mean + scale * (raw - mean)).clamp(min=0.0)

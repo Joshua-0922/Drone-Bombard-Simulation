@@ -114,6 +114,7 @@ notes/
 
 ### 실험 (experiments/) — 논문 단계
 - [[experiments/training_history]] — 전체 학습·평가 히스토리 허브
+- [[experiments/exp_045_isaac_px4_plant_dryrun]] — ✅ **(11-11) Isaac 플랜트를 PX4 경로(각속도 PID·믹서·로터 지연)와 실측 상수로 교체. 이득 12/4.5, dry-run 학습 진행 확인 (Rule 49)**
 - [[experiments/exp_044_f450_motor_step_response]] — ⚠️ **(10-25) F450 단일 모터 스텝 응답(모터 2·3): 가속 τ ≈ 80 ms, 감속 65–95 ms, 명령→PWM 5 ms. Gazebo `x500_drop` 0.08/0.08 s로 변경**
 - [[experiments/exp_043_gazebo_px4_sim2sim]] — ✅ **(10-11) Isaac 정책을 ROS 2 노드로 이식, Gazebo + 진짜 PX4 SITL에서 12/12 착지. L0 6/6 0.5 m 이내(중앙값 0.20 m), 장착 −0.140 m 정상. GRU는 PX4 재적합 전까지 불리**
 - [[experiments/exp_042_px4_controller_noretrain]] — ⛔ **(10-03) PX4 속도 PID에서 재학습 없이: L0는 강건(0.279), GRU 잔차는 붕괴(0.338, L0보다 +21%) → GRU 재적합 필수 (Rule 47)**

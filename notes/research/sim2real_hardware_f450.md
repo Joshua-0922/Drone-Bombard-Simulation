@@ -55,8 +55,8 @@ L0 재학습과 실기 이전의 단일 지침이다. 시뮬레이션의 구조�
 | ③ 명령 지연 | 물리 스텝 | $v_{sp}(t)=y(t-d_{cmd})$, 링 버퍼 | §0.3 |
 | ④ 속도 PID(PX4 `PositionControl`) | 100 Hz | $e=v_{sp}-v$, $a_{sp}=K_P e+K_I\!\int\! e\,dt-K_D\,\dot v_f$, $\dot v_f$는 1차 LPF 5 Hz | xy (P, I, D) = (1.8, 0.4, 0.2), z = (4.0, 2.0, 0.0) [MPC_*_VEL_*_ACC]. z 적분 ±g로 제한. 진입 시 적분을 $-F_{drag}/m$로 시드 |
 | ⑤ 추력 벡터·포화 | 100 Hz | $\hat b_z=\mathrm{norm}(-a_{xy}, g)$ 기울기 제한, $T=\dfrac{(a_z/g)T_h+T_h}{b_{z,z}}\ge T_{min}$. 수직 우선, 수평 여유. z는 포화 시 적분 정지, xy는 추종형 anti-windup(이득 2/P) | 기울기 35°(MPC_TILTMAX_AIR = 35), MPC_THR_MIN 0.12, THR_MAX 1.0, THR_XY_MARG 0.3, $T_h$ = 정지 스로틀 |
-| ⑥ 자세 P(PX4 `AttitudeControl`) | 100 Hz | $\omega_{sp}=K_{att}\odot e_q$ (쿼터니언 오차, yaw 가중) | MC_ROLL_P = MC_PITCH_P = 6.5, MC_YAW_P 2.8, MC_YAW_WEIGHT 0.4. 각속도 한계 220/220/200 °/s |
-| ⑦ **각속도 PID(PX4 `RateControl`, 신규 이식)** | 100 Hz | $u_\tau=K\left(P e_\omega+I\!\int\! e_\omega dt-D\,\dot\omega_f\right)$, $e_\omega=\omega_{sp}-\omega$. 적분은 출력 포화 시 정지, 한계 ±0.3. D는 각속도 미분의 LPF | roll·pitch (P, I, D) = (0.15, 0.2, 0.003), yaw = (0.2, 0.1, 0), K = 1, 적분 한계 0.30, D항 LPF 30 Hz. 자이로 LPF 40 Hz는 물리 100 Hz에서 생략(G1에서 불일치하면 물리 200 Hz로). yaw 토크 출력에 1차 LPF 2 Hz(`MC_YAW_TQ_CUTOFF`, v1.16 신규). PX4 v1.16.2 기본값이며 실기 파라미터 파일로 확정 |
+| ⑥ 자세 P(PX4 `AttitudeControl`) | 100 Hz | $\omega_{sp}=K_{att}\odot e_q$ (쿼터니언 오차, yaw 가중) | **시뮬 4.5**(`px4_k_att_rp`, PX4 기본 MC_ROLL_P 6.5는 80 ms 로터에서 진동, exp_045), MC_YAW_P 2.8, MC_YAW_WEIGHT 0.4. 각속도 한계 220/220/200 °/s |
+| ⑦ **각속도 PID(PX4 `RateControl`, 신규 이식)** | 100 Hz | $u_\tau=K\left(P e_\omega+I\!\int\! e_\omega dt-D\,\dot\omega_f\right)$, $e_\omega=\omega_{sp}-\omega$. 적분은 출력 포화 시 정지, 한계 ±0.3. D는 각속도 미분의 LPF | 시뮬은 물리 단위: P = **12/12/6 rad/s² per rad/s**(`px4_k_rate`), I·D·적분 한계는 PX4 비율(roll·pitch (P, I, D) = (0.15, 0.2, 0.003), yaw = (0.2, 0.1, 0))로 유지, K = 1, 적분 한계 0.30, D항 LPF 30 Hz. 자이로 LPF 40 Hz는 물리 100 Hz에서 생략(G1에서 불일치하면 물리 200 Hz로). yaw 토크 출력에 1차 LPF 2 Hz(`MC_YAW_TQ_CUTOFF`, v1.16 신규). PX4 v1.16.2 기본값이며 실기 파라미터 파일로 확정 |
 | ⑧ 믹서(PX4 Control Allocator, Quad X) | 100 Hz | $u_i=B^{+}[u_\tau;\,T]$, $u_i\in[0,1]$로 자름. $B$는 팔 0.225 m, 45° 배치의 효과도 행렬 | 정규화는 PX4 의사역행렬 방식을 따른다. 단위테스트: $u_\tau$ = 1에서 모터가 포화 경계에 닿는지 확인 |
 | ⑨ 모터·추력 모델 | 100 Hz | 정적: $T_i^{cmd}=k_T\,T_{max}\,f(u_i)$, $f(u)=(1-a)u+au^2$. 동적: $T_{i,k+1}=T_{i,k}+\alpha(T_i^{cmd}-T_{i,k})$, $\alpha=1-e^{-\Delta t/\tau}$, $\tau=\tau_{up}$($T_i^{cmd}>T_{i,k}$) 또는 $\tau_{down}$(그 외). yaw 토크: $Q_i=\pm c_Q T_i$ | 사전값 $a$ ≈ 0.6(ML2212 14.8 V 표 50/65/75/85/100% = 350/490/640/790/990 g에 적합하면 점별 0.41–0.68. 판매처 표의 스로틀 축은 PX4 $u$(1100–1900 µs)와 정의가 다를 수 있어 추력 벤치로 확정). PX4 THR_MDL_FAC = $a$로 맞춘다. $c_Q$ 사전값 0.016 m |
 | ⑩ 강체 | 100 Hz | PhysX. 질량·관성은 스폰 시 MassAPI로 저작하고 런타임 변경 없음(Rule 19) | §0.1 |
@@ -164,6 +164,33 @@ L0 재학습과 실기 이전의 단일 지침이다. 시뮬레이션의 구조�
 | 카메라 화각 | 경미 | 60°와 62° 차이는 작다 | 체커보드 보정 |
 | 실외 노출 시간 | 경미 | YOLO 지연 평균 ±10 ms 수준 | `argus_sof_probe` |
 | 하중 탄도계수 | 경미 | p50 기여 약 1 cm | 정지 비행 낙하 |
+
+### 0.7 코드 반영 상태 (2026-11-11, Isaac, [[experiments/exp_045_isaac_px4_plant_dryrun]])
+
+**실측값으로 넣은 상수**
+
+| 값 | 코드 | 출처 |
+|---|---|---|
+| 기체 질량 1.7955 kg, 하중 0.100 kg | `asset.drone_mass`, `payload_mass` | 저울 |
+| T/W 2.09 | `asset.thrust_to_weight_unloaded`(적재 기준) | 판매처 추력표 990 g × 4 ÷ 1.8955 kg |
+| 로터 상승 τ 0.08 s(DR U[0.04, 0.12]), 하강/상승 비 1.5(DR U[1.0, 2.0]) | `controller.motor_tau_up_s`, `dyn_dr.motor_tau_*` | exp_044 벤치 |
+| 투하 기계 지연 19회 표본(평균 59.3 ms) | `model_err.release_mech_samples_s` | 240 fps 영상 |
+| 투하 PX4 출력 0–4 ms, PWM 50 Hz 대기 0–20 ms | `release_px4_max_s`, `release_pwm_max_s` | `pwm_out` 4 ms, `PWM_AUX_TIM0` 50 |
+| 투하 링크 0–10 ms | `release_link_max_s` | 편도 5.1 ± 2.7 ms |
+| CCIP 명목 투하 지연 0.0813 s | `model_err.release_delay_mean` (성분 평균과 1 ms 이내 일치를 env 시작 시 검사) | 위 성분 합 |
+| 명령 지연 0–20 ms | `dyn_dr.cmd_delay_max_s` | 편도 p95 9.2, 최대 23 ms |
+| 관측 지연 0–12 ms | `dyn_dr.obs_delay_max_s` | 5.9 ± 2.8 ms, p99 11.4 |
+| 탐지 지연 76–110 ms | `dyn_dr.detect_delay_range_s` | 실내 102 ± 10 ms, 실외 노출 보정 |
+| 팔 길이 0.225 m | `asset.arm_length` | F450 사양 |
+
+**추정·사전값(미측정):** 관성 (0.020, 0.020, 0.025), yaw 토크 계수 0.016 m, 서보 내부 반응 0–10 ms, 속도 관측 편향 ±0.05 m/s·잡음 0.05 m/s, 바람 U[0, 6] m/s와 Dryden 세기 0.10–0.25, PX4 모드 이득 12/4.5(보정 노브).
+
+**구현 방식이 §0.2–0.3과 다른 점**
+- 명령 지연: 물리 스텝 정수 지연(0–2 스텝, 확률적 반올림). 관측 지연: 정책이 읽을 때 확률 $d/10$ ms로 한 스텝 전 상태.
+- YOLO 지연: 표적은 정지해 있고 인지 위치는 월드 좌표라, 공개 반경 진입 후 탐지 지연이 지나야 탐지되도록만 구현했다.
+- 관성 3개 변형, 각속도 적분기의 할당 포화 피드백은 미구현이다(경미).
+- 새 플랜트 축(T/W, 로터, 지연, 속도 잡음)은 C 그룹(`dyn_dr`)이라 `--dr_scale` 스윕에서 고정이다. 바람·탄도계수·투하 지연 퍼짐은 A 그룹이라 스윕을 따른다.
+- **학습은 `--dr_scale 1.0`으로 한다.** 바람 상한이 6 m/s × s라, 예전처럼 1.5로 돌리면 9 m/s까지 나온다.
 
 **실기 전 검증 관문:** G1 속도 계단응답 일치(±15%) → G2 같은 `drop_policy` 노드로 SITL 회귀(exp_043 재현) → G3 정지 비행 투하로 지연 평균·$k/m$ 검증 → G4 2 m/s 이상 자연풍에서 팔당 40회.
 

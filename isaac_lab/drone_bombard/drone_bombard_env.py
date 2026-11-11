@@ -58,6 +58,10 @@ from .mdp.domain_rand import (
     sample_target_turn_rate,
     sample_scale,
     sample_bias,
+    sample_wind_uniform,
+    sample_dryden_gust,
+    sample_release_delay_composite,
+    release_delay_composite_mean,
 )
 from .math_utils import (
     rate_limit_action,
@@ -65,6 +69,8 @@ from .math_utils import (
     project_target_pinhole,
     ballistic_impact,
     integrate_payload_impact,
+    quadx_allocation,
+    motor_lag_step,
     ccip_residual,
     predict_impact_nominal,
     apply_ccip_residual,
@@ -245,10 +251,13 @@ class DroneBombardResetCfg:
 
 @configclass
 class DroneBombardAssetCfg:
-    """Measured x500_bombard SDF values (drone_drop_system/gazebo_models)."""
-    drone_mass: float = 2.07  # base 2.0 + 4x0.016076923 rotors
-    payload_mass: float = 0.1  # payload_cylinder SDF
-    inertia_diag: tuple[float, float, float] = (0.02166666666666667, 0.02166666666666667, 0.04000000000000001)
+    """F450 build (2026-11-11, notes/research/sim2real_hardware_f450.md §0.1).
+
+    Mass is weighed; inertia is an estimate (not measured -- the velocity-level
+    policy sits behind a ~10 Hz rate loop, so it is a minor axis)."""
+    drone_mass: float = 1.7955  # weighed: airframe + 4S 5200 mAh + Jetson + servo, without payload
+    payload_mass: float = 0.1  # weighed
+    inertia_diag: tuple[float, float, float] = (0.020, 0.020, 0.025)  # estimate, loaded, CoM
     # The cf2x body link's parse-time PhysX inertia, kept as a reference
     # number only (it is what get_inertias() returned BEFORE any override).
     # History note (07-05 _diag_inertia measurement): the old runtime
@@ -258,8 +267,13 @@ class DroneBombardAssetCfg:
     # value, i.e. a ~1300x under-torqued rate loop. Both spawn authoring and
     # the controller now use inertia_diag consistently.
     native_body_inertia_diag: tuple[float, float, float] = (1.6572e-05, 1.6656e-05, 2.9262e-05)
-    thrust_to_weight_unloaded: float = 2.0  # fixed airframe/motor property, defined unloaded
+    thrust_to_weight_unloaded: float = 2.09
+    """NOTE the name: the env multiplies this by the LOADED mass (PhysX total), so it
+    is the loaded T/W. 2.09 = 4 x 990 g (2212 920KV + DJI 9450 vendor table, 14.8 V)
+    / 1.8955 kg. DJI's own 850 g/motor gives 1.79 -- covered by the k_T DR."""
     tilt_clamp_deg: float = 35.0
+    arm_length: float = 0.225        # F450 centre-to-motor [m]
+    yaw_moment_coef: float = 0.016   # c_Q = Q/T [m], prior (yaw is held, minor)
 
     @property
     def loaded_mass(self) -> float:
@@ -365,14 +379,18 @@ class DroneBombardModelErrorCfg:
     90%) and the release latency (p50 0.058 m, 31%). It is kept because it is
     free, genuinely unobservable, and constant within an episode."""
 
-    release_delay_mean: float = 0.22
-    """Seconds. Nominal hardware release latency -- the servo/solenoid does not
+    release_delay_mean: float = 0.0813
+    """Seconds. MUST equal the composite mean below (checked at env init):
+    link 5 + PX4 output 2 + PWM wait 10 + servo response 5 + mechanism 59.3 ms
+    (2026-11-08 bench, 240 fps x 19). Was 0.22 before the measurement.
+
+    Nominal hardware release latency -- the servo/solenoid does not
     let go the instant the command is issued. This is MODELLED by the predictor,
     so it is not itself an error source; ``release_delay_std`` is."""
 
     release_delay_std: float = 0.05
-    """Seconds. N(mean, std*scale), clamped to >= 0. The unobservable part of the
-    latency.
+    """LEGACY (``release_delay_model = "gaussian"`` only). Seconds. N(mean, std*scale),
+    clamped to >= 0. The unobservable part of the latency.
 
     Measured contribution at scale 1.0: p50 0.058 m, p90 0.222 m -- about 31% of
     the total model error, second only to the wind. It is the STRONGEST axis that
@@ -382,6 +400,35 @@ class DroneBombardModelErrorCfg:
     speed/accuracy trade-off. Do not raise it past what release hardware
     actually does -- an invented spread would buy a bigger effect at the cost of
     the claim being about real hardware."""
+
+    release_delay_model: str = "measured"
+    """"measured": composite of independent components, mechanism resampled from the
+    bench data (``sample_release_delay_composite``). "gaussian": the pre-measurement
+    N(mean, std) model, kept to reproduce old runs."""
+    release_mech_samples_s: tuple = (
+        0.0631, 0.0381, 0.0754, 0.0875, 0.0658, 0.0644, 0.0793, 0.0670, 0.0776, 0.0495,
+        0.0479, 0.0522, 0.0504, 0.0571, 0.0482, 0.0554, 0.0475, 0.0489, 0.0520)
+    """Servo-motion onset -> payload separation, 19 clean bench trials (Jetson_Mounted
+    docs/sim2real_params, drop_delay_video_20261108.csv)."""
+    release_mech_widen: float = 1.5   # bench-only data: stretch the measured spread
+    release_mech_jitter_s: float = 0.002  # half of the 240 fps frame (4.17 ms)
+    release_link_max_s: float = 0.010     # Jetson -> PX4 one-way, U[0, 10 ms] (measured mean 5.1 ms)
+    release_px4_max_s: float = 0.004      # vehicle_command -> FMU PWM update (pwm_out 4 ms period)
+    release_pwm_max_s: float = 0.020      # 50 Hz servo PWM frame wait
+    release_servo_max_s: float = 0.010    # servo internal response, NOT measured (prior)
+
+    wind_speed_dist: str = "uniform"
+    """"uniform": |w| ~ U[0, wind_speed_max * scale], direction uniform. "gaussian":
+    the legacy per-axis N(0, wind_std * scale) capped at wind_max * scale."""
+    wind_speed_max: float = 6.0
+
+    wind_gust_model: str = "dryden"
+    """"dryden": per-episode OU gust on top of the mean wind, tau = L_u(h)/max(U, 1),
+    sigma = I * U, I ~ U[dryden_intensity] (MIL-F-8785C low altitude). Used only when
+    ``wind_tau_s == 0``, so the OU evaluation knobs keep their old meaning.
+    "none": constant wind (the pre-2026-11 training condition)."""
+    dryden_intensity: tuple[float, float] = (0.10, 0.25)
+    dryden_h_ref_m: float = 8.0  # between release (>= 5 m) and cruise (8-12 m) height
 
     observe_wind: bool = False
     """Whether the true wind vector is handed to the policy as an observation.
@@ -450,7 +497,31 @@ class DroneBombardControllerCfg:
     #         (math_utils.px4_velocity_control). Attitude P (6.5 = MC_ROLL_P) and the
     #         rate loop are shared by both modes. Tilt limit = asset.tilt_clamp_deg
     #         (real vehicle: MPC_TILTMAX_AIR set to the same value).
-    mode: str = "p"
+    mode: str = "px4"
+    """Default "px4" since 2026-11-11 (the real vehicle runs PX4 v1.16.2)."""
+    # --- PX4 rate loop (mode "px4"), physical units ---------------------
+    # PX4 MC_*RATE_P/I/D act on a NORMALIZED torque; here the P gain stays the
+    # calibrated k_rate (rad/s^2 per rad/s) and I, D, the integrator limit keep
+    # PX4's ratios to P: roll/pitch 0.15/0.2/0.003, lim 0.3; yaw 0.2/0.1/0, lim 0.3.
+    rate_i_over_p: tuple[float, float, float] = (0.2 / 0.15, 0.2 / 0.15, 0.1 / 0.2)
+    rate_d_over_p: tuple[float, float, float] = (0.003 / 0.15, 0.003 / 0.15, 0.0)
+    rate_int_lim_over_p: tuple[float, float, float] = (0.3 / 0.15, 0.3 / 0.15, 0.3 / 0.2)
+    rate_dterm_lp_hz: float = 30.0   # IMU_DGYRO_CUTOFF
+    yaw_torque_lp_hz: float = 2.0    # MC_YAW_TQ_CUTOFF (v1.16)
+    yaw_p: float = 2.8               # MC_YAW_P: hold the heading captured at reset
+    px4_k_rate: tuple[float, float, float] = (12.0, 12.0, 6.0)
+    px4_k_att_rp: float = 4.5
+    """Mode "px4" rate-P (rad/s^2 per rad/s) and attitude-P. Lower than the "p"-mode
+    18/6.5, which were fitted to the X500 SITL with 12.5 ms rotors: with the measured
+    80 ms rotor lag those gains ring (damping ~0.4, 33% of zero-command probes tripped
+    the 2 rad/s attitude limit). 12/4.5 brings it to ~9%, the same as the old P path.
+    CALIBRATION KNOB: replace with the real vehicle's tuned PX4 gains after the G1
+    velocity-step comparison (autotune with MC_AT_APPLY=0 gives the plant)."""
+    motor_model: bool = True
+    """Quad X mixer + per-rotor first-order lag (rise tau_up, fall tau_down) + per-rotor
+    thrust saturation. Off = the old direct wrench (legacy reproduction)."""
+    motor_tau_up_s: float = 0.08     # exp_044 bench, nominal when dyn_dr is off
+    motor_tau_down_ratio: float = 1.5
     px4_vel_xy_pid: tuple[float, float, float] = (1.8, 0.4, 0.2)   # MPC_XY_VEL_{P,I,D}_ACC
     px4_vel_z_pid: tuple[float, float, float] = (4.0, 2.0, 0.0)    # MPC_Z_VEL_{P,I,D}_ACC
     px4_thr_min: float = 0.12        # MPC_THR_MIN
@@ -495,9 +566,24 @@ class DroneBombardDynDRCfg:
     enabled: bool = False
 
     # --- plant / controller mismatch (multiplicative, U[1-rel, 1+rel]) ---
-    ctrl_mass_rel: float = 0.05        # controller mass belief vs the authored mass
-    kp_vel_rel: float = 0.10           # outer loop: velocity P gains
-    k_att_rate_rel: float = 0.10       # inner loop: attitude P + rate P gains
+    # 2026-11-11: 0 -- the gains are PX4 parameter values we set, and PX4's hover
+    # thrust estimator absorbs the mass belief. The uncertainty is in the PLANT axes below.
+    ctrl_mass_rel: float = 0.0         # controller mass belief vs the authored mass
+    kp_vel_rel: float = 0.0            # outer loop: velocity P gains
+    k_att_rate_rel: float = 0.0        # inner loop: attitude P + rate P gains
+
+    # --- plant axes (2026-11-11, sim2real_hardware_f450.md §0.3) ---
+    thrust_scale_down: float = 0.15    # k_T ~ U[1 - down, 1 + up]: battery sag lowers thrust
+    thrust_scale_up: float = 0.05
+    motor_tau_up_range: tuple[float, float] = (0.04, 0.12)    # s, exp_044 rise ~80 ms
+    motor_tau_down_ratio_range: tuple[float, float] = (1.0, 2.0)  # exp_044 fall/rise t50 ratio 0.8-2.3
+    cmd_delay_max_s: float = 0.020     # Jetson -> PX4 setpoint, measured one-way 5.1 +/- 2.7 ms
+    obs_delay_max_s: float = 0.012     # PX4 state -> Jetson, measured 5.9 +/- 2.8 ms (p99 11.4)
+    detect_delay_range_s: tuple[float, float] = (0.076, 0.110)  # IMX219 -> YOLO result, outdoor
+    vel_obs_channels: tuple = ()       # obs indices that carry velocity (set by the task cfg)
+    vel_obs_norm: float = 10.0         # m/s per normalized unit on those channels
+    vel_noise_mps: float = 0.05        # per-step white noise std, m/s (replaces obs_noise_std there)
+    vel_bias_mps: float = 0.05         # per-episode bias U[-b, b], m/s
     # NOTE: payload_bc_rel used to live here. It moved to
     # DroneBombardModelErrorCfg (the A group) on 2026-08-27, because it is a
     # MODEL-ERROR axis, not a sensor/actuator one: leaving it here meant the
@@ -916,13 +1002,57 @@ class DroneBombardEnv(DirectRLEnv):
         # property, not something the controller can be wrong about. Only the mass
         # BELIEF (and the P gains) are randomized — see DroneBombardDynDRCfg.
         self._max_thrust = self.cfg.asset.thrust_to_weight_unloaded * self._ctrl_mass_nominal * 9.81
-        self._k_rate = torch.tensor(self.cfg.controller.k_rate, device=self.device)
+        _c = self.cfg.controller
+        self._k_rate = torch.tensor(_c.px4_k_rate if _c.mode == "px4" else _c.k_rate, device=self.device)
+        self._k_att = _c.px4_k_att_rp if _c.mode == "px4" else _c.k_att_rp
+        # Per-env max thrust: the T/W DR (k_T) scales the plant; PX4's hover-thrust
+        # estimator converges on the true value, so the controller reads the same tensor.
+        self._max_thrust_env = torch.full((N,), self._max_thrust, device=device)
+
+        c = self.cfg.controller
+        me = self.cfg.model_err
+        if me.release_delay_model == "measured":
+            m = release_delay_composite_mean(
+                me.release_mech_samples_s, me.release_link_max_s, me.release_px4_max_s,
+                me.release_pwm_max_s, me.release_servo_max_s)
+            if abs(m - me.release_delay_mean) > 1e-3:
+                raise ValueError(f"model_err.release_delay_mean {me.release_delay_mean:.4f} s != composite "
+                                 f"mean {m:.4f} s -- the CCIP nominal would carry a systematic bias")
+        # PX4 rate loop state (mode "px4")
+        self._rate_int = torch.zeros(N, 3, device=device)
+        self._rate_prev = torch.zeros(N, 3, device=device)
+        self._rate_dot = torch.zeros(N, 3, device=device)
+        self._yaw_acc_f = torch.zeros(N, device=device)
+        self._yaw_ref = torch.zeros(N, device=device)
+        self._rate_ip = self._k_rate * torch.tensor(c.rate_i_over_p, device=device)
+        self._rate_dp = self._k_rate * torch.tensor(c.rate_d_over_p, device=device)
+        self._rate_lim = self._k_rate * torch.tensor(c.rate_int_lim_over_p, device=device)
+        # Mixer + rotor lag (controller.motor_model)
+        self._alloc, self._alloc_inv = quadx_allocation(
+            self.cfg.asset.arm_length, self.cfg.asset.yaw_moment_coef, device=device)
+        self._motor_T = torch.zeros(N, 4, device=device)
+        dt = self.cfg.sim.dt
+        self._motor_a_up = torch.full((N, 1), 1.0 - math.exp(-dt / c.motor_tau_up_s), device=device)
+        self._motor_a_dn = torch.full((N, 1), 1.0 - math.exp(-dt / (c.motor_tau_up_s * c.motor_tau_down_ratio)),
+                                      device=device)
+        # Link latencies in whole physics steps (Jetson <-> PX4), and the detection delay
+        self._cmd_buf = torch.zeros(3, N, 4, device=device)   # newest first; max 2 steps = 20 ms
+        self._cmd_delay_steps = torch.zeros(N, dtype=torch.long, device=device)
+        self._obs_delay_p = torch.zeros(N, device=device)      # P(policy reads the 1-step-old state)
+        self._detect_delay = torch.zeros(N, device=device)
+        self._kin_prev = None                                   # (pos_w, lin_vel_w, ang_vel_b, quat_w)
+        self._kin_prev_ok = torch.zeros(N, dtype=torch.bool, device=device)  # False until a post-reset step
+        # Dryden gust parameters (per episode)
+        self._gust_rho = torch.ones(N, device=device)
+        self._gust_sigma = torch.zeros(N, device=device)
+        self._vel_obs_bias = torch.zeros(N, 3, device=device)
 
         # --- per-env dynamics-DR state (identity until cfg.dyn_dr.enabled) ---
         # _ctrl_mass is per-env so the controller can fly a WRONG mass belief; the
         # authored plant mass is untouched (Rule 19: never override PhysX props at
         # runtime). All of these are resampled in _reset_idx.
         self._ctrl_mass = torch.full((N,), self._ctrl_mass_nominal, device=device)
+        self._motor_T[:] = self._ctrl_mass_nominal * 9.81 / 4.0
         self._kp_vel_scale = torch.ones(N, device=device)
         self._k_att_rate_scale = torch.ones(N, device=device)
         # PX4-mode velocity-loop state (unused in "p" mode)
@@ -1115,6 +1245,11 @@ class DroneBombardEnv(DirectRLEnv):
         out = obs + self._obs_bias
         if dd.obs_noise_std > 0.0:
             out = out + torch.randn_like(out) * dd.obs_noise_std
+        if dd.vel_obs_channels:
+            # velocity channels get the physical-unit model instead (EKF velocity)
+            ch = list(dd.vel_obs_channels)
+            noise = torch.randn(obs.shape[0], len(ch), device=obs.device) * dd.vel_noise_mps
+            out[:, ch] = obs[:, ch] + (self._vel_obs_bias[:, :len(ch)] + noise) / dd.vel_obs_norm
         return out
 
     def _perturb_actions(self, actions: torch.Tensor) -> torch.Tensor:
@@ -1170,13 +1305,25 @@ class DroneBombardEnv(DirectRLEnv):
 
     def _apply_action(self):
         # Runs once per physics step (100 Hz); LPF ticks every 5th call (20 Hz).
+        d = self._robot.data
+        # state as of the PREVIOUS physics step: what a 1-step-late odometry would show
+        self._kin_prev = (d.root_pos_w.clone(), d.root_lin_vel_w.clone(),
+                          d.root_ang_vel_b.clone(), d.root_quat_w.clone())
+        self._kin_prev_ok[:] = True
+        snap = self._lpf_snap.clone()
         if self._physics_tick % self.cfg.action.lpf_tick_period_steps == 0:
             self._v_filt = lpf_step(self._vel_cmd, self._v_filt, self.cfg.action.lpf_alpha, self._lpf_snap)
             self._lpf_snap[:] = False
         self._physics_tick += 1
 
+        # Jetson -> PX4 setpoint latency: a short FIFO in physics steps.
+        self._cmd_buf = torch.roll(self._cmd_buf, 1, dims=0)
+        self._cmd_buf[0] = self._v_filt
+        self._cmd_buf[:, snap] = self._v_filt[snap]  # fresh episode: no stale setpoints
+        v_sp = self._cmd_buf.gather(0, self._cmd_delay_steps.view(1, -1, 1).expand(1, -1, 4)).squeeze(0)
+
         self._step_wind_ou()
-        self._run_velocity_controller(self._v_filt)
+        self._run_velocity_controller(v_sp)
 
         if self.cfg.payload_physics_enabled:
             self._step_payload_physics()
@@ -1199,6 +1346,13 @@ class DroneBombardEnv(DirectRLEnv):
         """
         me = self.cfg.model_err
         tau = me.wind_tau_s
+        if tau <= 0.0 and me.wind_gust_model == "dryden" and me.scale > 0.0:
+            r = self._gust_rho
+            self._wind_gust = (self._wind_gust * r.unsqueeze(-1)
+                               + (self._gust_sigma * torch.sqrt((1.0 - r * r).clamp(min=0.0))).unsqueeze(-1)
+                               * torch.randn_like(self._wind_gust))
+            self._wind_xy = self._wind_mean + self._wind_gust
+            return
         if tau <= 0.0 or me.scale <= 0.0:
             return
         sigma = me.wind_std * me.scale
@@ -1500,7 +1654,7 @@ class DroneBombardEnv(DirectRLEnv):
         gd = torch.tensor([c.px4_vel_xy_pid[2], c.px4_vel_xy_pid[2], c.px4_vel_z_pid[2]], device=self.device) * s
         self._vel_dot = lowpass_derivative(vel_w, self._vel_prev, self._vel_dot, dt, c.px4_veld_lp_hz)
         self._vel_prev = vel_w.clone()
-        hover = self._ctrl_mass * 9.81 / self._max_thrust
+        hover = self._ctrl_mass * 9.81 / self._max_thrust_env
         vel_sp = v_filt[:, :3]
         thr, self._vel_int = px4_velocity_control(
             vel_sp, vel_w, self._vel_int, self._vel_dot, hover, dt,
@@ -1508,7 +1662,7 @@ class DroneBombardEnv(DirectRLEnv):
             c.px4_thr_min, c.px4_thr_max, c.px4_thr_xy_marg)
         n = torch.linalg.norm(thr, dim=-1, keepdim=True).clamp(min=1e-6)
         # PX4 commands the collective |thr_sp| along the ACTUAL body z (no projection)
-        return thr / n, (n.squeeze(-1) * self._max_thrust).clamp(max=self._max_thrust)
+        return thr / n, torch.minimum(n.squeeze(-1) * self._max_thrust_env, self._max_thrust_env)
 
     def seed_px4_controller(self, env_ids: torch.Tensor, vel_w: torch.Tensor):
         """Handoff state for the PX4 loop: derivative filter at rest at the current velocity,
@@ -1554,7 +1708,7 @@ class DroneBombardEnv(DirectRLEnv):
 
         body_z_w = matrix_from_quat(quat_w)[:, :, 2]  # current body-up in world
         # rotor thrust magnitude = projection of desired force onto current body-up
-        thrust_mag = torch.clamp((f_des * body_z_w).sum(dim=-1), min=0.0, max=self._max_thrust)
+        thrust_mag = torch.minimum((f_des * body_z_w).sum(dim=-1).clamp(min=0.0), self._max_thrust_env)
         return thrust_dir_w, thrust_mag
 
     def _attitude_rate_and_apply(self, thrust_dir_w, thrust_mag, v_filt, vel_w, quat_w, ang_vel_b):
@@ -1573,10 +1727,17 @@ class DroneBombardEnv(DirectRLEnv):
         rot_err_b = quat_apply_inverse_pure(quat_w, rot_err_w)
 
         rate_sp = torch.zeros_like(ang_vel_b)
-        rate_sp[:, 0] = c.k_att_rp * self._k_att_rate_scale * rot_err_b[:, 0]
-        rate_sp[:, 1] = c.k_att_rp * self._k_att_rate_scale * rot_err_b[:, 1]
+        rate_sp[:, 0] = self._k_att * self._k_att_rate_scale * rot_err_b[:, 0]
+        rate_sp[:, 1] = self._k_att * self._k_att_rate_scale * rot_err_b[:, 1]
         # yaw-rate is commanded directly (body z); roll/pitch attitude-controlled
         rate_sp[:, 2] = v_filt[:, 3]
+        if c.mode == "px4":
+            # The real vehicle holds the approach heading (drone_controller /drone/cmd/yaw):
+            # PX4 yaw P on the heading error, on top of any commanded yaw rate.
+            w, x, y, z = quat_w.unbind(-1)
+            yaw = torch.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+            e = torch.atan2(torch.sin(self._yaw_ref - yaw), torch.cos(self._yaw_ref - yaw))
+            rate_sp[:, 2] = rate_sp[:, 2] + c.yaw_p * e
 
         # rate loop outputs a desired ANGULAR ACCELERATION (k_rate has units
         # 1/s); the applied torque is inertia * angular_accel (tau = I*alpha).
@@ -1584,8 +1745,33 @@ class DroneBombardEnv(DirectRLEnv):
         # airframe's ~0.022 kg.m^2 that is a ~46x over-torque that instantly
         # spins the drone past the attitude limits.
         rate_err = rate_sp - ang_vel_b
-        ang_accel_des = self._k_rate * self._k_att_rate_scale.unsqueeze(-1) * rate_err
+        kp = self._k_rate * self._k_att_rate_scale.unsqueeze(-1)
+        if c.mode == "px4":
+            # PX4 RateControl: P on the error, I with a clamped integrator, D on the
+            # filtered measured rate (not on the error), yaw torque low-passed.
+            dt = self.cfg.sim.dt
+            self._rate_dot = lowpass_derivative(ang_vel_b, self._rate_prev, self._rate_dot, dt, c.rate_dterm_lp_hz)
+            self._rate_prev = ang_vel_b.clone()
+            ang_accel_des = kp * rate_err + self._rate_int - self._rate_dp * self._rate_dot
+            # ponytail: no allocator-saturation feedback to the integrator (PX4 stops it
+            # on saturation); the clamp bounds the windup. Add if G1 shows overshoot.
+            self._rate_int = torch.maximum(torch.minimum(
+                self._rate_int + self._rate_ip * rate_err * dt, self._rate_lim), -self._rate_lim)
+            a_yaw = dt / (dt + 1.0 / (2.0 * math.pi * c.yaw_torque_lp_hz))
+            self._yaw_acc_f = self._yaw_acc_f + a_yaw * (ang_accel_des[:, 2] - self._yaw_acc_f)
+            ang_accel_des = torch.cat([ang_accel_des[:, :2], self._yaw_acc_f.unsqueeze(-1)], dim=-1)
+        else:
+            ang_accel_des = kp * rate_err
         torque_b = self._inertia_diag * ang_accel_des
+
+        if c.motor_model:
+            # PX4 Quad X allocation -> per-rotor saturation -> rotor lag -> realised wrench
+            wrench = torch.cat([thrust_mag.unsqueeze(-1), torque_b], dim=-1)
+            t_cmd = torch.minimum((wrench @ self._alloc_inv.T).clamp(min=0.0),
+                                  (self._max_thrust_env / 4.0).unsqueeze(-1))
+            self._motor_T = motor_lag_step(self._motor_T, t_cmd, self._motor_a_up, self._motor_a_dn)
+            wrench = self._motor_T @ self._alloc.T
+            thrust_mag, torque_b = wrench[:, 0], wrench[:, 1:]
 
         forces_b = torch.zeros(self.num_envs, 1, 3, device=self.device)
         forces_b[:, 0, 2] = thrust_mag  # body +Z
@@ -2212,18 +2398,32 @@ class DroneBombardEnv(DirectRLEnv):
         # of the sweep is a clean deterministic control.
         me = self.cfg.model_err
         me_on = me.scale > 0.0
-        self._wind_xy[env_ids] = sample_wind_capped(
-            n, device, me.wind_std * me.scale, me.wind_max * me.scale, me_on)
+        if me.wind_speed_dist == "uniform":
+            self._wind_xy[env_ids] = sample_wind_uniform(n, device, me.wind_speed_max * me.scale, me_on)
+        else:
+            self._wind_xy[env_ids] = sample_wind_capped(
+                n, device, me.wind_std * me.scale, me.wind_max * me.scale, me_on)
         self._wind_mean[env_ids] = self._wind_xy[env_ids]
         self._wind_gust[env_ids] = 0.0
+        rho, sig = sample_dryden_gust(
+            self._wind_xy[env_ids], self.cfg.sim.dt, me.dryden_h_ref_m, me.dryden_intensity,
+            me_on and me.wind_gust_model == "dryden" and me.wind_tau_s <= 0.0)
+        self._gust_rho[env_ids] = rho
+        self._gust_sigma[env_ids] = sig
         self._payload_bc_scale[env_ids] = sample_scale(n, device, me.payload_bc_rel * me.scale, me_on)
         # Release latency: the MEAN is modelled by the predictor (so it is not
         # itself an error), the deviation is not. Clamped at 0 -- a negative
         # latency would release before the command.
-        self._release_delay[env_ids] = torch.clamp(
-            me.release_delay_mean
-            + sample_bias(n, 1, device, me.release_delay_std * me.scale, me_on).squeeze(-1),
-            min=0.0)
+        if me.release_delay_model == "measured":
+            self._release_delay[env_ids] = sample_release_delay_composite(
+                n, device, me.release_mech_samples_s, me.release_mech_widen, me.release_mech_jitter_s,
+                me.release_link_max_s, me.release_px4_max_s, me.release_pwm_max_s,
+                me.release_servo_max_s, me.scale, me_on)
+        else:
+            self._release_delay[env_ids] = torch.clamp(
+                me.release_delay_mean
+                + sample_bias(n, 1, device, me.release_delay_std * me.scale, me_on).squeeze(-1),
+                min=0.0)
         # _drag_coef is NOT randomized any more. It is the predictor's calibrated
         # first-order drag constant (cfg.drop.payload_drag_coef_nominal), applied
         # in _nominal_impact; the plant's drag comes from payload_bc_over_m.
@@ -2250,6 +2450,41 @@ class DroneBombardEnv(DirectRLEnv):
         self._k_att_rate_scale[env_ids] = sample_scale(n, device, dd.k_att_rate_rel, on)
         self._obs_bias[env_ids] = sample_bias(n, self._obs_bias.shape[-1], device, dd.obs_bias_std, on)
         self._act_bias[env_ids] = sample_bias(n, 4, device, dd.act_bias_std, on)
+
+        # Plant axes (C group: fixed across the DR_SCALE sweep). Identity when off:
+        # nominal thrust and rotor constants, zero link latency.
+        c = self.cfg.controller
+        dt = self.cfg.sim.dt
+        u = lambda lo, hi: lo + torch.rand(n, device=device) * (hi - lo)  # noqa: E731
+        if on:
+            k_t = u(1.0 - dd.thrust_scale_down, 1.0 + dd.thrust_scale_up)
+            tau_up = u(*dd.motor_tau_up_range)
+            tau_dn = tau_up * u(*dd.motor_tau_down_ratio_range)
+            d_cmd = u(0.0, dd.cmd_delay_max_s)
+            # stochastic rounding to whole 10 ms steps keeps the mean latency right
+            self._cmd_delay_steps[env_ids] = torch.clamp(
+                torch.floor(d_cmd / dt + torch.rand(n, device=device)).long(), 0, self._cmd_buf.shape[0] - 1)
+            self._obs_delay_p[env_ids] = (u(0.0, dd.obs_delay_max_s) / dt).clamp(max=1.0)
+            self._detect_delay[env_ids] = u(*dd.detect_delay_range_s)
+            self._vel_obs_bias[env_ids] = (torch.rand(n, 3, device=device) * 2.0 - 1.0) * dd.vel_bias_mps
+        else:
+            k_t = torch.ones(n, device=device)
+            tau_up = torch.full((n,), c.motor_tau_up_s, device=device)
+            tau_dn = tau_up * c.motor_tau_down_ratio
+            self._cmd_delay_steps[env_ids] = 0
+            self._obs_delay_p[env_ids] = 0.0
+            self._detect_delay[env_ids] = 0.0
+            self._vel_obs_bias[env_ids] = 0.0
+        self._max_thrust_env[env_ids] = self._max_thrust * k_t
+        self._motor_a_up[env_ids] = (1.0 - torch.exp(-dt / tau_up)).unsqueeze(-1)
+        self._motor_a_dn[env_ids] = (1.0 - torch.exp(-dt / tau_dn)).unsqueeze(-1)
+        self._motor_T[env_ids] = self._ctrl_mass_nominal * 9.81 / 4.0  # spawn at hover thrust
+        self._rate_int[env_ids] = 0.0
+        self._rate_prev[env_ids] = 0.0
+        self._rate_dot[env_ids] = 0.0
+        self._yaw_acc_f[env_ids] = 0.0
+        self._kin_prev_ok[env_ids] = False  # never show the previous episode's state
+        self._yaw_ref[env_ids] = yaw  # a task reset that sets its own heading overwrites this
 
         # Target tracker: fully forget the previous episode's track (the
         # target teleported at reset — coasting the old state through would

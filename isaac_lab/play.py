@@ -52,7 +52,8 @@ parser.add_argument("--wind_tau", type=float, default=None, metavar="SEC",
                          "variation rather than wind strength.")
 parser.add_argument("--controller", type=str, default=None, choices=["p", "px4"],
                     help="Velocity loop: p = P-only (what policies were trained on), "
-                         "px4 = PX4 v1.15.4 velocity PID + thrust saturation/anti-windup. Default: env cfg (p).")
+                         "px4 = PX4 velocity+rate PID, Quad X mixer, measured rotor lag. Default: env cfg (px4). "
+                         "p also turns the motor model off (legacy plant).")
 parser.add_argument("--ang_vel_limit", type=float, default=None, metavar="RAD_S",
                     help="Override termination.limit_ang_vel (default 2.0 rad/s, a conservative Gazebo-era guard; "
                          "a real PX4 vehicle does not terminate there).")
@@ -812,6 +813,7 @@ def main():
         env_cfg.termination.limit_ang_vel = args_cli.ang_vel_limit
     if args_cli.controller is not None and hasattr(env_cfg, "controller"):
         env_cfg.controller.mode = args_cli.controller
+        env_cfg.controller.motor_model = args_cli.controller == "px4"
     if args_cli.wind_gust is not None:
         env_cfg.model_err.wind_gust_frac = args_cli.wind_gust
     if hasattr(env_cfg, "model_err") and args_cli.observe_wind:

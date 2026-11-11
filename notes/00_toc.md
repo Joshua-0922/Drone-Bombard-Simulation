@@ -17,7 +17,7 @@ type: index
 |---|---|---|---|
 | [[00_index]] | 드론 정밀 투하 연구 — Obsidian 대시보드 | 2026-04-14 | active |
 
-## research — 현행 연구 노트 (44)
+## research — 현행 연구 노트 (45)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -25,6 +25,7 @@ type: index
 | [[research/ccip_vz_omission]] | CCIP 수직속도 누락 — 잔차가 배우던 것은 바람이 아니라 공식 결손이었다 | 2026-08-23 | resolved |
 | [[research/code_map]] | 코드 지도 — 바람 모델 · 강화학습(비행) · 지도학습(잔차) · 평가가 어느 파일에 있나 | 2026-09-25 | active |
 | [[research/error_budget_l0]] | L0 오차 예산 — 착지 오차는 어디서 오는가 | 2026-08-30 | active |
+| [[research/f450_motor_dynamics]] | F450 모터 동특성 — 시뮬레이션 기본값보다 느리다 | 2026-10-25 | active |
 | [[research/final_tables_v6]] | 최종 표·그림 v6 — 본 방법 = L0 + GRU 잔차 (GRU-S) | 2026-09-24 | active |
 | [[research/handoff_generalization_p0]] | 고정 초기조건은 성능이 아니라 *표현*을 암기시킨다 (P0 발견) | 2026-08-03 | active |
 | [[research/interim_report_isaac]] | 중간보고서 — Isaac Lab 파트 (개요 · 초고 · 요약본 통합) | 2026-09-07 | archived |
@@ -108,7 +109,7 @@ type: index
 | [[research/legacy/system_overview]] | 시스템 전체 구조 (Gazebo/PX4/ROS2 — jekyun 브랜치) | 2026-04-14 | active |
 | [[research/legacy/terminal_overshoot_trap]] | v12 종단 보상 트랩 (Terminal "Overshoot Moat") | 2026-06-16 | implemented |
 
-## experiments — 논문 단계 실험 (exp_025~) (20)
+## experiments — 논문 단계 실험 (exp_025~) (22)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -131,6 +132,8 @@ type: index
 | [[experiments/exp_041_ema_alpha_sweep]] | exp_041 — EMA α 민감도: 정상·현실 돌풍 3조건 모두 [0.1, 0.4]에서 평탄, 무필터만 유의하게 나쁨 → α = 0.3 유지 | 2026-09-25 | done |
 | [[experiments/exp_042_px4_controller_noretrain]] | exp_042 — PX4 v1.15.4 속도 PID에서 P 학습 정책을 재학습 없이 평가: L0는 강건, GRU 잔차는 깨진다 | 2026-10-03 | done |
 | [[experiments/exp_043_gazebo_px4_sim2sim]] | exp_043 — Isaac 정책을 ROS 2 노드로 이식해 Gazebo + PX4 SITL에서 투하: L0 6/6 성공(중앙값 0.20 m), 장착 정상 | 2026-10-11 | done |
+| [[experiments/exp_044_f450_motor_step_response]] | exp_044 — F450 단일 모터 스텝 응답: 가속 τ ≈ 80 ms, 감속 τ ≈ 65–95 ms (Gazebo 기본값보다 3–6배 느림) | 2026-10-25 | done |
+| [[experiments/exp_045_isaac_px4_plant_dryrun]] | exp_045 — Isaac 플랜트를 PX4 경로·실측 상수로 교체: 제어 루프 점검과 80 iteration dry-run | 2026-11-11 | complete |
 | [[experiments/training_history]] | 전체 학습 히스토리 (RL_Project_Log.md에서 이전) | 2026-04-14 | active |
 
 ## experiments/legacy — exp_001~024 (37)
@@ -275,4 +278,4 @@ type: index
 
 ---
 
-총 217편.
+총 220편.

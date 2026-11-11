@@ -221,3 +221,55 @@ def test_release_delay_is_a_positive_spread_around_the_nominal():
     # At 5 m/s this sigma is the same order as the wind drift -- that is the
     # point: it is unobservable AND it grows with release speed.
     assert 5.0 * tau.std().item() == pytest.approx(0.25, abs=0.05)
+
+
+# =====================================================================
+# 2026-11-11 sim2real samplers
+# =====================================================================
+
+MECH = (0.0631, 0.0381, 0.0754, 0.0875, 0.0658, 0.0644, 0.0793, 0.0670, 0.0776, 0.0495,
+        0.0479, 0.0522, 0.0504, 0.0571, 0.0482, 0.0554, 0.0475, 0.0489, 0.0520)
+REL = dict(mech_values=MECH, mech_widen=1.5, mech_jitter=0.002, link_max=0.010,
+           px4_max=0.004, pwm_max=0.020, servo_max=0.010)
+
+
+def test_wind_uniform_magnitude_and_off_path():
+    torch.manual_seed(0)
+    w = dr.sample_wind_uniform(20000, DEV, 6.0, True)
+    mag = torch.linalg.norm(w, dim=-1)
+    assert float(mag.max()) <= 6.0 + 1e-6
+    assert abs(float(mag.mean()) - 3.0) < 0.05          # U[0, 6] magnitude
+    state = torch.get_rng_state()
+    assert torch.equal(dr.sample_wind_uniform(5, DEV, 6.0, False), torch.zeros(5, 2))
+    assert torch.equal(state, torch.get_rng_state())     # no RNG consumed when off
+
+
+def test_dryden_length_scale_and_gust_params():
+    assert 54.0 < dr.dryden_length_scale(8.0) < 57.0    # MIL-F-8785C: ~55.6 m at 8 m
+    wind = torch.tensor([[3.0, 0.0], [0.0, 0.0]])
+    rho, sig = dr.sample_dryden_gust(wind, 0.01, 8.0, (0.10, 0.25), True)
+    tau = dr.dryden_length_scale(8.0) / torch.tensor([3.0, 1.0])
+    assert torch.allclose(rho, torch.exp(-0.01 / tau))
+    assert 0.3 - 1e-6 <= float(sig[0]) <= 0.75 + 1e-6 and float(sig[1]) == 0.0
+    rho0, sig0 = dr.sample_dryden_gust(wind, 0.01, 8.0, (0.10, 0.25), False)
+    assert torch.equal(rho0, torch.ones(2)) and torch.equal(sig0, torch.zeros(2))
+
+
+def test_release_delay_mean_is_the_cfg_nominal_and_scale_keeps_it():
+    m = dr.release_delay_composite_mean(MECH, 0.010, 0.004, 0.020, 0.010)
+    assert abs(m - 0.0813) < 1e-3                       # = model_err.release_delay_mean
+    torch.manual_seed(1)
+    for s in (0.5, 1.0, 1.5):
+        d = dr.sample_release_delay_composite(200000, DEV, scale=s, enabled=True, **REL)
+        assert abs(float(d.mean()) - m) < 1e-3          # the sweep never moves the mean
+    d1 = dr.sample_release_delay_composite(200000, DEV, scale=1.0, enabled=True, **REL)
+    assert 0.019 < float(d1.std()) < 0.023              # sqrt((1.5*12.9)^2 + 7.2^2) ms = 20.7 ms
+    assert torch.equal(dr.sample_release_delay_composite(4, DEV, scale=0.0, enabled=True, **REL),
+                       torch.full((4,), m))
+
+
+def test_resampled_stays_on_measured_support():
+    torch.manual_seed(2)
+    d = dr.sample_resampled(MECH, 5000, DEV, widen=1.0, jitter=0.0)
+    gap = (d.unsqueeze(-1) - torch.tensor(MECH)).abs().min(dim=-1).values
+    assert float(gap.max()) < 1e-6

@@ -941,3 +941,28 @@ def lowpass_derivative(x: torch.Tensor, x_prev: torch.Tensor, d_prev: torch.Tens
     """PX4 BlockDerivative: raw finite difference through a 1st-order low-pass (MPC_VELD_LP)."""
     alpha = dt / (dt + 1.0 / (2.0 * math.pi * cutoff_hz))
     return d_prev + alpha * ((x - x_prev) / dt - d_prev)
+
+
+def quadx_allocation(arm: float, yaw_moment_coef: float, device=None) -> tuple[torch.Tensor, torch.Tensor]:
+    """PX4 Quad X effectiveness ``A`` ([T, tau_x, tau_y, tau_z] = A @ motor thrusts) and its inverse.
+
+    Motor order and spin follow PX4 airframe 4001 (body FLU): 0 front-right CCW,
+    1 rear-left CCW, 2 front-left CW, 3 rear-right CW. A CCW rotor's reaction
+    torque on the body is -c_Q*T about +z."""
+    d = arm / math.sqrt(2.0)
+    x = torch.tensor([d, -d, d, -d])
+    y = torch.tensor([-d, d, d, -d])
+    s = torch.tensor([-1.0, -1.0, 1.0, 1.0])
+    A = torch.stack([torch.ones(4), y, -x, s * yaw_moment_coef]).to(device)
+    return A, torch.linalg.inv(A)
+
+
+def motor_lag_step(thrust: torch.Tensor, thrust_cmd: torch.Tensor,
+                   alpha_up: torch.Tensor, alpha_down: torch.Tensor) -> torch.Tensor:
+    """First-order rotor lag with separate rise/fall constants.
+
+    ``alpha = 1 - exp(-dt/tau)`` per env ([N, 1] or [N]); the rise constant is used
+    where the command is above the current thrust, the fall constant elsewhere
+    (a PWM ESC without active braking spins down slower than it spins up)."""
+    a = torch.where(thrust_cmd > thrust, alpha_up, alpha_down)
+    return thrust + a * (thrust_cmd - thrust)
