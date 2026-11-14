@@ -139,6 +139,9 @@ parser.add_argument("--dump_sl", type=str, default=None, metavar="NPZ",
                          "drift (real - nominal, metres) that a residual would have to predict. "
                          "Training a regressor on this answers whether the observation carries "
                          "the wind at all -- separately from whether PPO can find it.")
+parser.add_argument("--dump_traj", type=str, default=None, metavar="NPZ",
+                    help="Per policy step, every env: altitude, vz, |v_xy|, commanded vz, released flag "
+                         "and episode step. Diagnoses HOW the policy reaches the release band.")
 parser.add_argument("--oracle_ema", type=float, default=None, metavar="ALPHA",
                     help="Apply the same temporal smoothing to the ORACLE residual that "
                          "--sl_ema applies to the learned one. Off by default, because "
@@ -574,6 +577,7 @@ def run_policy_paired(env, policy_path, episodes):
 
     policy = _load_policy(env, policy_path)
     dump = [] if args_cli.dump_sl else None
+    traj = [] if args_cli.dump_traj else None
     sl = _SLResidual(args_cli.sl_residual, env.unwrapped) if args_cli.sl_residual else None
     orc_ema = (_ResidualEMA(args_cli.oracle_ema, env.unwrapped)
                if args_cli.oracle_ema is not None and args_cli.oracle_ema < 1.0 else None)
@@ -594,6 +598,11 @@ def run_policy_paired(env, policy_path, episodes):
             a[:, 5:7] = orc_ema(d, u) if orc_ema is not None else d
         if dump is not None:
             dump.append(_sl_row(obs, u))
+        if traj is not None:
+            z = (u._robot.data.root_pos_w - u.scene.env_origins)[:, 2]
+            v = u._robot.data.root_lin_vel_w
+            traj.append(torch.stack([z, v[:, 2], torch.linalg.norm(v[:, :2], dim=-1), torch.clamp(a[:, 2], -1.0, 1.0) * u.cfg.action.vz_scale,
+                                     u._released.float(), u.episode_length_buf.float()], -1).cpu().numpy())
         return a
 
     eval_harness.run_and_report(
@@ -615,6 +624,12 @@ def run_policy_paired(env, policy_path, episodes):
 
     if dump is not None:
         _sl_save(dump, args_cli.dump_sl, env.unwrapped)
+    if traj is not None:
+        import numpy as np
+        np.savez_compressed(args_cli.dump_traj, traj=np.stack(traj),
+                            cols=np.array(["z", "vz", "vxy", "vz_cmd", "released", "ep_step"]),
+                            alt_min=np.float32(env.unwrapped.cfg.release.alt_min))
+        print(f"[dump_traj] wrote {len(traj)} steps to {args_cli.dump_traj}", flush=True)
 
 
 def run_policy(env, policy_path, episodes=10):
