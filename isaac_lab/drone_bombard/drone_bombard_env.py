@@ -165,8 +165,10 @@ class DroneBombardRewardCfg:
 @configclass
 class DroneBombardTerminationCfg:
     ground_contact_altitude: float = 0.5
-    min_altitude: float = 1.5
-    """Lowered from 3.0 on 2026-08-27 so the crash floor sits BELOW the release
+    min_altitude: float = 3.0
+    """2026-11-14: 3.0 again, now 2 m under the 5 m release floor (retrain audit #18).
+
+    Lowered from 3.0 on 2026-08-27 so the crash floor sits BELOW the release
     floor instead of exactly on it.
 
     ``release.alt_min`` is also 3.0, so the lowest admissible release altitude
@@ -182,7 +184,7 @@ class DroneBombardTerminationCfg:
     ``ground_contact_altitude`` check at 0.5 m is unchanged)."""
     min_altitude_start_step: int = 1
     v_max_safety: float = 20.0
-    limit_ang_vel: float = 2.0
+    limit_ang_vel: float = 3.8  # rad/s: PX4 MC_ROLL/PITCHRATE_MAX 220 deg/s (retrain audit #4)
     limit_inverted_tilt: float = 1.047  # rad (~60 deg) — matches _cfg_limit_inverted_tilt default;
     # note: the Gazebo yaml's `limit_tilt: 0.26` key is loaded but never
     # read anywhere else in drone_drop_env.py (dead config) — NOT ported.

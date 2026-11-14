@@ -129,7 +129,7 @@ class ReleaseEnvelopeCfg:
     and therefore never got a learning signal at all (v18). Success is still
     judged at ``success_radius``."""
 
-    alt_min: float = 3.0
+    alt_min: float = 5.0       # m, operational floor (10-11 decision, retrain audit #18)
     alt_max: float = 8.0
     max_speed: float = 5.0
     max_vz: float = 3.0

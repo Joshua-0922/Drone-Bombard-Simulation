@@ -5,7 +5,7 @@
 # usage: bash _l0_s2r_eval.sh s1=/tmp/l0_s2r/logs/.../model_final.pt [s2=...]
 set -u
 IL=/workspace/isaaclab/isaaclab.sh
-OUT=/tmp/l0_s2r/eval
+OUT=${OUT:-/tmp/l0_s2r/eval}
 mkdir -p $OUT
 cd /tmp/rebuild
 run() { local f=$1.json; shift; [ -s "$f" ] && { echo "SKIP $f"; return; }

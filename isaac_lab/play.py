@@ -55,7 +55,7 @@ parser.add_argument("--controller", type=str, default=None, choices=["p", "px4"]
                          "px4 = PX4 velocity+rate PID, Quad X mixer, measured rotor lag. Default: env cfg (px4). "
                          "p also turns the motor model off (legacy plant).")
 parser.add_argument("--ang_vel_limit", type=float, default=None, metavar="RAD_S",
-                    help="Override termination.limit_ang_vel (default 2.0 rad/s, a conservative Gazebo-era guard; "
+                    help="Override termination.limit_ang_vel (default 3.8 rad/s = PX4 MC_*RATE_MAX 220 deg/s; "
                          "a real PX4 vehicle does not terminate there).")
 parser.add_argument("--wind_gust", type=float, default=None, metavar="FRAC",
                     help="Realistic wind: keep the per-episode mean wind and add an OU gust of "
