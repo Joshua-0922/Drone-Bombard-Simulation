@@ -114,6 +114,7 @@ notes/
 
 ### 실험 (experiments/) — 논문 단계
 - [[experiments/training_history]] — 전체 학습·평가 히스토리 허브
+- [[experiments/exp_047_l0_s2r5_5m_floor_3seed]] — ⚠️ **(11-15) 하한 5 m·3.8 rad/s, 3 seed × 1500: DR 1.0 CEP50 0.402 m, succ@0.5 61.9%, 배달 97.3%, 자세 붕괴 0. seed 편차 큼(0.333–0.474 m) → 쓰지 않는 차원 std 정리 후 재학습 검토**
 - [[experiments/exp_046_l0_s2r_px4_plant_3m_floor]] — ⚠️ **(11-14) PX4 플랜트 L0 seed 1·2: DR 1.0 CEP50 0.25–0.28 m, succ@0.5 79–82%. 하한 3 m·2 rad/s로 학습된 참고 기준(하한 5 m·3.8 rad/s 누락), 하한 결정 후 3 seed 재학습**
 - [[experiments/exp_045_isaac_px4_plant_dryrun]] — ✅ **(11-11) Isaac 플랜트를 PX4 경로(각속도 PID·믹서·로터 지연)와 실측 상수로 교체. 이득 12/4.5, dry-run 학습 진행 확인 (Rule 49)**
 - [[experiments/exp_044_f450_motor_step_response]] — ⚠️ **(10-25) F450 단일 모터 스텝 응답(모터 2·3): 가속 τ ≈ 80 ms, 감속 65–95 ms, 명령→PWM 5 ms. Gazebo `x500_drop` 0.08/0.08 s로 변경**
