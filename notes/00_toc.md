@@ -109,7 +109,7 @@ type: index
 | [[research/legacy/system_overview]] | 시스템 전체 구조 (Gazebo/PX4/ROS2 — jekyun 브랜치) | 2026-04-14 | active |
 | [[research/legacy/terminal_overshoot_trap]] | v12 종단 보상 트랩 (Terminal "Overshoot Moat") | 2026-06-16 | implemented |
 
-## experiments — 논문 단계 실험 (exp_025~) (22)
+## experiments — 논문 단계 실험 (exp_025~) (23)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -134,6 +134,7 @@ type: index
 | [[experiments/exp_043_gazebo_px4_sim2sim]] | exp_043 — Isaac 정책을 ROS 2 노드로 이식해 Gazebo + PX4 SITL에서 투하: L0 6/6 성공(중앙값 0.20 m), 장착 정상 | 2026-10-11 | done |
 | [[experiments/exp_044_f450_motor_step_response]] | exp_044 — F450 단일 모터 스텝 응답: 가속 τ ≈ 80 ms, 감속 τ ≈ 65–95 ms (Gazebo 기본값보다 3–6배 느림) | 2026-10-25 | done |
 | [[experiments/exp_045_isaac_px4_plant_dryrun]] | exp_045 — Isaac 플랜트를 PX4 경로·실측 상수로 교체: 제어 루프 점검과 80 iteration dry-run | 2026-11-11 | complete |
+| [[experiments/exp_046_l0_s2r_px4_plant_3m_floor]] | exp_046 — PX4 플랜트·실측 상수에서 L0 재학습 (seed 1·2, 투하 하한 3 m 기준) | 2026-11-14 | complete |
 | [[experiments/training_history]] | 전체 학습 히스토리 (RL_Project_Log.md에서 이전) | 2026-04-14 | active |
 
 ## experiments/legacy — exp_001~024 (37)
@@ -278,4 +279,4 @@ type: index
 
 ---
 
-총 220편.
+총 221편.

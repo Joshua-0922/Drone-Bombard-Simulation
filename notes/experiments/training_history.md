@@ -13,6 +13,7 @@ type: reference
 
 | 날짜 | Run ID | Steps | Mean Drop Error | 요약 |
 |------|--------|-------|-----------------|------|
+| 2026-11-14 | exp_046 L0 재학습 PX4 플랜트·실측 상수 (ptecrdq3 s1, pf7mowka s2; 2048 env × 1000 iter) | 1000 iter × 2 | CEP50 0.281/0.254 m (DR 1.0) | 결정론적 600 ep: DR 1.0 succ@0.5 79.2/81.5%, 배달 93.8/94.7%, 배달 5.9 s; DR 1.5 succ@0.5 60–61%(자세 종료 12%). **투하 하한 3 m·각속도 2 rad/s로 학습(하한 5 m·3.8 rad/s 누락 발견)** → 참고 기준, 하한 결정 후 3 seed 재학습 → [[experiments/exp_046_l0_s2r_px4_plant_3m_floor]] |
 | 2026-11-11 | exp_045 Isaac 플랜트 PX4 경로·실측 상수 교체 + 폐루프 점검 + 학습 dry-run (2048 env × 80 iter, tensorboard) | 80 iter | — | 로터 80 ms에서 기존 이득 18/6.5 진동 → PX4 모드 이득 12/4.5. dry-run 성공 0 → 38%, bad_attitude 94 → 26%, 보상 −70 → −9: 학습 진행 확인 (Rule 49) → [[experiments/exp_045_isaac_px4_plant_dryrun]] |
 | 2026-10-25 | exp_044 F450 단일 모터 스텝 응답 벤치 시험 (모터 2·3, 30↔50 % × 8회, 노트북 마이크) | 완료 | 가속 τ ≈ 80 ms, 감속 τ ≈ 65–95 ms, 명령→PWM ≈ 5 ms, 모터 간 차이 없음 | ⚠️ Gazebo 기본(12.5/25 ms)보다 느림 → `x500_drop` 0.08/0.08 s로 변경 (Rule 48) → [[experiments/exp_044_f450_motor_step_response]] |
 | 2026-10-11 | exp_043 Isaac 정책 → ROS 2 노드 → Gazebo + PX4 v1.15.4 SITL 투하 (6 환경 × L0/GRU = 12 에피소드) | 완료 | 12/12 착지, L0 6/6 0.5 m 이내(중앙값 0.203 m), GRU 중앙값 0.282 m(맞바람 1.23 m), 장착 −0.140 m | ✅ 배포 경로 검증, 장착·분리 정상. 현 최선 = L0 단독(GRU는 PX4 재적합 필요, Rule 47). drone_controller yaw 버그 수정 → [[experiments/exp_043_gazebo_px4_sim2sim]] |
