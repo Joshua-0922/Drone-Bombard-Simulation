@@ -116,7 +116,8 @@ class DroneBombardObsCfg:
 class DroneBombardActionCfg:
     vx_scale: float = 4.0
     vy_scale: float = 3.0
-    vz_scale: float = 3.0
+    vz_scale: float = 3.0      # climb limit (PX4 MPC_Z_VEL_MAX_UP default 3)
+    vz_down_max: float = 1.5   # descent limit = PX4 MPC_Z_VEL_MAX_DN default (11-15: no fast descent near the ground)
     yaw_scale: float = 1.0
     rate_limit: float = 0.2
     lpf_alpha: float = 0.4
@@ -1300,7 +1301,7 @@ class DroneBombardEnv(DirectRLEnv):
         self._vel_cmd = torch.stack([
             limited_vel[:, 0] * a.vx_scale,
             limited_vel[:, 1] * a.vy_scale,
-            limited_vel[:, 2] * a.vz_scale,
+            (limited_vel[:, 2] * a.vz_scale).clamp(min=-a.vz_down_max),
             limited_vel[:, 3] * a.yaw_scale,
         ], dim=-1)
         self._physics_tick = 0

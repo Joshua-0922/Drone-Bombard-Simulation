@@ -601,7 +601,7 @@ def run_policy_paired(env, policy_path, episodes):
         if traj is not None:
             z = (u._robot.data.root_pos_w - u.scene.env_origins)[:, 2]
             v = u._robot.data.root_lin_vel_w
-            traj.append(torch.stack([z, v[:, 2], torch.linalg.norm(v[:, :2], dim=-1), torch.clamp(a[:, 2], -1.0, 1.0) * u.cfg.action.vz_scale,
+            traj.append(torch.stack([z, v[:, 2], torch.linalg.norm(v[:, :2], dim=-1), (torch.clamp(a[:, 2], -1.0, 1.0) * u.cfg.action.vz_scale).clamp(min=-u.cfg.action.vz_down_max),
                                      u._released.float(), u.episode_length_buf.float()], -1).cpu().numpy())
         return a
 

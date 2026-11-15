@@ -76,8 +76,8 @@ class HandoffCfg:
 
     speed_range: tuple[float, float] = (2.0, 6.0)
     speed_nom: float = 4.0
-    alt_range: tuple[float, float] = (8.0, 12.0)
-    alt_nom: float = 10.0
+    alt_range: tuple[float, float] = (6.0, 8.0)   # 11-15: start near the 5-8 m band, level approach
+    alt_nom: float = 7.0
 
     heading_range_deg: tuple[float, float] = (-30.0, 30.0)
     """World-frame cruise heading.
@@ -132,7 +132,7 @@ class ReleaseEnvelopeCfg:
     alt_min: float = 5.0       # m, operational floor (10-11 decision, retrain audit #18)
     alt_max: float = 8.0
     max_speed: float = 5.0
-    max_vz: float = 3.0
+    max_vz: float = 0.5      # 11-15: level release only (|vz| <= 0.5 m/s)
     max_tilt: float = 0.35      # rad (20°) — the real constraint on the release path
     max_ang_vel: float = 4.0    # rad/s
 
@@ -785,7 +785,7 @@ class DroneBombardTaskEnv(DroneBombardEnv):
         self._vel_cmd = torch.stack([
             limited_vel[:, 0] * a.vx_scale,
             limited_vel[:, 1] * a.vy_scale,
-            limited_vel[:, 2] * a.vz_scale,
+            (limited_vel[:, 2] * a.vz_scale).clamp(min=-a.vz_down_max),
             limited_vel[:, 3] * a.yaw_scale,
         ], dim=-1)
 
