@@ -63,6 +63,10 @@ parser.add_argument("--phase_iterations", type=str, default="",
 parser.add_argument("--final_out", type=str, default=None,
                     help="If set (single-phase mode), also save the final model to this exact path "
                          "(used by the orchestrator to chain warm-starts).")
+parser.add_argument("--l0_std_fix", action="store_true",
+                    help="L0 only (exp_049): pin the unused residual rows 5:7 to a constant N(0, init std) "
+                         "and cap the std of yaw/drop rows 3:5 at --l0_std_cap (residual_actor.pin_l0_noise).")
+parser.add_argument("--l0_std_cap", type=float, default=1.0)
 parser.add_argument("--freeze_nominal", action="store_true",
                     help="L1 recipe: after --resume, freeze everything the nominal policy owns "
                          "(the actor trunk and the velocity/drop rows of its output layer) and "
@@ -610,6 +614,13 @@ def main():
 
     if args_cli.zero_init_residual or args_cli.freeze_nominal:
         _prepare_residual_head(runner, args_cli)
+
+    if args_cli.l0_std_fix:
+        if args_cli.residual_net or not args_cli.no_residual:
+            raise SystemExit("[train] --l0_std_fix is for L0 (--no_residual) training only.")
+        from drone_bombard.residual_actor import pin_l0_noise
+        pin_l0_noise(runner.alg.policy, runner.alg.optimizer, std_cap=args_cli.l0_std_cap)
+        print(f"[INFO] L0 std fix: rows 5:7 pinned, rows 3:5 capped at {args_cli.l0_std_cap}")
 
     # --- Spot-VM preemption: save on SIGTERM before the box dies ---
     import signal

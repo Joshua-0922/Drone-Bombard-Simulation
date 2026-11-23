@@ -207,3 +207,46 @@ def attach_from_checkpoint(policy, sd: dict) -> None:
     n_obs = sd[res_keys[0]].shape[1]
     device = next(policy.parameters()).device
     policy.actor = ResidualActor(nominal, _first_linear(nominal).in_features, n_obs, hidden).to(device)
+
+
+L0_CAPPED_DIMS = slice(3, 5)
+"""Yaw rate [3] and drop signal [4]: clipped / sign-only in the env, so their std
+is pushed up by entropy with almost nothing pulling it back (exp_048: 13-23)."""
+
+
+def pin_l0_noise(policy, optimizer, std_cap: float = 1.0) -> None:
+    """L0 training only: take the unused residual rows out of PPO, cap clipped rows.
+
+    exp_048: rows 5:7 are zeroed by the env in L0, so the only gradient on their
+    std is the entropy bonus and Adam turns it into a constant-rate climb (0.8 ->
+    28-32 over 2000 iterations); rows 3:5 climb the same way (13-23). Fix:
+      * rows 5:7 get a constant N(0, init std) -- identical log-prob under the old
+        and new policy, so they add nothing to the ratio, the KL that drives the
+        adaptive LR, or the entropy gradient. The 7-wide output is kept because
+        play.py writes the GRU residual into a[:, 5:7].
+      * rows 3:5 have their std parameter clipped to <= std_cap after every
+        optimizer step (gradient still flows while below the cap).
+    Velocity rows 0:3 are untouched. Patches the instance; checkpoints load as usual.
+    """
+    from torch.distributions import Normal
+
+    pinned = policy.std.detach()[RESIDUAL_DIMS].clone()
+    orig_update = policy._update_distribution
+
+    def _update_distribution(obs):
+        orig_update(obs)
+        mean, std = policy.distribution.mean.clone(), policy.distribution.stddev.clone()
+        mean[..., RESIDUAL_DIMS] = 0.0
+        std[..., RESIDUAL_DIMS] = pinned.to(std.device)
+        policy.distribution = Normal(mean, std)
+
+    policy._update_distribution = _update_distribution
+    orig_step = optimizer.step
+
+    def step(*a, **k):
+        out = orig_step(*a, **k)
+        with torch.no_grad():
+            policy.std[L0_CAPPED_DIMS].clamp_(max=std_cap)
+        return out
+
+    optimizer.step = step

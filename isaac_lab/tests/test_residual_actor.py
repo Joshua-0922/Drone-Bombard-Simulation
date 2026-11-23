@@ -154,3 +154,34 @@ def test_attach_from_checkpoint_rebuilds_the_same_actor():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_pin_l0_noise_freezes_unused_rows_and_caps_clipped_rows():
+    from torch.distributions import Normal
+
+    class _Pol(nn.Module):  # the rsl_rl 3.1.2 ActorCritic surface pin_l0_noise touches
+        def __init__(self):
+            super().__init__()
+            self.actor = _nominal()
+            self.std = nn.Parameter(0.8 * torch.ones(ACT))
+
+        def _update_distribution(self, obs):
+            mean = self.actor(obs)
+            self.distribution = Normal(mean, self.std.expand_as(mean))
+
+    pol = _Pol()
+    opt = torch.optim.Adam(pol.parameters(), lr=0.5)
+    ra.pin_l0_noise(pol, opt, std_cap=1.0)
+    obs = torch.randn(64, N_NOM)
+    for _ in range(50):  # pure entropy ascent: the exp_048 failure mode
+        pol._update_distribution(obs)
+        loss = -pol.distribution.entropy().sum(-1).mean()
+        opt.zero_grad(); loss.backward(); opt.step()
+    pol._update_distribution(obs)
+    d = pol.distribution
+    assert torch.all(d.mean[:, 5:7] == 0) and torch.allclose(d.stddev[:, 5:7], torch.tensor(0.8))
+    assert torch.all(pol.std[3:5] <= 1.0 + 1e-6)
+    assert torch.all(pol.std[0:3] > 1.0)  # velocity rows are not capped
+    a = d.sample()
+    lp = d.log_prob(a)[:, 5:7]  # constant rows: same log-prob under any parameters
+    assert torch.allclose(lp, Normal(torch.zeros(2), 0.8 * torch.ones(2)).log_prob(a[:, 5:7]))
