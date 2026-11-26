@@ -142,6 +142,9 @@ parser.add_argument("--dump_sl", type=str, default=None, metavar="NPZ",
 parser.add_argument("--dump_traj", type=str, default=None, metavar="NPZ",
                     help="Per policy step, every env: altitude, vz, |v_xy|, commanded vz, released flag "
                          "and episode step. Diagnoses HOW the policy reaches the release band.")
+parser.add_argument("--oracle_gain", type=float, default=1.0, metavar="G",
+                    help="Scale the oracle residual (diagnostic: how much of the wind drift the "
+                         "frozen policy leaves uncorrected; 1.0 = full correction).")
 parser.add_argument("--oracle_ema", type=float, default=None, metavar="ALPHA",
                     help="Apply the same temporal smoothing to the ORACLE residual that "
                          "--sl_ema applies to the learned one. Off by default, because "
@@ -595,6 +598,7 @@ def run_policy_paired(env, policy_path, episodes):
                 pos[:, :2], vel[:, :2], pos[:, 2], vel[:, 2],
                 float(u.cfg.residual.scale),
                 wind_only=args_cli.oracle_residual_wind_only)
+            d = d * args_cli.oracle_gain
             a[:, 5:7] = orc_ema(d, u) if orc_ema is not None else d
         if dump is not None:
             dump.append(_sl_row(obs, u))

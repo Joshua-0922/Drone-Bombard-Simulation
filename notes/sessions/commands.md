@@ -45,7 +45,7 @@ docker exec isaac-verify tail -f /tmp/l0_train.log
 
 ```bash
 # ① 덤프: 동결 L0, 잔차 없음, 정상 바람 DR 1.5 (v2 = 원 상태·상수 포함)
-$IL -p play.py --policy $CK1 --no_residual --headless --num_envs 256 --episodes 1500 \
+$IL -p play.py --policy $CK1 --no_residual --headless --num_envs 256 --paired_eval --unpaired --episodes 1500 \
     --marker_dist 18 22 --dr_scale 1.5 --seed 1000 --dump_sl /tmp/sl/v2_s1a.npz     # seed 2000 → v2_s1b
 # ③ 적합 (GRU 26→64→2, MSE, 150 epoch, 1분)
 $IL -p _fit_sl_seq.py /tmp/sl/v2_s1a.npz /tmp/sl/v2_s1b.npz --export /tmp/sl/res_gru_S.pt
