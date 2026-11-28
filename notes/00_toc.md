@@ -109,7 +109,7 @@ type: index
 | [[research/legacy/system_overview]] | 시스템 전체 구조 (Gazebo/PX4/ROS2 — jekyun 브랜치) | 2026-04-14 | active |
 | [[research/legacy/terminal_overshoot_trap]] | v12 종단 보상 트랩 (Terminal "Overshoot Moat") | 2026-06-16 | implemented |
 
-## experiments — 논문 단계 실험 (exp_025~) (33)
+## experiments — 논문 단계 실험 (exp_025~) (34)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -145,6 +145,7 @@ type: index
 | [[experiments/exp_054_s2r_wind_conditions]] | exp_054 — 새 플랜트 바람 조건 표: 정상 / 현실 돌풍 A·B / 돌풍만 τ 사다리 (3 seed, DR 1.0) | 2026-11-28 | complete |
 | [[experiments/exp_055_s2r_baselines_unseen_dr_matched_gru]] | exp_055 — 새 플랜트 기준선(T0·T2) 재평가, 미학습 DR 2.0·2.5, 크기를 맞춘 GRU, EMA 없는 현실 돌풍 B | 2026-11-28 | complete |
 | [[experiments/exp_056_s2r_hand_features_grid]] | exp_056 — 손 설계 누적 특징 + MLP 전체 격자 평가 (14조건, 3 seed, EMA 없음) | 2026-11-28 | complete |
+| [[experiments/exp_057_s2r_rmr_cross_injection]] | exp_057 — A9: 누적 평균 잔차(RMR)의 L0 간 교차 주입 3 × 3 | 2026-11-28 | complete |
 | [[experiments/training_history]] | 전체 학습 히스토리 (RL_Project_Log.md에서 이전) | 2026-04-14 | active |
 
 ## experiments/legacy — exp_001~024 (37)
@@ -290,4 +291,4 @@ type: index
 
 ---
 
-총 232편.
+총 233편.
