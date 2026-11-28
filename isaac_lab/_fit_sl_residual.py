@@ -60,6 +60,9 @@ p.add_argument("--train_ep", type=int, default=0, metavar="N",
                help="Cap the TRAINING set at N episodes (0 = all). The held-out test "
                     "episodes are untouched, so R2 across different N is measured on the "
                     "same test set -- that is what makes the label-count curve readable.")
+p.add_argument("--label", default="drift", choices=["drift", "miss"],
+               help="drift = the dump's wind-only oracle drift (default). miss = the episode's real "
+                    "landing miss of the frozen L0, as _fit_sl_seq.py --label miss.")
 a = p.parse_args()
 
 
@@ -141,6 +144,16 @@ for f, held_out in [(f, False) for f in a.npz] + [(f, True) for f in a.test_npz]
         m = {"attached": att > 0.5,
              "predrop": (att > 0.5) & (det > 0.5),
              "all": np.ones_like(att, bool)}[a.mask]
+    if a.label == "miss":
+        # same label as _fit_sl_seq.py --label miss: the episode's real landing
+        # miss, recorded on the frame after its last one; unlanded episodes dropped
+        drift = np.zeros_like(drift); ok = np.zeros((T, N), bool)
+        for n in range(N):
+            starts = np.flatnonzero(new[:, n]).tolist() + [T]
+            for s, e in zip(starts[:-1], starts[1:]):
+                if e < T and d["miss_n"][e, n] > d["miss_n"][s, n]:
+                    drift[s:e, n] = d["miss"][e, n]; ok[s:e, n] = True
+        m = m & ok
     OBS.append(obs[m]); TILT.append(tilt[m]); DRIFT.append(drift[m])
     WIND.append(wind[m]); EPI.append(epi[m])
     SRC.append(np.full(int(m.sum()), held_out, bool))

@@ -41,6 +41,8 @@ p.add_argument("--label", default="instant", choices=["instant", "realised", "mi
                     "flying alone, constant over the episode: what the L0 leaves uncorrected, so no "
                     "injection gain is needed when the L0 already compensates part of the wind "
                     "(exp_050/052). Episodes that never landed are dropped.")
+p.add_argument("--max_episodes", type=int, default=0, metavar="N",
+               help="Cap the TRAINING set at N episodes (0 = all; test split untouched).")
 p.add_argument("--report_every", type=int, default=100)
 p.add_argument("--nll", action="store_true",
                help="Uncertainty head: predict mean AND log-variance of the drift, trained with the "
@@ -147,6 +149,11 @@ for f in a.test_npz:
     eps = episodes(f)
     test += eps
     tag += [os.path.basename(f)] * len(eps)
+if a.max_episodes and len(train) > a.max_episodes:
+    # label-count ablation: deterministic subsample of the TRAIN episodes only;
+    # the held-out test set is unchanged so R2 is comparable across N
+    keep = np.random.default_rng(a.seed + 1).permutation(len(train))[: a.max_episodes]
+    train = [train[i] for i in sorted(keep)]
 print(f"train episodes {len(train)}  test episodes {len(test)}  "
       f"frames train {sum(e[2].sum() for e in train)}  test {sum(e[2].sum() for e in test)}")
 

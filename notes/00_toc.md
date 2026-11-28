@@ -109,7 +109,7 @@ type: index
 | [[research/legacy/system_overview]] | 시스템 전체 구조 (Gazebo/PX4/ROS2 — jekyun 브랜치) | 2026-04-14 | active |
 | [[research/legacy/terminal_overshoot_trap]] | v12 종단 보상 트랩 (Terminal "Overshoot Moat") | 2026-06-16 | implemented |
 
-## experiments — 논문 단계 실험 (exp_025~) (29)
+## experiments — 논문 단계 실험 (exp_025~) (30)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -141,6 +141,7 @@ type: index
 | [[experiments/exp_050_grus_s2r_dryrun_l0_self_compensation]] | exp_050 — 새 플랜트 L0에 GRU-S·오라클 주입 시험: L0가 바람 표류의 약 45%를 스스로 보정한다 | 2026-11-26 | complete |
 | [[experiments/exp_051_grus_s2r_gain05_3seed_quick]] | exp_051 — 새 플랜트 L0 + GRU-S, 주입 계수 0.5, 3 seed 빠른 확인 (DR 1.0) | 2026-11-28 | complete |
 | [[experiments/exp_052_grus_s2r_miss_label_3seed]] | exp_052 — 새 플랜트 L0 + GRU-S 본 검증: 정답 = L0가 남긴 실제 착지 오차, 3 seed × 전체 격자 | 2026-11-28 | complete |
+| [[experiments/exp_053_s2r_ablations_ema_label_features]] | exp_053 — 새 플랜트 제거 실험: EMA, 정답 정의, 정답 수, 입력 구조, 바람 오라클 (3 seed, DR 1.0) | 2026-11-28 | complete |
 | [[experiments/training_history]] | 전체 학습 히스토리 (RL_Project_Log.md에서 이전) | 2026-04-14 | active |
 
 ## experiments/legacy — exp_001~024 (37)
@@ -286,4 +287,4 @@ type: index
 
 ---
 
-총 228편.
+총 229편.
