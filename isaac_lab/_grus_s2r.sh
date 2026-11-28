@@ -25,7 +25,7 @@ for arg in "$@"; do
   [ -s $D/res_gru_S.pt ] || $IL -p _fit_sl_seq.py $D/v2_s1a.npz $D/v2_s1b.npz --label $LABEL --export $D/res_gru_S.pt > $D/fit.log 2>&1 || echo "FAIL fit $T"
   [ -s $D/res_gru_S.pt ] || continue
   B="--policy $CK --paired_eval --headless --episodes 200 --num_envs 200"
-  G="--sl_residual $D/res_gru_S.pt --sl_ema 0.3 --sl_gain $GAIN --arm_name GRUS_$T"
+  G="--sl_residual $D/res_gru_S.pt --sl_gain $GAIN --arm_name GRUS_$T"
   for S in 3000 4000 5000; do
     for DR in $DRS; do
       run $D/eval/GRUS_${T}${SFX}_dr${DR}_s$S $IL -p play.py $B --marker_dist 18 22 --dr_scale $DR --seed $S $G

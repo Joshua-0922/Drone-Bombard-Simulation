@@ -1,6 +1,6 @@
 # drop_policy — Isaac Lab 투하 정책의 ROS 2 배포 패키지 (Gazebo SITL 검증 → 실기)
 
-Isaac Lab에서 학습한 비행 정책 L0(PPO)와 착탄점 잔차 GRU(+EMA)를 PX4 위에서 그대로 돌린다.
+Isaac Lab에서 학습한 비행 정책 L0(PPO)와 착탄점 잔차 GRU를 PX4 위에서 그대로 돌린다.
 정책 출력은 **속도 명령**(`[vx, vy, vz, yaw_rate]`, ENU, 10 Hz)이며 기존 `drone_controller`가 PX4 offboard
 `TrajectorySetpoint`로 보낸다(20 Hz LPF α 0.4 = Isaac과 동일).
 

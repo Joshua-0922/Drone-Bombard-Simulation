@@ -4,7 +4,7 @@ Mirrors, line for line, what the Isaac task env (isaac_lab/drone_bombard/task_en
   * observation (26 ch)            -> TaskEnv._get_observations (no sensor noise at deployment)
   * action processing              -> TaskEnv._pre_physics_step (clip, rate limit 0.2, scale 4/3/3/1)
   * nominal impact predictor       -> DroneBombardEnv._nominal_impact (latency-propagated, drag 0.07)
-  * learned residual (GRU + EMA)   -> play.py _SLResidual, impact = nominal + clip(d, +-2 m)
+  * learned residual (GRU)   -> play.py _SLResidual, impact = nominal + clip(d, +-2 m)
   * release decision               -> TaskEnv._resolve_release (gate & wants_drop & first crossing)
 World frame is ENU (x East, y North, z Up), body frame FLU -- the Isaac convention. ``frames``
 converts from PX4 NED/FRD. Golden tests: test/test_policy_core.py (vs the torch originals).
@@ -145,7 +145,6 @@ class DropPolicy:
     models: dict
     target_xy: np.ndarray
     use_residual: bool = True
-    ema_alpha: float = 0.3
     prev_action: np.ndarray = field(default_factory=lambda: np.zeros(4))
     residual_m: np.ndarray = field(default_factory=lambda: np.zeros(2))
 
@@ -159,7 +158,6 @@ class DropPolicy:
         self.prev_action = np.clip(np.array([cruise_vel_enu[0] / ACT_SCALE[0], cruise_vel_enu[1] / ACT_SCALE[1], 0.0, 0.0]), -1, 1)
         self.gru.reset()
         self.residual_m = np.zeros(2)
-        self._fresh = True
         self.step_count = 0
         self.wants_drop = False
         self.released = False
@@ -201,8 +199,7 @@ class DropPolicy:
         self.wants_drop = bool(a[4] > DROP_THRESHOLD)
         if self.use_residual:
             d = self.gru(obs)
-            self.residual_m = d if self._fresh else self.ema_alpha * d + (1.0 - self.ema_alpha) * self.residual_m
-        self._fresh = False
+            self.residual_m = d
         self.prev_action = lim
         self.step_count += 1
         cmd = lim * ACT_SCALE

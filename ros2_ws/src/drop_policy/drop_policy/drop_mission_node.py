@@ -44,7 +44,6 @@ class DropMissionNode(Node):
         self.marker_dist = P("marker_dist", 20.0)
         self.alt_offset = P("alt_offset", 0.24)
         self.use_residual = P("use_residual", False)
-        self.ema_alpha = P("ema_alpha", 0.3)
         self.release_delay = P("release_delay", pc.RELEASE_DELAY_MEAN)
         self.result_path = P("result_path", "/tmp/drop_result.json")
         self.tag = P("tag", "")
@@ -54,7 +53,7 @@ class DropMissionNode(Node):
 
         m = dict(np.load(self.models_path))
         self.target_local = self.target_w - self.spawn_w
-        self.policy = pc.DropPolicy(m, self.target_local, use_residual=self.use_residual, ema_alpha=self.ema_alpha)
+        self.policy = pc.DropPolicy(m, self.target_local, use_residual=self.use_residual)
 
         sub_qos = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, durability=DurabilityPolicy.VOLATILE,
                              history=HistoryPolicy.KEEP_LAST, depth=1)

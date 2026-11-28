@@ -3,8 +3,9 @@
 **Current state (2026-09-25).** One GPU-vectorized Isaac Lab `DirectRLEnv`
 (`Isaac-DroneBombard-Task-v0`) trains the flight policy L0 with PPO (rsl_rl,
 2048 envs, 1000 iters, model-error scale 1.5). A small GRU (obs 26 -> 64 -> 2)
-is then fitted offline on frozen-L0 flight logs to predict the impact-point
-drift and injected at evaluation with an EMA (alpha 0.3). No wind sensor.
+is then fitted offline on frozen-L0 flight logs to predict the landing miss
+(real landing point - target of L0 flying alone, `_fit_sl_seq.py --label miss`)
+and injected at evaluation without smoothing (EMA dropped 2026-11-28). No wind sensor.
 Method + numbers: `notes/research/l1_sl_pipeline.md`, `notes/research/final_tables_v6.md`.
 Where things are: `notes/research/code_map.md`, `notes/research/isaac_lab_architecture.md`.
 Commands: `notes/sessions/commands.md`.

@@ -138,7 +138,7 @@ wikilink는 상대경로 사용: `[[research/reward_design]]`
 
 ## RL Training & Residual SL
 
-**본 방법 = L0(PPO 비행 정책, 동결) + GRU-S 잔차(지도학습) + EMA α=0.3.** 파이프라인: `[[research/l1_sl_pipeline]]`.
+**본 방법 = L0(PPO 비행 정책, 동결) + 착탄점 잔차(지도학습, 정답 = L0 단독 실제 착지점 − 표적).** 출력 평활(EMA)과 오라클 팔은 2026-11-28에 제외(exp_053·055: 새 플랜트에서 EMA 효과 없음, 바람 오라클은 상한선이 아님). 잔차 구조(GRU 대 손 설계 누적 특징)는 exp_056 결과로 확정. 파이프라인: `[[research/l1_sl_pipeline]]`.
 
 **핵심 규칙 (상세: `[[research/rl_rules]]`):**
 - 코드 변경 후 단위테스트(`tests/`) → dry-run(소수 iteration·에피소드) → 본 실행

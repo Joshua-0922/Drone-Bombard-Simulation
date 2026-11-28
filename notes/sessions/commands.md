@@ -52,10 +52,10 @@ $IL -p _fit_sl_seq.py /tmp/sl/v2_s1a.npz /tmp/sl/v2_s1b.npz --export /tmp/sl/res
 # ⑤ 주입 평가 (paired, seed 3000/4000/5000 × 200)
 $IL -p play.py --policy $CK1 --paired_eval --headless --episodes 200 --num_envs 200 \
     --marker_dist 18 22 --dr_scale 1.5 --seed 3000 \
-    --sl_residual /tmp/sl/res_gru_S.pt --sl_ema 0.3 --arm_name GRUS --out-json /tmp/gru/GRUS_E_tau0_s3000.json
+    --sl_residual /tmp/sl/res_gru_S.pt --arm_name GRUS --out-json /tmp/gru/GRUS_E_tau0_s3000.json
 ```
 
-비교 팔: L0 `--no_residual` · 오라클 `--oracle_residual_wind_only --oracle_ema 0.3` · 규칙 팔 T0/T2 `baseline_drop.py --arm hover|argmin`.
+비교 팔: L0 `--no_residual` · 규칙 팔 T0/T2 `baseline_drop.py --arm hover|argmin`.
 바람 조건: 돌풍만 `--wind_tau T` · 현실 `--wind_tau 10 --wind_gust 0.2`(A) / `--wind_tau 3 --wind_gust 0.3`(B) · DR 노브 `--dr_scale`.
 일괄 스크립트: `_gru_eval.sh`(τ 사다리) · `_gust_eval.sh`(현실 A·B) · `_grus_final.sh`(DR 스윕·미지 사거리) · `_ema_sweep.sh`(α 민감도).
 

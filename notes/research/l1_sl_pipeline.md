@@ -6,6 +6,9 @@ status: active
 type: research
 ---
 
+> [!warning] 2026-11-28 변경 — 아래 본문은 이전 플랜트(09-25) 기준이다
+> 새 플랜트(PX4 PID)에서는 ① 정답 = L0 단독 **실제 착지점 − 표적**(`_fit_sl_seq.py --label miss`, Rule 50), ② **EMA 제외**(`--sl_ema` 미사용), ③ **오라클 팔 삭제**. 수치는 [[experiments/exp_052_grus_s2r_miss_label_3seed]] · [[experiments/exp_055_s2r_baselines_unseen_dr_matched_gru]].
+
 # L1-SL 파이프라인 — 본 방법(L0 + GRU-S + EMA)이 무엇을, 어떤 입력으로, 어디에 넣는가
 
 > **한 줄.** 비행 정책(L0)은 그대로 두고, "공식이 예측한 착탄점과 실제 착탄점의 차이(드리프트)"를 **관측 이력만 보고** 맞히는
