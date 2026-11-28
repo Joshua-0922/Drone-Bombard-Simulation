@@ -337,6 +337,7 @@ wandb: `sl_gen_unseenR` / `sl_gen_policy_transfer` / `sl_gen_label_count` (job_t
 
 # 2. Recent Progress
 
+- **2026-11-28 (5):** 논문 개요 v7(`notes/research/paper_outline_v6.md` 갱신) — Learning to Throw 절 구성에 맞춤. 범위 = Isaac 학습 → Gazebo + PX4 SITL → 실기, 새 플랜트 수치만 사용. Ablation 3묶음(잔차 부품 A1–A9, 시뮬 충실도 B1–B4, 학습 DR 세기 C1–C4) 정의. 결정 필요: 시간 필터(GRU 대 손 설계 특징), EMA 유지 여부, 재학습 규모.
 - **2026-11-28 (4):** exp_054 — 새 플랜트 바람 조건 표(126회 평가). L0 → L0 + GRU-S CEP50: 정상 0.369 → 0.229(−38%), 현실 A 0.374 → 0.239(−36%), 현실 B 0.408 → 0.290(−29%), 돌풍만 τ 10/3/1/0.3 = −1% / +7% / +12% / +7%. `play.py --model_err_set KEY=VAL` 추가(정상 바람 스위치·OU 상수 재정의), `_w9_chain.sh`, `_w9_windcheck.py`.
 - **2026-11-28 (3):** exp_053 — 새 플랜트 제거 실험(3 seed, DR 1.0, 108회 평가). 손 설계 누적 특징 + MLP CEP50 0.222 m로 GRU-S 0.253 m보다 좋음(3 seed 전부), EMA α 0.1–1.0 무관, 기존 정답 전량 0.377 m(L0 0.345보다 나쁨), 정답 수 100/300/1000 = 0.311/0.287/0.270, 이력 없음 0.284, 바람 오라클 전량 0.326·×0.5 0.257. 신규 옵션 `_fit_sl_seq.py --max_episodes`, `_fit_sl_residual.py --label miss`. 본 방법 구조(GRU 대 손 설계 특징) 결정 필요.
 - **2026-11-28 (2):** exp_052 — 잔차 정답 재정의(`_fit_sl_seq.py --label miss` = L0 단독 실제 착지점 − 참 표적; env `_last_miss_xy`, 덤프 `miss`)로 새 플랜트 본 검증 완료. 3 seed(1·2·4) 합산 DR 1.0: **CEP50 0.345 → 0.253 m, CEP90 0.897 → 0.546 m, succ@0.5 66.4 → 84.6%**, 배달률 97.0 → 96.9%, 배달 6.15 s 불변. DR 0 −3% / 0.5 −17% / 1.5 −32% / 26–30 m −30%. 15개 seed×조건 전부 개선. Rule 50 추가.
