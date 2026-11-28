@@ -29,7 +29,7 @@ type: index
 - **다음 (10-03 확정):** 트랙 A sim2real — [[research/sim2real_strategy]]. −1단계(법규 서면 질의, 풍속 구간별 이득 계산, 후보지 풍황) → 구매 → SysID → 재학습 → SITL → 실기. YOLO는 트랙 B(다른 담당)로 병렬
 - **하드웨어 (10-25):** F450 조립·점검 중(이륙 실측 1,658 g + 미측정 약 60 g, 추정 T/W 2.1–2.3). Pixhawk·GPS(GPS2 포트, 3D fix)·텔레메트리(TELEM1, 양방향) 정상. 모터 스텝 응답 측정 → [[experiments/exp_044_f450_motor_step_response]]
 
-최근 일지: [[daily/daily_2026-10-03]] · [[daily/daily_2026-09-25]] · [[daily/daily_2026-09-24]] · 세션: [[sessions/session_2026-09-24]]
+최근 일지: [[daily/daily_2026-11-28]] · [[daily/daily_2026-10-03]] · [[daily/daily_2026-09-25]] · [[daily/daily_2026-09-24]] · 세션: [[sessions/session_2026-09-24]]
 
 ---
 
