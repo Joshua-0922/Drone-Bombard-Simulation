@@ -34,7 +34,7 @@ type: index
 | [[research/l1_rl_preflight]] | L1-RL 사전점검 — 잔차 강화학습을 돌리기 전에 바꿔야 하는 것 | 2026-09-13 | applied |
 | [[research/l1_sl_pipeline]] | L1-SL 파이프라인 — 본 방법(L0 + GRU-S + EMA)이 무엇을, 어떤 입력으로, 어디에 넣는가 | 2026-09-14 | active |
 | [[research/paper_metrics]] | 논문 지표 확정 — 성공률을 헤드라인에서 내린다 | 2026-08-30 | decided |
-| [[research/paper_outline_v6]] | 논문 개요 v6 — "바람 속에서 던지기: 비행은 강화학습, 조준 보정은 지도학습" | 2026-09-24 | active |
+| [[research/paper_outline_v6]] | 논문 개요 v7 — "바람 속에서 던지기: 비행은 강화학습, 조준 보정은 지도학습" | 2026-09-24 | active |
 | [[research/perception_integration_survey]] | 선행연구 조사 — 표적 위치를 참값에서 검출기(YOLO)로 바꿀 때, 학습을 다시 하는가 | 2026-10-03 | active |
 | [[research/physical_payload_attach]] | 물리 페이로드 부착/분리 — kinematic weld 패턴 | 2026-07-21 | active |
 | [[research/related_work_survey]] | 선행연구 조사 — 우리는 어디에 서 있나 | 2026-08-27 | open |
@@ -109,7 +109,7 @@ type: index
 | [[research/legacy/system_overview]] | 시스템 전체 구조 (Gazebo/PX4/ROS2 — jekyun 브랜치) | 2026-04-14 | active |
 | [[research/legacy/terminal_overshoot_trap]] | v12 종단 보상 트랩 (Terminal "Overshoot Moat") | 2026-06-16 | implemented |
 
-## experiments — 논문 단계 실험 (exp_025~) (31)
+## experiments — 논문 단계 실험 (exp_025~) (32)
 
 | 파일 | 내용 | 날짜 | 상태 |
 |---|---|---|---|
@@ -143,6 +143,7 @@ type: index
 | [[experiments/exp_052_grus_s2r_miss_label_3seed]] | exp_052 — 새 플랜트 L0 + GRU-S 본 검증: 정답 = L0가 남긴 실제 착지 오차, 3 seed × 전체 격자 | 2026-11-28 | complete |
 | [[experiments/exp_053_s2r_ablations_ema_label_features]] | exp_053 — 새 플랜트 제거 실험: EMA, 정답 정의, 정답 수, 입력 구조, 바람 오라클 (3 seed, DR 1.0) | 2026-11-28 | complete |
 | [[experiments/exp_054_s2r_wind_conditions]] | exp_054 — 새 플랜트 바람 조건 표: 정상 / 현실 돌풍 A·B / 돌풍만 τ 사다리 (3 seed, DR 1.0) | 2026-11-28 | complete |
+| [[experiments/exp_055_s2r_baselines_unseen_dr_matched_gru]] | exp_055 — 새 플랜트 기준선(T0·T2) 재평가, 미학습 DR 2.0·2.5, 크기를 맞춘 GRU, EMA 없는 현실 돌풍 B | 2026-11-28 | complete |
 | [[experiments/training_history]] | 전체 학습 히스토리 (RL_Project_Log.md에서 이전) | 2026-04-14 | active |
 
 ## experiments/legacy — exp_001~024 (37)
@@ -288,4 +289,4 @@ type: index
 
 ---
 
-총 230편.
+총 231편.
