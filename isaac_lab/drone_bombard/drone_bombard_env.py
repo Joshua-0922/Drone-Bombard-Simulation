@@ -938,6 +938,11 @@ class DroneBombardEnv(DirectRLEnv):
         self._payload_free = torch.zeros(N, dtype=torch.bool, device=device)
         self._payload_landed = torch.zeros(N, dtype=torch.bool, device=device)
         self._payload_impact_xy = torch.zeros(N, 2, device=device)
+        # Last REAL landing miss (impact - true target) per env and a landing counter.
+        # Never reset: the episode resets in the same step it lands, so play.py --dump_sl
+        # reads these on the next frame to label the episode that just ended (exp_052).
+        self._last_miss_xy = torch.zeros(N, 2, device=device)
+        self._miss_count = torch.zeros(N, device=device)
         # Per-episode minimum CCIP aim error |predicted_impact - target| (all
         # phases). Diagnoses 10 Hz trigger discretization: at approach speed v
         # the predicted impact point sweeps ~v*0.1 m per policy step, so the
@@ -1614,6 +1619,8 @@ class DroneBombardEnv(DirectRLEnv):
                 self._payload_impact_xy[newly] = (
                     self._payload.data.root_pos_w[newly, :2] - origins[newly, :2])
                 self._payload_landed[newly] = True
+                self._last_miss_xy[newly] = self._payload_impact_xy[newly] - self._target_xy[newly]
+                self._miss_count[newly] += 1.0
                 idx = newly.nonzero(as_tuple=False).squeeze(-1)
                 self._payload.write_root_velocity_to_sim(
                     torch.zeros((idx.numel(), 6), device=self.device), idx)

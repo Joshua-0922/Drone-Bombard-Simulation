@@ -1160,6 +1160,14 @@ RL만 떠안는다. ③ 학습 잔차 권한 1.0 m vs SL 평가 2.0 m로 클램�
 - 로터 τ·이득을 바꾸면 `_probe_ctrl.py`식 폐루프 점검(영 명령·무작위 행동 종료율)을 먼저 돌린다. 실기 이득이 정해지면 G1 계단응답으로 맞춘다.
 → [[experiments/exp_045_isaac_px4_plant_dryrun]] · [[research/sim2real_hardware_f450]]
 
+
+## Rule 50 — 잔차의 정답은 "외란의 크기"가 아니라 "기반 정책이 남긴 오차"로 둔다
+
+- 기반 정책(L0)이 외란 일부를 스스로 보정하면(새 플랜트 L0: 바람 표류의 32–45%), 외란 전체를 정답으로 배운 잔차는 과보정한다(전량 오라클 CEP50 0.320 → 0.416 m).
+- 정답 = 동결한 L0 단독 비행의 실제 착지점 − 참 표적(`_fit_sl_seq.py --label miss`). 주입 계수가 필요 없고 L0 seed별 보정 비율·조준 편향을 자동 흡수한다. 실기에서도 같은 정답(투하 후 실측)을 얻는다.
+- 근거: [[experiments/exp_050_grus_s2r_dryrun_l0_self_compensation]] · [[experiments/exp_051_grus_s2r_gain05_3seed_quick]] · [[experiments/exp_052_grus_s2r_miss_label_3seed]] (DR 1.0 CEP50 −27%, 15개 seed×조건 전부 개선).
+- L0를 바꾸면(재학습·체크포인트 변경) 덤프와 적합을 그 L0로 다시 한다(Rule 47과 같은 결합).
+
 ---
 
 ## Known Failure Modes

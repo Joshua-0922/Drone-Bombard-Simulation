@@ -31,12 +31,16 @@ p.add_argument("--epochs", type=int, default=150)
 p.add_argument("--lr", type=float, default=1e-3)
 p.add_argument("--seed", type=int, default=0)
 p.add_argument("--export", default=None, metavar="PT")
-p.add_argument("--label", default="instant", choices=["instant", "realised"],
+p.add_argument("--label", default="instant", choices=["instant", "realised", "miss"],
                help="instant = the dump's oracle drift (wind at that instant, held for the fall). "
                     "realised = re-integrate the fall from the frame's raw state with the wind that "
                     "ACTUALLY followed (the dump's recorded stream, nominal latency/coefficient) -- "
                     "the quantity the landing depends on, and what a real drop would reveal. "
-                    "Identical under constant wind; differs by the wind's change during the fall.")
+                    "Identical under constant wind; differs by the wind's change during the fall. "
+                    "miss = the episode's REAL landing miss (impact - true target) of the frozen L0 "
+                    "flying alone, constant over the episode: what the L0 leaves uncorrected, so no "
+                    "injection gain is needed when the L0 already compensates part of the wind "
+                    "(exp_050/052). Episodes that never landed are dropped.")
 p.add_argument("--report_every", type=int, default=100)
 p.add_argument("--nll", action="store_true",
                help="Uncertainty head: predict mean AND log-variance of the drift, trained with the "
@@ -115,6 +119,13 @@ def episodes(f):
         for s, e in zip(starts[:-1], starts[1:]):
             m = att[s:e, n] > 0.5
             if m.sum() < 5:
+                continue
+            if a.label == "miss":
+                # the landing is recorded on the frame AFTER the episode's last one
+                if e >= T or d["miss_n"][e, n] <= d["miss_n"][s, n]:
+                    continue
+                y = np.broadcast_to(d["miss"][e, n], (e - s, 2)).astype(np.float32)
+                out.append((obs[s:e, n].astype(np.float32), y, m))
                 continue
             out.append((obs[s:e, n].astype(np.float32), drift[s:e, n].astype(np.float32), m))
     return out
