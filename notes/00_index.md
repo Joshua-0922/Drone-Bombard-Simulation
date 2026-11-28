@@ -117,6 +117,7 @@ notes/
 - [[experiments/exp_047_l0_s2r5_5m_floor_3seed]] — ⚠️ **(11-15) 하한 5 m·3.8 rad/s, 3 seed × 1500: DR 1.0 CEP50 0.402 m, succ@0.5 61.9%, 배달 97.3%, 자세 붕괴 0. seed 편차 큼(0.333–0.474 m) → 쓰지 않는 차원 std 정리 후 재학습 검토**
 - [[experiments/exp_048_l0_s2r6_level_release_3seed]] — **(11-17) 시작 6–8 m·수평 투하, 3 seed × 2000: model_500 DR 1.0 CEP50 0.332 m·succ@0.5 67.2%(seed 0.318–0.356), 최종 0.464 m. std 폭주로 결정론 성능 비단조 → L0 = model_500 후보, 다음 GRU-S**
 - [[experiments/exp_049_l0_s2r7_std_fix_3seed]] — ⚠️ **(11-26) std 고정 재학습: seed 1·2 최종 DR 1.0 CEP50 0.400 m·succ@0.5 61.4%(exp_048 최종 0.464 m), seed 3은 학습 실패(추락 100%), 검증 곡선 비단조 지속**
+- [[experiments/exp_054_s2r_wind_conditions]] — ✅ **(11-28) 새 플랜트 바람 조건: 정상 −38%, 현실 돌풍 A −36%, B −29%**(3 seed 전부 개선); 돌풍만 τ ≤ 3 s는 +7 ~ +12% 손해 — 이전과 같은 경계
 - [[experiments/exp_053_s2r_ablations_ema_label_features]] — ⚠️ **(11-28) 새 플랜트 제거 실험: 손 설계 누적 특징 + MLP(0.222 m)가 GRU-S(0.253 m)보다 좋고, EMA는 무관** — 이전 Table 5 두 행 재현 안 됨. 본 방법 구조 결정 필요
 - [[experiments/exp_052_grus_s2r_miss_label_3seed]] — ✅ **(11-28) 본 검증: 정답을 L0 잔여 실제 착지 오차로 재정의 → 3 seed DR 1.0 CEP50 0.345 → 0.253 m, CEP90 0.897 → 0.546 m, succ@0.5 66.4 → 84.6%**, 전 조건·전 seed 개선, 계수 없음 (Rule 50)
 - [[experiments/exp_051_grus_s2r_gain05_3seed_quick]] — ✅ **(11-28) 새 L0 3 seed + GRU-S×0.5: CEP50 0.345 → 0.284 m, CEP90 0.897 → 0.656 m, succ@0.5 66.4 → 77.2% (DR 1.0, 1800 ep)**; 오라클 ×0.5 이득의 70–90% 회수. 다음 = 라벨 재정의 후 전체 격자

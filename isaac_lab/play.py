@@ -62,6 +62,9 @@ parser.add_argument("--wind_gust", type=float, default=None, metavar="FRAC",
                          "FRAC x the wind std with correlation time --wind_tau (Dryden-like; "
                          "low-altitude intensity ~0.2). Without it --wind_tau replaces the whole "
                          "wind by a zero-mean OU (gust-only stress test).")
+parser.add_argument("--model_err_set", nargs="+", default=None, metavar="KEY=VAL",
+                    help="Override model_err cfg fields at evaluation (wind-condition table), e.g. "
+                         "wind_gust_model=none wind_std=2.449 wind_max=8.165 wind_speed_dist=gaussian.")
 parser.add_argument("--dr_scale", type=float, default=None,
                     help="A-GROUP domain-randomization strength at EVALUATION time (wind, payload ballistic "
                          "coefficient, release-latency spread). Set it ABOVE the training value for the "
@@ -841,6 +844,11 @@ def main():
         env_cfg.controller.motor_model = args_cli.controller == "px4"
     if args_cli.wind_gust is not None:
         env_cfg.model_err.wind_gust_frac = args_cli.wind_gust
+    for kv in args_cli.model_err_set or []:
+        k, v = kv.split("=", 1)
+        old = getattr(env_cfg.model_err, k)  # AttributeError on a typo
+        setattr(env_cfg.model_err, k, type(old)(v))
+        print(f"[play] model_err.{k}: {old} -> {getattr(env_cfg.model_err, k)}")
     if hasattr(env_cfg, "model_err") and args_cli.observe_wind:
         env_cfg.model_err.observe_wind = True
     if hasattr(env_cfg, "residual") and args_cli.no_residual:
