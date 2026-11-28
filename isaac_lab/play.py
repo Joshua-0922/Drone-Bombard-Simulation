@@ -142,6 +142,9 @@ parser.add_argument("--dump_sl", type=str, default=None, metavar="NPZ",
 parser.add_argument("--dump_traj", type=str, default=None, metavar="NPZ",
                     help="Per policy step, every env: altitude, vz, |v_xy|, commanded vz, released flag "
                          "and episode step. Diagnoses HOW the policy reaches the release band.")
+parser.add_argument("--sl_gain", type=float, default=1.0, metavar="G",
+                    help="Scale the learned (--sl_residual) correction before injection. <1 when the "
+                         "L0 already compensates part of the wind drift (exp_050).")
 parser.add_argument("--oracle_gain", type=float, default=1.0, metavar="G",
                     help="Scale the oracle residual (diagnostic: how much of the wind drift the "
                          "frozen policy leaves uncorrected; 1.0 = full correction).")
@@ -589,7 +592,7 @@ def run_policy_paired(env, policy_path, episodes):
         a = policy(obs)
         if sl is not None:
             a = a.clone()
-            a[:, 5:7] = torch.clamp(sl(obs, u) / float(u.cfg.residual.scale), -1.0, 1.0)
+            a[:, 5:7] = torch.clamp(args_cli.sl_gain * sl(obs, u) / float(u.cfg.residual.scale), -1.0, 1.0)
         if args_cli.oracle_residual or args_cli.oracle_residual_wind_only:
             pos = u._robot.data.root_pos_w - u.scene.env_origins
             vel = u._robot.data.root_lin_vel_w

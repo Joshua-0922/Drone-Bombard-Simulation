@@ -117,6 +117,7 @@ notes/
 - [[experiments/exp_047_l0_s2r5_5m_floor_3seed]] — ⚠️ **(11-15) 하한 5 m·3.8 rad/s, 3 seed × 1500: DR 1.0 CEP50 0.402 m, succ@0.5 61.9%, 배달 97.3%, 자세 붕괴 0. seed 편차 큼(0.333–0.474 m) → 쓰지 않는 차원 std 정리 후 재학습 검토**
 - [[experiments/exp_048_l0_s2r6_level_release_3seed]] — **(11-17) 시작 6–8 m·수평 투하, 3 seed × 2000: model_500 DR 1.0 CEP50 0.332 m·succ@0.5 67.2%(seed 0.318–0.356), 최종 0.464 m. std 폭주로 결정론 성능 비단조 → L0 = model_500 후보, 다음 GRU-S**
 - [[experiments/exp_049_l0_s2r7_std_fix_3seed]] — ⚠️ **(11-26) std 고정 재학습: seed 1·2 최종 DR 1.0 CEP50 0.400 m·succ@0.5 61.4%(exp_048 최종 0.464 m), seed 3은 학습 실패(추락 100%), 검증 곡선 비단조 지속**
+- [[experiments/exp_051_grus_s2r_gain05_3seed_quick]] — ✅ **(11-28) 새 L0 3 seed + GRU-S×0.5: CEP50 0.345 → 0.284 m, CEP90 0.897 → 0.656 m, succ@0.5 66.4 → 77.2% (DR 1.0, 1800 ep)**; 오라클 ×0.5 이득의 70–90% 회수. 다음 = 라벨 재정의 후 전체 격자
 - [[experiments/exp_050_grus_s2r_dryrun_l0_self_compensation]] — ⚠️ **(11-26) 새 L0는 바람 표류의 약 45%를 스스로 보정 → 전량 라벨 잔차·오라클은 과보정으로 악화, 오라클 ×0.5는 CEP50 −12%·CEP90 −23%. 잔차 라벨 재정의 필요**
 - [[experiments/exp_046_l0_s2r_px4_plant_3m_floor]] — ⚠️ **(11-14) PX4 플랜트 L0 seed 1·2: DR 1.0 CEP50 0.25–0.28 m, succ@0.5 79–82%. 하한 3 m·2 rad/s로 학습된 참고 기준(하한 5 m·3.8 rad/s 누락), 하한 결정 후 3 seed 재학습**
 - [[experiments/exp_045_isaac_px4_plant_dryrun]] — ✅ **(11-11) Isaac 플랜트를 PX4 경로(각속도 PID·믹서·로터 지연)와 실측 상수로 교체. 이득 12/4.5, dry-run 학습 진행 확인 (Rule 49)**
